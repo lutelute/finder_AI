@@ -45,7 +45,23 @@ done
 
 plutil -lint "$CONTENTS/Info.plist"
 xattr -cr "$APP"
-codesign --force --sign - --timestamp=none "$APP"
+
+# An ad-hoc signature's designated requirement is the cdhash, which changes on
+# every build. macOS then treats each build as a different app and drops the
+# folder-access grants, so the user is re-prompted after every rebuild. Signing
+# with a stable identity anchors the requirement to the certificate instead, and
+# the grants survive. FINDERAI_SIGN_IDENTITY names that identity; without one we
+# fall back to ad-hoc and say why.
+SIGN_IDENTITY="${FINDERAI_SIGN_IDENTITY:-FinderAI Local Signing}"
+if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$SIGN_IDENTITY"; then
+    echo "Signing with stable identity: $SIGN_IDENTITY"
+    codesign --force --sign "$SIGN_IDENTITY" --timestamp=none "$APP"
+else
+    echo "No '$SIGN_IDENTITY' identity found; falling back to ad-hoc."
+    echo "  macOS will re-ask for folder access after every rebuild."
+    echo "  Run scripts/create-signing-identity.sh once to stop that."
+    codesign --force --sign - --timestamp=none "$APP"
+fi
 codesign --verify --deep --strict --verbose=4 "$APP"
 
 rm -f "$ZIP"
