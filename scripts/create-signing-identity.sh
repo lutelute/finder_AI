@@ -67,27 +67,48 @@ openssl req -x509 -newkey rsa:2048 \
     -keyout "$WORK/key.pem" -out "$WORK/cert.pem" \
     -days 3650 -nodes \
     -config "$WORK/openssl.cnf" -extensions v3 >/dev/null 2>&1
-openssl pkcs12 -export \
+
+# OpenSSL 3 defaults to an AES/SHA256 PKCS#12 that macOS Security rejects with
+# "MAC verification failed during PKCS12 import (wrong password?)". -legacy picks
+# the 3DES/SHA1 encoding it accepts. The passphrase is a transport detail for a
+# file deleted seconds later, not a secret.
+P12_PASS="finderai-transport"
+openssl pkcs12 -export -legacy -macalg sha1 \
     -inkey "$WORK/key.pem" -in "$WORK/cert.pem" \
-    -out "$WORK/cert.p12" -passout pass: -name "$CN" >/dev/null 2>&1
+    -out "$WORK/cert.p12" -passout "pass:$P12_PASS" -name "$CN" >/dev/null 2>&1
 
 echo "2/3  Importing into your login keychain (macOS may ask for your password)..."
-security import "$WORK/cert.p12" -k "$KEYCHAIN" -P "" \
+security import "$WORK/cert.p12" -k "$KEYCHAIN" -P "$P12_PASS" \
     -T /usr/bin/codesign -T /usr/bin/security
 
 echo "3/3  Trusting it for code signing only..."
 security add-trusted-cert -r trustRoot -p codeSign -k "$KEYCHAIN" "$WORK/cert.pem"
 
 echo
-if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$CN"; then
-    echo "Done. '$CN' is ready."
-    echo "Rebuild and reinstall so the app picks it up:"
-    echo "    ./scripts/build-workspace-app.sh"
-    echo "    ./scripts/install-workspace-app.sh"
-    echo
-    echo "macOS will ask for folder access once more (the identity changed),"
-    echo "then remember it across future rebuilds."
-else
+if ! security find-identity -v -p codesigning 2>/dev/null | grep -qF "$CN"; then
     echo "The identity was not registered. Check the output above." >&2
     exit 1
 fi
+
+echo "Done. '$CN' is ready."
+echo
+echo "IMPORTANT — the first build will stop on a dialog:"
+echo
+echo "    \"codesign wants to access key 'cert' in your keychain\""
+echo "    [Always Allow] [Deny] [Allow]"
+echo
+echo "Type your login password and choose **Always Allow**. Picking plain"
+echo "\"Allow\" makes the dialog return on every single build; the -T flag above"
+echo "grants codesign access to the key but macOS still wants the partition list"
+echo "confirmed once, and only you can do that."
+echo
+echo "To answer it without waiting for a build, run:"
+echo "    security set-key-partition-list -S apple-tool:,apple: \\"
+echo "        -s -k <your-login-password> \"$KEYCHAIN\""
+echo
+echo "Then:"
+echo "    ./scripts/build-workspace-app.sh"
+echo "    ./scripts/install-workspace-app.sh"
+echo
+echo "macOS will ask for folder access once more (the identity changed),"
+echo "then remember it across future rebuilds."

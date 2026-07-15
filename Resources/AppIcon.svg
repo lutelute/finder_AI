@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  FinderAI Workspace app icon.
+
+  Two ideas only — a folder, and a shell prompt on it — because the icon has to
+  survive being drawn at 16pt in a Dock or a Finder list. An earlier attempt drew
+  the whole window (sidebar, file rows, drawer) and turned to mush below 64pt,
+  so everything that could not be read at thumbnail size is gone.
+
+  Colours come from IntegratedPanelTheme so the icon matches the window:
+  #181818 shell, #007ACC accent, and the same green the terminal prompt uses.
+
+  The art stays inside the 824pt squircle Apple centres in a 1024pt canvas; the
+  surrounding margin is the system's shadow room, not spare space.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="shell" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#33333A"/>
+      <stop offset="0.55" stop-color="#202024"/>
+      <stop offset="1" stop-color="#161618"/>
+    </linearGradient>
+    <linearGradient id="folderBack" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6FBCF7"/>
+      <stop offset="1" stop-color="#3E9AE8"/>
+    </linearGradient>
+    <linearGradient id="folderFace" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#42A0EF"/>
+      <stop offset="1" stop-color="#0F6FC4"/>
+    </linearGradient>
+    <!--
+      Fades out well before the shell's lower edge. An ellipse was used here
+      first, but its rim stayed partly opaque at the sides and read as a hard arc
+      drawn across the icon.
+    -->
+    <linearGradient id="topLight" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.20"/>
+      <stop offset="0.45" stop-color="#FFFFFF" stop-opacity="0.04"/>
+      <stop offset="0.75" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <!--
+      macOS icon grid: an 824pt rounded square centred in 1024pt, corner radius
+      185.4. Drawing this with four bezier curves produced a circle instead of a
+      squircle, so it is a plain rounded rect.
+    -->
+    <clipPath id="squircle">
+      <rect x="100" y="100" width="824" height="824" rx="185.4" ry="185.4"/>
+    </clipPath>
+  </defs>
+
+  <rect x="100" y="100" width="824" height="824" rx="185.4" ry="185.4" fill="url(#shell)"/>
+
+  <!-- Glass highlight across the top of the shell -->
+  <g clip-path="url(#squircle)">
+    <rect x="100" y="100" width="824" height="824" fill="url(#topLight)"/>
+  </g>
+
+  <!-- Folder back panel with its tab -->
+  <path d="M232 396
+           a56 56 0 0 1 56 -56
+           h150
+           a40 40 0 0 1 30 14
+           l44 50
+           h220
+           a56 56 0 0 1 56 56
+           v40
+           H232 Z"
+        fill="url(#folderBack)"/>
+
+  <!-- Folder front face -->
+  <path d="M232 452
+           h560
+           a56 56 0 0 1 56 56
+           v176
+           a56 56 0 0 1 -56 56
+           H232
+           a56 56 0 0 1 -56 -56
+           V508
+           a56 56 0 0 1 56 -56 Z"
+        fill="url(#folderFace)"/>
+
+  <!--
+    Accent seam where the drawer meets the list in the real window. Inset to the
+    folder's own corner radius so it cannot poke out past the face.
+  -->
+  <rect x="232" y="452" width="560" height="6" fill="#007ACC" opacity="0.9"/>
+
+  <!-- Shell prompt: the half that is not a file browser -->
+  <path d="M330 540 l72 62 l-72 62"
+        fill="none" stroke="#2BD048" stroke-width="34"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="446" y="646" width="180" height="30" rx="15" fill="#FFFFFF"/>
+</svg>

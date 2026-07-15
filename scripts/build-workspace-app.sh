@@ -37,6 +37,13 @@ mkdir -p "$MACOS" "$RESOURCES"
 install -m 755 "$BIN_DIR/FinderAIWorkspace" "$MACOS/FinderAIWorkspace"
 install -m 644 "$ROOT/Resources/Workspace-Info.plist" "$CONTENTS/Info.plist"
 install -m 644 "$ROOT/Resources/SwiftTerm-LICENSE.txt" "$RESOURCES/SwiftTerm-LICENSE.txt"
+# Info.plist names AppIcon; a missing file here means a blank Dock icon rather
+# than a build error, so fail loudly instead.
+[ -f "$ROOT/Resources/AppIcon.icns" ] || {
+    echo "Missing Resources/AppIcon.icns — run ./scripts/build-icon.sh" >&2
+    exit 1
+}
+install -m 644 "$ROOT/Resources/AppIcon.icns" "$RESOURCES/AppIcon.icns"
 
 for bundle in "$BIN_DIR"/*.bundle; do
     [ -d "$bundle" ] || continue

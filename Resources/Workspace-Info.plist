@@ -2,39 +2,43 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleDevelopmentRegion</key>
-    <string>ja</string>
-    <key>CFBundleExecutable</key>
-    <string>FinderAIWorkspace</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.shigenoburyuto.finderai.workspace</string>
-    <key>CFBundleInfoDictionaryVersion</key>
-    <string>6.0</string>
-    <key>CFBundleName</key>
-    <string>FinderAI Workspace</string>
-    <key>CFBundleDisplayName</key>
-    <string>FinderAI Workspace</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleShortVersionString</key>
-    <string>0.2.0</string>
-    <key>CFBundleVersion</key>
-    <string>2</string>
-    <key>LSApplicationCategoryType</key>
-    <string>public.app-category.developer-tools</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>15.0</string>
-    <key>NSDocumentsFolderUsageDescription</key>
-    <string>FinderAI Workspaceは、ユーザーが整理する書類とプロジェクトを一覧・移動するために書類フォルダへアクセスします。</string>
-    <key>NSDesktopFolderUsageDescription</key>
-    <string>FinderAI Workspaceは、ユーザーが選んだデスクトップ上のファイルを整理するためにアクセスします。</string>
-    <key>NSDownloadsFolderUsageDescription</key>
-    <string>FinderAI Workspaceは、ユーザーが選んだダウンロード済みファイルを整理するためにアクセスします。</string>
-    <key>NSHighResolutionCapable</key>
-    <true/>
-    <key>NSHumanReadableCopyright</key>
-    <string>Copyright © 2026 shigenoburyuto</string>
-    <key>NSPrincipalClass</key>
-    <string>NSApplication</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>ja</string>
+	<key>CFBundleDisplayName</key>
+	<string>FinderAI Workspace</string>
+	<key>CFBundleExecutable</key>
+	<string>FinderAIWorkspace</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.shigenoburyuto.finderai.workspace</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>FinderAI Workspace</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.3.0</string>
+	<key>CFBundleVersion</key>
+	<string>3</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.developer-tools</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>15.0</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>FinderAI Workspaceは、ユーザーが選んだデスクトップ上のファイルを整理するためにアクセスします。</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>FinderAI Workspaceは、ユーザーが整理する書類とプロジェクトを一覧・移動するために書類フォルダへアクセスします。</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>FinderAI Workspaceは、ユーザーが選んだダウンロード済みファイルを整理するためにアクセスします。</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026 shigenoburyuto</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
 </dict>
 </plist>
