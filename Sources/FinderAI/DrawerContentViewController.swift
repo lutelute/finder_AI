@@ -1,0 +1,437 @@
+import AppKit
+import FinderAICore
+
+@MainActor
+private final class SessionTabButton: NSButton {
+    var isActiveTab = false {
+        didSet { needsDisplay = true }
+    }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        layer?.backgroundColor = (
+            isActiveTab ? IntegratedPanelTheme.activeTab : .clear
+        ).cgColor
+        layer?.cornerRadius = 4
+    }
+}
+
+@MainActor
+final class DrawerContentViewController: NSViewController {
+    var onToggle: (() -> Void)?
+    var onResizeDelta: ((CGFloat) -> Void)?
+
+    private let sessionManager: any TerminalSessionManaging
+    private var directoryURL: URL?
+    private var visibleSessions: [any ManagedTerminalSession] = []
+    private var activeSession: (any ManagedTerminalSession)?
+    private var expanded = false
+    private var bodyLayoutConstraints: [NSLayoutConstraint] = []
+
+    private let resizeHandle = ResizeHandleView()
+    private let topBorder = NSView()
+    private let header = NSView()
+    private let toggleButton = NSButton()
+    private let divider = NSView()
+    private let directoryImage = NSImageView()
+    private let pathLabel = NSTextField(labelWithString: "Finder")
+    private let sessionTabs = NSStackView()
+    private let newSessionButton = NSButton()
+    private let closeButton = NSButton()
+
+    private let bodyView = NSView()
+    private let terminalContainer = NSView()
+    private let emptyState = NSStackView()
+    private let shellButton = NSButton()
+    private let codexButton = NSButton()
+    private let claudeButton = NSButton()
+
+    init(sessionManager: any TerminalSessionManaging) {
+        self.sessionManager = sessionManager
+        super.init(nibName: nil, bundle: nil)
+        sessionManager.onChange = { [weak self] in self?.reloadSessions() }
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func loadView() {
+        let root = NSView()
+        root.appearance = NSAppearance(named: .darkAqua)
+        root.wantsLayer = true
+        root.layer?.backgroundColor = IntegratedPanelTheme.background.cgColor
+        view = root
+
+        configureHeader()
+        configureBody()
+
+        [bodyView, header, topBorder, resizeHandle].forEach {
+            $0.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview($0)
+        }
+        NSLayoutConstraint.activate([
+            topBorder.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            topBorder.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            topBorder.topAnchor.constraint(equalTo: root.topAnchor),
+            topBorder.heightAnchor.constraint(equalToConstant: 1),
+
+            resizeHandle.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            resizeHandle.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            resizeHandle.topAnchor.constraint(equalTo: root.topAnchor),
+            resizeHandle.heightAnchor.constraint(equalToConstant: 5),
+
+            header.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            header.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            header.topAnchor.constraint(equalTo: topBorder.bottomAnchor),
+            header.heightAnchor.constraint(equalToConstant: PanelPlacement.collapsedHeight - 1),
+
+            bodyView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            bodyView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            bodyView.topAnchor.constraint(equalTo: header.bottomAnchor),
+            bodyView.bottomAnchor.constraint(equalTo: root.bottomAnchor)
+        ])
+        setExpanded(false)
+    }
+
+    func setDirectory(_ url: URL) {
+        let standardized = url.standardizedFileURL
+        guard directoryURL != standardized else { return }
+        directoryURL = standardized
+        let fullPath = standardized.path(percentEncoded: false)
+        pathLabel.stringValue = standardized.lastPathComponent.isEmpty
+            ? fullPath
+            : standardized.lastPathComponent
+        pathLabel.toolTip = fullPath
+        reloadSessions()
+    }
+
+    func setExpanded(_ expanded: Bool) {
+        self.expanded = expanded
+        if expanded {
+            bodyView.isHidden = false
+            NSLayoutConstraint.activate(bodyLayoutConstraints)
+        } else {
+            NSLayoutConstraint.deactivate(bodyLayoutConstraints)
+            bodyView.isHidden = true
+        }
+        resizeHandle.isHidden = !expanded
+        updateToggleButton()
+    }
+
+    private func configureHeader() {
+        header.wantsLayer = true
+        header.layer?.backgroundColor = IntegratedPanelTheme.header.cgColor
+        topBorder.wantsLayer = true
+        topBorder.layer?.backgroundColor = IntegratedPanelTheme.border.cgColor
+
+        toggleButton.isBordered = false
+        toggleButton.font = .systemFont(ofSize: 11, weight: .semibold)
+        toggleButton.imagePosition = .imageLeading
+        toggleButton.imageHugsTitle = true
+        toggleButton.contentTintColor = IntegratedPanelTheme.text
+        toggleButton.target = self
+        toggleButton.action = #selector(toggle)
+        toggleButton.toolTip = "Terminalパネルを開く／隠す（⌘J）"
+
+        divider.wantsLayer = true
+        divider.layer?.backgroundColor = IntegratedPanelTheme.border.cgColor
+
+        directoryImage.image = NSImage(
+            systemSymbolName: "folder.fill",
+            accessibilityDescription: "現在のフォルダ"
+        )
+        directoryImage.contentTintColor = IntegratedPanelTheme.secondaryText
+        directoryImage.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 11, weight: .medium)
+
+        pathLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        pathLabel.textColor = IntegratedPanelTheme.secondaryText
+        pathLabel.lineBreakMode = .byTruncatingMiddle
+        pathLabel.maximumNumberOfLines = 1
+        pathLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        sessionTabs.orientation = .horizontal
+        sessionTabs.alignment = .centerY
+        sessionTabs.spacing = 2
+        sessionTabs.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+
+        configureIconButton(
+            newSessionButton,
+            symbol: "plus",
+            accessibilityLabel: "新しいTerminalセッション"
+        )
+        newSessionButton.target = self
+        newSessionButton.action = #selector(showNewSessionMenu)
+
+        configureIconButton(
+            closeButton,
+            symbol: "trash",
+            accessibilityLabel: "選択中のセッションを終了"
+        )
+        closeButton.target = self
+        closeButton.action = #selector(closeSession)
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let headerStack = NSStackView(views: [
+            toggleButton,
+            divider,
+            directoryImage,
+            pathLabel,
+            spacer,
+            sessionTabs,
+            newSessionButton,
+            closeButton
+        ])
+        headerStack.orientation = .horizontal
+        headerStack.alignment = .centerY
+        headerStack.spacing = 8
+        headerStack.translatesAutoresizingMaskIntoConstraints = false
+        header.addSubview(headerStack)
+        NSLayoutConstraint.activate([
+            headerStack.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 8),
+            headerStack.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -6),
+            headerStack.topAnchor.constraint(equalTo: header.topAnchor),
+            headerStack.bottomAnchor.constraint(equalTo: header.bottomAnchor),
+            toggleButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 92),
+            divider.widthAnchor.constraint(equalToConstant: 1),
+            divider.heightAnchor.constraint(equalToConstant: 16),
+            directoryImage.widthAnchor.constraint(equalToConstant: 14),
+            directoryImage.heightAnchor.constraint(equalToConstant: 14),
+            pathLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 260),
+            newSessionButton.widthAnchor.constraint(equalToConstant: 26),
+            newSessionButton.heightAnchor.constraint(equalToConstant: 26),
+            closeButton.widthAnchor.constraint(equalToConstant: 26),
+            closeButton.heightAnchor.constraint(equalToConstant: 26)
+        ])
+
+        resizeHandle.onDragDelta = { [weak self] delta in self?.onResizeDelta?(delta) }
+    }
+
+    private func configureBody() {
+        bodyView.wantsLayer = true
+        bodyView.layer?.backgroundColor = IntegratedPanelTheme.terminalBackground.cgColor
+        terminalContainer.wantsLayer = true
+        terminalContainer.layer?.backgroundColor = IntegratedPanelTheme.terminalBackground.cgColor
+
+        let emptyIcon = NSImageView(image: NSImage(
+            systemSymbolName: "terminal",
+            accessibilityDescription: "Terminal"
+        ) ?? NSImage())
+        emptyIcon.contentTintColor = IntegratedPanelTheme.secondaryText
+        emptyIcon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 25, weight: .regular)
+
+        let emptyTitle = NSTextField(labelWithString: "このフォルダでTerminalを開始")
+        emptyTitle.font = .systemFont(ofSize: 14, weight: .medium)
+        emptyTitle.textColor = IntegratedPanelTheme.text
+        let emptyDetail = NSTextField(labelWithString: "閲覧しただけではプロセスを起動しません")
+        emptyDetail.font = .systemFont(ofSize: 11, weight: .regular)
+        emptyDetail.textColor = IntegratedPanelTheme.secondaryText
+
+        configureStartButton(shellButton, title: "Shell", kind: .shell)
+        configureStartButton(codexButton, title: "Codex", kind: .codex)
+        configureStartButton(claudeButton, title: "Claude", kind: .claude)
+        let actions = NSStackView(views: [shellButton, codexButton, claudeButton])
+        actions.orientation = .horizontal
+        actions.alignment = .centerY
+        actions.spacing = 8
+
+        emptyState.orientation = .vertical
+        emptyState.alignment = .centerX
+        emptyState.spacing = 8
+        [emptyIcon, emptyTitle, emptyDetail, actions].forEach(emptyState.addArrangedSubview)
+
+        terminalContainer.translatesAutoresizingMaskIntoConstraints = false
+        emptyState.translatesAutoresizingMaskIntoConstraints = false
+        bodyView.addSubview(terminalContainer)
+        terminalContainer.addSubview(emptyState)
+        bodyLayoutConstraints = [
+            terminalContainer.leadingAnchor.constraint(equalTo: bodyView.leadingAnchor),
+            terminalContainer.trailingAnchor.constraint(equalTo: bodyView.trailingAnchor),
+            terminalContainer.topAnchor.constraint(equalTo: bodyView.topAnchor),
+            terminalContainer.bottomAnchor.constraint(equalTo: bodyView.bottomAnchor),
+            emptyState.centerXAnchor.constraint(equalTo: terminalContainer.centerXAnchor),
+            emptyState.centerYAnchor.constraint(equalTo: terminalContainer.centerYAnchor),
+            emptyState.leadingAnchor.constraint(greaterThanOrEqualTo: terminalContainer.leadingAnchor, constant: 20),
+            emptyState.trailingAnchor.constraint(lessThanOrEqualTo: terminalContainer.trailingAnchor, constant: -20)
+        ]
+    }
+
+    private func configureIconButton(
+        _ button: NSButton,
+        symbol: String,
+        accessibilityLabel: String
+    ) {
+        button.title = ""
+        button.isBordered = false
+        button.image = NSImage(
+            systemSymbolName: symbol,
+            accessibilityDescription: accessibilityLabel
+        )
+        button.imagePosition = .imageOnly
+        button.contentTintColor = IntegratedPanelTheme.secondaryText
+        button.toolTip = accessibilityLabel
+    }
+
+    private func configureStartButton(
+        _ button: NSButton,
+        title: String,
+        kind: TerminalSessionKind
+    ) {
+        button.title = title
+        button.bezelStyle = .rounded
+        button.controlSize = .small
+        button.tag = TerminalSessionKind.allCases.firstIndex(of: kind) ?? 0
+        button.target = self
+        button.action = #selector(startSessionFromButton(_:))
+    }
+
+    private func updateToggleButton() {
+        toggleButton.title = "TERMINAL"
+        toggleButton.image = NSImage(
+            systemSymbolName: expanded ? "chevron.down" : "chevron.up",
+            accessibilityDescription: expanded ? "隠す" : "開く"
+        )
+    }
+
+    private func reloadSessions(prefer preferred: (any ManagedTerminalSession)? = nil) {
+        guard isViewLoaded else { return }
+        visibleSessions = directoryURL.map(sessionManager.sessions(for:)) ?? []
+
+        if let preferred, visibleSessions.contains(where: { $0.id == preferred.id }) {
+            activeSession = preferred
+        } else if let activeSession, visibleSessions.contains(where: { $0.id == activeSession.id }) {
+            self.activeSession = activeSession
+        } else {
+            activeSession = visibleSessions.last
+        }
+
+        sessionTabs.arrangedSubviews.forEach {
+            sessionTabs.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
+        for (index, session) in visibleSessions.enumerated() {
+            let button = SessionTabButton()
+            button.title = session.isRunning
+                ? "●  \(session.kind.displayName)"
+                : session.kind.displayName
+            button.font = .systemFont(ofSize: 11, weight: .medium)
+            button.contentTintColor = session.isRunning
+                ? IntegratedPanelTheme.text
+                : IntegratedPanelTheme.secondaryText
+            button.isBordered = false
+            button.tag = index
+            button.target = self
+            button.action = #selector(selectSession(_:))
+            button.isActiveTab = session.id == activeSession?.id
+            button.toolTip = "\(session.kind.displayName) — \(session.directoryURL.path(percentEncoded: false))"
+            button.translatesAutoresizingMaskIntoConstraints = false
+            button.widthAnchor.constraint(greaterThanOrEqualToConstant: 68).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 26).isActive = true
+            sessionTabs.addArrangedSubview(button)
+        }
+        sessionTabs.isHidden = visibleSessions.isEmpty
+        closeButton.isEnabled = activeSession != nil
+        newSessionButton.isEnabled = directoryURL != nil
+        codexButton.isEnabled = sessionManager.canStart(.codex)
+        codexButton.toolTip = codexButton.isEnabled ? nil : "codexコマンドが見つかりません"
+        claudeButton.isEnabled = sessionManager.canStart(.claude)
+        claudeButton.toolTip = claudeButton.isEnabled ? nil : "claudeコマンドが見つかりません"
+        showActiveTerminal()
+    }
+
+    private func showActiveTerminal() {
+        for subview in terminalContainer.subviews where subview !== emptyState {
+            subview.removeFromSuperview()
+        }
+        guard let session = activeSession else {
+            emptyState.isHidden = false
+            return
+        }
+        emptyState.isHidden = true
+        let terminal = session.contentView
+        terminal.translatesAutoresizingMaskIntoConstraints = false
+        terminalContainer.addSubview(terminal)
+        NSLayoutConstraint.activate([
+            terminal.leadingAnchor.constraint(equalTo: terminalContainer.leadingAnchor, constant: 8),
+            terminal.trailingAnchor.constraint(equalTo: terminalContainer.trailingAnchor, constant: -8),
+            terminal.topAnchor.constraint(equalTo: terminalContainer.topAnchor, constant: 6),
+            terminal.bottomAnchor.constraint(equalTo: terminalContainer.bottomAnchor, constant: -6)
+        ])
+    }
+
+    private func startSession(kind: TerminalSessionKind) {
+        guard let directoryURL else { return }
+        do {
+            let session = try sessionManager.create(kind: kind, directoryURL: directoryURL)
+            reloadSessions(prefer: session)
+            if !expanded { onToggle?() }
+            view.window?.makeFirstResponder(session.contentView)
+        } catch {
+            presentError(title: "セッションを開始できません", message: error.localizedDescription)
+        }
+    }
+
+    @objc private func toggle() {
+        onToggle?()
+    }
+
+    @objc private func showNewSessionMenu() {
+        let menu = NSMenu(title: "新しいTerminalセッション")
+        for (index, kind) in TerminalSessionKind.allCases.enumerated() {
+            let item = NSMenuItem(
+                title: kind.displayName,
+                action: #selector(startSessionFromMenu(_:)),
+                keyEquivalent: ""
+            )
+            item.tag = index
+            item.target = self
+            item.isEnabled = sessionManager.canStart(kind)
+            menu.addItem(item)
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: newSessionButton.bounds.maxY + 2), in: newSessionButton)
+    }
+
+    @objc private func startSessionFromMenu(_ sender: NSMenuItem) {
+        guard TerminalSessionKind.allCases.indices.contains(sender.tag) else { return }
+        startSession(kind: TerminalSessionKind.allCases[sender.tag])
+    }
+
+    @objc private func startSessionFromButton(_ sender: NSButton) {
+        guard TerminalSessionKind.allCases.indices.contains(sender.tag) else { return }
+        startSession(kind: TerminalSessionKind.allCases[sender.tag])
+    }
+
+    @objc private func selectSession(_ sender: NSButton) {
+        guard visibleSessions.indices.contains(sender.tag) else { return }
+        activeSession = visibleSessions[sender.tag]
+        reloadSessions(prefer: activeSession)
+        if let activeSession {
+            view.window?.makeFirstResponder(activeSession.contentView)
+        }
+    }
+
+    @objc private func closeSession() {
+        guard let activeSession else { return }
+        if activeSession.isRunning {
+            let alert = NSAlert()
+            alert.messageText = "実行中の\(activeSession.kind.displayName)を終了しますか？"
+            alert.informativeText = "FinderAIが開始したこのPTYプロセスだけを終了します。"
+            alert.addButton(withTitle: "終了")
+            alert.addButton(withTitle: "キャンセル")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        sessionManager.remove(activeSession)
+        self.activeSession = nil
+        reloadSessions()
+    }
+
+    private func presentError(title: String, message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = title
+        alert.informativeText = message
+        alert.runModal()
+    }
+}
