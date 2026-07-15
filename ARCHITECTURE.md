@@ -36,6 +36,31 @@ FinderAICore（UI非依存）
 
 File Providerや保護フォルダのmetadata問い合わせがAppKit起動を止めないよう、サイドバー作成時の`fileExists`と起動時のGitHub存在確認は行いません。実際の一覧取得エラーは通常状態としてUIに表示します。
 
+## サイドバー
+
+5セクション（ピン留め／よく使う項目／場所／よく使うフォルダ／最近）を`NSTableView`のグループ行で表現します。`WorkspaceSidebarModel`が組み立てを担い、純粋なURL処理です。同一フォルダは最も優先度の高いセクションにだけ出します。
+
+| ソース | 取得 |
+|---|---|
+| ピン留め | `WorkspacePins`（UserDefaultsのパス配列） |
+| よく使う項目 | `FinderFavorites`がFinderの`FavoriteItems.sfl4`を読む |
+| 場所 | `mountedVolumeURLs` |
+| よく使う／最近 | `WorkspaceVisitLog`（訪問回数と最終訪問） |
+
+**Finderのよく使う項目とボリュームは必ずメインスレッド外で読みます。** bookmark解決はTCCに触れ、`mountedVolumeURLs`はネットワークボリュームを待ちます。どちらも起動経路に置けば`pathControl.url`と同じくウインドウを固めます。サイドバーはまずI/O不要な内容で描き、両者が揃ってから差し替えます。
+
+`FavoriteItems.sfl4`はApple非公開の`NSKeyedArchiver`形式です。`SFLListItem`を持たない以上グラフを正しく辿れないため、`$objects`からbookmark blobを走査しています。読めなければ組み込みの場所へ落ちるだけで、エラーにはしません。
+
+## 複数ウインドウ
+
+`WorkspaceAppCoordinator`が最大20枚を保持します。`TerminalSessionManager`はアプリ全体で1つで、セッションはフォルダと種類で一意なので、同じフォルダを2つのウインドウで開いてもPTYは1つです。
+
+- **メニュー項目のtargetはnilです。** 以前は`workspace.browser`（1枚目のブラウザ）を明示指定しており、単一ウインドウでは見えない問題でしたが、複数ウインドウでは常に1枚目へコマンドが飛びます。nilにしてレスポンダチェーンでキーウインドウへ届かせます。
+- **`tabbingMode`は`.automatic`です。** `.preferred`はAppKitが新規ウインドウを既存ウインドウのタブへ強制的に統合するため、`⌘N`が同じ座標の2枚目のタブを作るだけになっていました。
+- カスケードは呼び出し側が走る点を保持します。連続して開くと`NSApp.keyWindow`が更新されないため、「最前面のウインドウ」から都度オフセットを求めると全部が同じ場所に重なります。
+- フレームの自動保存は1枚目だけです。全ウインドウが同じautosave名を持つと互いの位置を上書きします。
+- 最後のウインドウを閉じてもアプリは終了しません。ドロワーのセッションが動いたままになるためです。
+
 ## WorkspaceFileService
 
 ファイル操作はFoundationの`FileManager`だけを使用します。

@@ -4,16 +4,73 @@ import AppKit
 final class WorkspaceAppCoordinator {
     private let sessionManager: any TerminalSessionManaging = TerminalSessionManager()
     private let preferences = WorkspacePreferences()
-    private lazy var workspace = WorkspaceWindowController(
-        sessionManager: sessionManager,
-        initialDirectory: Self.defaultDirectory(),
-        preferences: preferences
-    )
+    private var windows: [WorkspaceWindowController] = []
+
+    /// Terminal sessions are keyed by folder and kind across the whole app, so two
+    /// windows on the same folder share one shell rather than racing to spawn a
+    /// second. That makes the manager app-wide, not per-window.
+    static let windowLimit = 20
+
+    private var workspace: WorkspaceWindowController {
+        windows.first ?? makeWindow(directory: Self.defaultDirectory())
+    }
 
     func start() {
         configureMainMenu()
-        workspace.show()
+        _ = makeWindow(directory: Self.defaultDirectory())
+        windows.first?.show()
         restoreLastDirectory()
+    }
+
+    @discardableResult
+    private func makeWindow(directory: URL) -> WorkspaceWindowController {
+        let controller = WorkspaceWindowController(
+            sessionManager: sessionManager,
+            initialDirectory: directory,
+            preferences: preferences,
+            // Only the first window restores the saved frame; the rest cascade off
+            // it, or they would all stack on the same rectangle.
+            restoresFrame: windows.isEmpty
+        )
+        controller.onClose = { [weak self, weak controller] in
+            guard let self, let controller else { return }
+            self.windows.removeAll { $0 === controller }
+        }
+        windows.append(controller)
+        return controller
+    }
+
+    /// New windows open on the key window's folder, which is nearly always what
+    /// "another window of this" means.
+    @objc func newWindow() {
+        guard windows.count < Self.windowLimit else {
+            let alert = NSAlert()
+            alert.messageText = "ウインドウは\(Self.windowLimit)個までです"
+            alert.informativeText = "使っていないウインドウを閉じてから開いてください。"
+            if let window = NSApp.keyWindow {
+                alert.beginSheetModal(for: window)
+            } else {
+                alert.runModal()
+            }
+            return
+        }
+
+        let front = frontmostWindow
+        let directory = front?.browser.currentDirectory ?? Self.defaultDirectory()
+        // Seed the walk from the window this one came from, then let it run.
+        if cascadePoint == .zero, let front {
+            cascadePoint = front.cascadeOrigin
+        }
+        let controller = makeWindow(directory: directory)
+        cascadePoint = controller.cascade(from: cascadePoint)
+        controller.show()
+    }
+
+    private var cascadePoint: NSPoint = .zero
+
+    private var frontmostWindow: WorkspaceWindowController? {
+        windows.first { $0.window === NSApp.keyWindow }
+            ?? windows.first { $0.window?.isVisible == true }
     }
 
     /// The window opens on the always-known home URL first, then moves to the
@@ -43,8 +100,15 @@ final class WorkspaceAppCoordinator {
         }.value
     }
 
+    /// Clicking the Dock icon with every window closed has to produce a window,
+    /// not silently do nothing.
     func showWorkspace() {
-        workspace.show()
+        if let existing = frontmostWindow ?? windows.first {
+            existing.show()
+            return
+        }
+        let controller = makeWindow(directory: preferences.lastDirectory ?? Self.defaultDirectory())
+        controller.show()
     }
 
     func prepareForTermination() -> NSApplication.TerminateReply {
@@ -96,6 +160,12 @@ final class WorkspaceAppCoordinator {
 
         let fileItem = NSMenuItem()
         let fileMenu = NSMenu(title: "ファイル")
+        // The coordinator owns the window list, so this one keeps an explicit
+        // target instead of riding the responder chain.
+        let newWindowItem = NSMenuItem(title: "新規ウインドウ", action: #selector(newWindow), keyEquivalent: "n")
+        newWindowItem.target = self
+        fileMenu.addItem(newWindowItem)
+        fileMenu.addItem(.separator())
         fileMenu.addItem(item("フォルダを開く…", action: #selector(WorkspaceBrowserViewController.openFolderChooser), key: "o"))
         let newFolder = item("新規フォルダ", action: #selector(WorkspaceBrowserViewController.createFolder), key: "n")
         newFolder.keyEquivalentModifierMask = [.command, .shift]
@@ -139,10 +209,11 @@ final class WorkspaceAppCoordinator {
 
         let viewItem = NSMenuItem()
         let viewMenu = NSMenu(title: "表示")
-        viewMenu.addItem(item("Terminalを開く／隠す", target: workspace, action: #selector(WorkspaceWindowController.toggleTerminal), key: "j"))
+        viewMenu.addItem(item("Terminalを開く／隠す", action: #selector(WorkspaceWindowController.toggleTerminal), key: "j"))
         let hidden = item("隠しファイルを表示／隠す", action: #selector(WorkspaceBrowserViewController.toggleHiddenFiles), key: ".")
         hidden.keyEquivalentModifierMask = [.command, .shift]
         viewMenu.addItem(hidden)
+        viewMenu.addItem(item("サイドバーにピン留め／解除", action: #selector(WorkspaceBrowserViewController.togglePin), key: "d"))
         viewMenu.addItem(.separator())
         viewMenu.addItem(item("このフォルダを検索", action: #selector(WorkspaceBrowserViewController.focusSearchField), key: "f"))
         viewItem.submenu = viewMenu
@@ -151,21 +222,29 @@ final class WorkspaceAppCoordinator {
         let windowItem = NSMenuItem()
         let windowMenu = NSMenu(title: "ウインドウ")
         windowMenu.addItem(NSMenuItem(title: "しまう", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m"))
+        windowMenu.addItem(NSMenuItem(title: "閉じる", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"))
+        windowMenu.addItem(.separator())
+        windowMenu.addItem(NSMenuItem(title: "すべてを手前に移動", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: ""))
         windowItem.submenu = windowMenu
         main.addItem(windowItem)
+        // Populates the window list and keeps the checkmark on the key window.
+        NSApp.windowsMenu = windowMenu
 
         NSApp.mainMenu = main
     }
 
+    /// Target stays nil so AppKit walks the responder chain and the command lands
+    /// on whichever window is key.
+    ///
+    /// These used to target `workspace.browser` — the first window's browser —
+    /// which was invisible with one window and would have sent every menu command
+    /// to window 1 regardless of what the user was looking at.
     private func item(
         _ title: String,
-        target: AnyObject? = nil,
         action: Selector,
         key: String
     ) -> NSMenuItem {
-        let menuItem = NSMenuItem(title: title, action: action, keyEquivalent: key)
-        menuItem.target = target ?? workspace.browser
-        return menuItem
+        NSMenuItem(title: title, action: action, keyEquivalent: key)
     }
 
     private static func defaultDirectory() -> URL {

@@ -79,6 +79,34 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
     }
 }
 
+@MainActor
+private final class WorkspaceSidebarHeaderView: NSTableCellView {
+    private let label = NSTextField(labelWithString: "")
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        identifier = NSUserInterfaceItemIdentifier("WorkspaceSidebarHeader")
+        label.font = .systemFont(ofSize: 10.5, weight: .semibold)
+        label.textColor = IntegratedPanelTheme.secondaryText
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4)
+        ])
+        textField = label
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func configure(title: String) {
+        label.stringValue = title.uppercased()
+    }
+}
+
 /// Table subclass that routes the keys a file list is expected to answer.
 /// `NSTableView` has no built-in notion of "open the selection", so Return and
 /// Space have to be claimed here rather than left to the responder chain.
@@ -104,10 +132,11 @@ final class WorkspaceBrowserViewController: NSViewController {
     var onDirectoryChange: ((URL) -> Void)?
     var onToggleTerminal: (() -> Void)?
 
-    private struct SidebarLocation: Equatable {
-        let title: String
-        let url: URL
-        let symbol: String
+    /// A flattened section list: `NSTableView` has no sections, so headers and
+    /// items share one row space and `isGroupRow` tells them apart.
+    private enum SidebarRow: Equatable {
+        case header(String)
+        case item(WorkspaceSidebarModel.Item)
     }
 
     private enum Column {
@@ -132,7 +161,11 @@ final class WorkspaceBrowserViewController: NSViewController {
     private var quickLookURLs: [URL] = []
     private var pathComponentURLs: [URL] = []
 
-    private lazy var sidebarLocations = Self.makeSidebarLocations()
+    private var sidebarRows: [SidebarRow] = []
+    private var finderFavorites: [URL] = []
+    private var volumes: [URL] = []
+    private var sidebarLoadTask: Task<Void, Never>?
+    private nonisolated(unsafe) var volumeObservers: [any NSObjectProtocol] = []
     private let sidebarTable = NSTableView()
     private let fileTable = WorkspaceFileTableView()
     private let pathControl = NSPathControl()
@@ -160,6 +193,11 @@ final class WorkspaceBrowserViewController: NSViewController {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        let center = NSWorkspace.shared.notificationCenter
+        volumeObservers.forEach(center.removeObserver)
     }
 
     var currentDirectory: URL { navigator.currentDirectory }
@@ -192,6 +230,10 @@ final class WorkspaceBrowserViewController: NSViewController {
         split.setHoldingPriority(.defaultHigh, forSubviewAt: 0)
 
         configureContextMenu()
+        // Draw the sidebar from what needs no I/O, then fill in Finder's
+        // favourites and the mounted volumes once they arrive.
+        rebuildSidebar()
+        loadSidebarSources()
         updateNavigationUI()
         reloadContents()
         watchCurrentDirectory()
@@ -200,6 +242,24 @@ final class WorkspaceBrowserViewController: NSViewController {
     override func viewDidAppear() {
         super.viewDidAppear()
         view.window?.makeFirstResponder(fileTable)
+        observeVolumeChanges()
+    }
+
+    /// Plugging a drive in or ejecting one should be reflected without a restart.
+    /// These post on `NSWorkspace`'s own centre, not the default one.
+    private func observeVolumeChanges() {
+        guard volumeObservers.isEmpty else { return }
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification] {
+            let observer = center.addObserver(
+                forName: name,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.loadSidebarSources() }
+            }
+            volumeObservers.append(observer)
+        }
     }
 
     override func viewDidLayout() {
@@ -425,35 +485,142 @@ final class WorkspaceBrowserViewController: NSViewController {
         let items: [(String, Selector)] = [
             ("開く", #selector(openSelection)),
             ("Finderで表示", #selector(revealSelectionInFinder)),
+            ("サイドバーにピン留め", #selector(togglePin)),
             ("名前を変更…", #selector(renameSelection)),
             ("新規フォルダ", #selector(createFolder)),
             ("ゴミ箱に入れる…", #selector(trashSelection))
         ]
         for (index, pair) in items.enumerated() {
-            if index == 3 || index == 4 { menu.addItem(.separator()) }
+            if index == 4 || index == 5 { menu.addItem(.separator()) }
             let item = NSMenuItem(title: pair.0, action: pair.1, keyEquivalent: "")
             item.target = self
             menu.addItem(item)
         }
         fileTable.menu = menu
+        configureSidebarContextMenu()
     }
 
-    private static func makeSidebarLocations() -> [SidebarLocation] {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let candidates: [(String, URL, String)] = [
-            ("ホーム", home, "house.fill"),
-            ("デスクトップ", home.appendingPathComponent("Desktop", isDirectory: true), "desktopcomputer"),
-            ("書類", home.appendingPathComponent("Documents", isDirectory: true), "doc.fill"),
-            ("ダウンロード", home.appendingPathComponent("Downloads", isDirectory: true), "arrow.down.circle.fill"),
-            ("GitHub", home.appendingPathComponent("Documents/GitHub", isDirectory: true), "chevron.left.forwardslash.chevron.right"),
-            ("Macintosh HD", URL(fileURLWithPath: "/", isDirectory: true), "internaldrive.fill")
-        ]
-        return candidates.map { title, url, symbol in
-            SidebarLocation(
-                title: title,
-                url: url.standardizedFileURL,
-                symbol: symbol
-            )
+    private func configureSidebarContextMenu() {
+        let menu = NSMenu(title: "サイドバー")
+        menu.delegate = self
+        let unpin = NSMenuItem(
+            title: "ピン留めを解除",
+            action: #selector(unpinClickedSidebarRow),
+            keyEquivalent: ""
+        )
+        unpin.target = self
+        menu.addItem(unpin)
+        let reveal = NSMenuItem(
+            title: "Finderで表示",
+            action: #selector(revealClickedSidebarRow),
+            keyEquivalent: ""
+        )
+        reveal.target = self
+        menu.addItem(reveal)
+        sidebarTable.menu = menu
+    }
+
+    private var clickedSidebarItem: WorkspaceSidebarModel.Item? {
+        let row = sidebarTable.clickedRow
+        guard sidebarRows.indices.contains(row),
+              case .item(let item) = sidebarRows[row] else { return nil }
+        return item
+    }
+
+    @objc private func unpinClickedSidebarRow() {
+        guard let item = clickedSidebarItem else { return }
+        var pins = preferences.pins
+        pins.unpin(item.url)
+        preferences.pins = pins
+        rebuildSidebar()
+    }
+
+    @objc private func revealClickedSidebarRow() {
+        guard let item = clickedSidebarItem else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([item.url])
+    }
+
+    private static var homeDirectory: URL { FileManager.default.homeDirectoryForCurrentUser }
+
+    /// Rebuilds the sidebar from what is currently known.
+    ///
+    /// Pure and synchronous: everything that reaches the filesystem (Finder's
+    /// favourites, mounted volumes) is loaded elsewhere and only handed in here,
+    /// so this stays safe to call from the launch path.
+    private func rebuildSidebar() {
+        let pins = preferences.pins
+        let log = preferences.visitLog
+        let claimed = Set(
+            pins.storedPaths
+                + finderFavorites.map(\.path)
+                + volumes.map(\.path)
+        )
+
+        let sections = WorkspaceSidebarModel.sections(
+            .init(
+                pins: pins.urls,
+                favorites: finderFavorites.isEmpty
+                    ? WorkspaceSidebarModel.fallbackFavorites(home: Self.homeDirectory)
+                    : finderFavorites,
+                volumes: volumes,
+                frequent: log.frequent(limit: 5, excluding: claimed),
+                recent: log.recent(limit: 5, excluding: claimed)
+            ),
+            home: Self.homeDirectory
+        )
+
+        sidebarRows = sections.flatMap { section in
+            [SidebarRow.header(section.title)] + section.items.map(SidebarRow.item)
+        }
+        sidebarTable.reloadData()
+        updateSidebarSelection()
+    }
+
+    /// Loads the two sources that touch the filesystem.
+    ///
+    /// Both are off the main thread on purpose. Resolving Finder's bookmarks
+    /// reaches TCC, and `mountedVolumeURLs` waits on network volumes — the user
+    /// has NAS shares mounted, and either would freeze the window on the launch
+    /// path exactly as `pathControl.url` used to.
+    private func loadSidebarSources() {
+        sidebarLoadTask?.cancel()
+        sidebarLoadTask = Task.detached(priority: .utility) { [weak self] in
+            let favorites = FinderFavorites.directories()
+            let volumes = Self.mountedVolumes()
+            guard !Task.isCancelled else { return }
+            await self?.applySidebarSources(favorites: favorites, volumes: volumes)
+        }
+    }
+
+    private func applySidebarSources(favorites: [URL], volumes: [URL]) {
+        guard finderFavorites != favorites || self.volumes != volumes else { return }
+        finderFavorites = favorites
+        self.volumes = volumes
+        rebuildSidebar()
+    }
+
+    private nonisolated static func mountedVolumes() -> [URL] {
+        FileManager.default.mountedVolumeURLs(
+            includingResourceValuesForKeys: [.volumeIsBrowsableKey],
+            options: [.skipHiddenVolumes]
+        )?.filter { url in
+            // Non-browsable volumes are things like the sealed system snapshot;
+            // Finder does not offer them either.
+            (try? url.resourceValues(forKeys: [.volumeIsBrowsableKey]))?
+                .volumeIsBrowsable ?? false
+        }.map(\.standardizedFileURL) ?? []
+    }
+
+    private func updateSidebarSelection() {
+        let current = navigator.currentDirectory.path
+        let index = sidebarRows.firstIndex { row in
+            if case .item(let item) = row { return item.url.path == current }
+            return false
+        }
+        if let index {
+            sidebarTable.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+        } else {
+            sidebarTable.deselectAll(nil)
         }
     }
 
@@ -470,10 +637,24 @@ final class WorkspaceBrowserViewController: NSViewController {
         reloadContents()
         watchCurrentDirectory()
         preferences.lastDirectory = directory
+        recordVisit(directory)
         onDirectoryChange?(directory)
         view.window?.title = directory.lastPathComponent.isEmpty
             ? directory.path
             : directory.lastPathComponent
+    }
+
+    /// Rebuilds the sidebar only when the ranking actually moved, so navigating
+    /// does not reload the table on every single folder change.
+    private func recordVisit(_ directory: URL) {
+        var log = preferences.visitLog
+        let before = sidebarRows
+        log.record(directory, now: Date())
+        preferences.visitLog = log
+
+        rebuildSidebar()
+        if sidebarRows == before { return }
+        updateSidebarSelection()
     }
 
     private func watchCurrentDirectory() {
@@ -492,11 +673,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         forwardButton.isEnabled = navigator.canGoForward
         upButton.isEnabled = navigator.canGoUp
         updatePathControl(for: navigator.currentDirectory)
-        if let index = sidebarLocations.firstIndex(where: { $0.url == navigator.currentDirectory }) {
-            sidebarTable.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
-        } else {
-            sidebarTable.deselectAll(nil)
-        }
+        updateSidebarSelection()
     }
 
     /// Builds the breadcrumb without letting AppKit resolve it.
@@ -857,6 +1034,35 @@ final class WorkspaceBrowserViewController: NSViewController {
         onToggleTerminal?()
     }
 
+    /// Pins the selected folders, or the current one when nothing is selected —
+    /// the folder you are looking at is the one you usually mean.
+    @objc func togglePin() {
+        let targets = selectedItems.filter(\.isDirectory).map(\.url)
+        let urls = targets.isEmpty ? [navigator.currentDirectory] : targets
+        var pins = preferences.pins
+
+        // Mixed selections would make a toggle ambiguous, so the first item
+        // decides: if it is pinned this unpins, otherwise it pins.
+        let shouldUnpin = urls.first.map(pins.contains) ?? false
+        var refused: [String] = []
+        for url in urls {
+            if shouldUnpin {
+                pins.unpin(url)
+            } else if !pins.pin(url), !pins.contains(url) {
+                refused.append(url.lastPathComponent)
+            }
+        }
+        preferences.pins = pins
+        rebuildSidebar()
+
+        guard !refused.isEmpty else { return }
+        presentError(
+            title: "ピン留めできません",
+            message: "ピン留めは\(WorkspacePins.capacity)件までです。"
+                + "サイドバーで不要なものを解除してください。"
+        )
+    }
+
     @objc func toggleHiddenFiles() {
         preferences.showHiddenFiles.toggle()
         reloadContents()
@@ -914,7 +1120,24 @@ extension WorkspaceBrowserViewController: @preconcurrency QLPreviewPanelDataSour
 
 extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDelegate {
     func numberOfRows(in tableView: NSTableView) -> Int {
-        tableView === sidebarTable ? sidebarLocations.count : displayedItems.count
+        tableView === sidebarTable ? sidebarRows.count : displayedItems.count
+    }
+
+    func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool {
+        guard tableView === sidebarTable, sidebarRows.indices.contains(row) else { return false }
+        if case .header = sidebarRows[row] { return true }
+        return false
+    }
+
+    /// Headers are labels, not destinations.
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
+        guard tableView === sidebarTable else { return true }
+        return !self.tableView(tableView, isGroupRow: row)
+    }
+
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        guard tableView === sidebarTable else { return 27 }
+        return self.tableView(tableView, isGroupRow: row) ? 24 : 29
     }
 
     func tableView(
@@ -923,14 +1146,24 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
         row: Int
     ) -> NSView? {
         if tableView === sidebarTable {
-            guard sidebarLocations.indices.contains(row) else { return nil }
-            let cell = tableView.makeView(
-                withIdentifier: NSUserInterfaceItemIdentifier("WorkspaceSidebarCell"),
-                owner: self
-            ) as? WorkspaceSidebarCellView ?? WorkspaceSidebarCellView()
-            let location = sidebarLocations[row]
-            cell.configure(title: location.title, symbol: location.symbol)
-            return cell
+            guard sidebarRows.indices.contains(row) else { return nil }
+            switch sidebarRows[row] {
+            case .header(let title):
+                let cell = tableView.makeView(
+                    withIdentifier: NSUserInterfaceItemIdentifier("WorkspaceSidebarHeader"),
+                    owner: self
+                ) as? WorkspaceSidebarHeaderView ?? WorkspaceSidebarHeaderView()
+                cell.configure(title: title)
+                return cell
+            case .item(let item):
+                let cell = tableView.makeView(
+                    withIdentifier: NSUserInterfaceItemIdentifier("WorkspaceSidebarCell"),
+                    owner: self
+                ) as? WorkspaceSidebarCellView ?? WorkspaceSidebarCellView()
+                cell.configure(title: item.title, symbol: item.symbol)
+                cell.toolTip = item.url.path(percentEncoded: false)
+                return cell
+            }
         }
 
         guard displayedItems.indices.contains(row), let tableColumn else { return nil }
@@ -981,13 +1214,11 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard notification.object as? NSTableView === fileTable else {
-            if let row = sidebarTable.selectedRowIndexes.first,
-               sidebarLocations.indices.contains(row) {
-                let url = sidebarLocations[row].url
-                if url != navigator.currentDirectory {
-                    navigate(to: url)
-                }
-            }
+            guard let row = sidebarTable.selectedRowIndexes.first,
+                  sidebarRows.indices.contains(row),
+                  case .item(let item) = sidebarRows[row],
+                  item.url != navigator.currentDirectory else { return }
+            navigate(to: item.url)
             return
         }
         updateStatus()
@@ -1090,6 +1321,15 @@ extension WorkspaceBrowserViewController: NSSearchFieldDelegate {
 
 extension WorkspaceBrowserViewController: NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
+        if menu === sidebarTable.menu {
+            let item = clickedSidebarItem
+            let pins = preferences.pins
+            menu.item(withTitle: "ピン留めを解除")?.isEnabled =
+                item.map { pins.contains($0.url) } ?? false
+            menu.item(withTitle: "Finderで表示")?.isEnabled = item != nil
+            return
+        }
+
         let clickedRow = fileTable.clickedRow
         if displayedItems.indices.contains(clickedRow),
            !fileTable.selectedRowIndexes.contains(clickedRow) {
@@ -1100,6 +1340,17 @@ extension WorkspaceBrowserViewController: NSMenuDelegate {
         menu.item(withTitle: "Finderで表示")?.isEnabled = true
         menu.item(withTitle: "名前を変更…")?.isEnabled = selectionCount == 1
         menu.item(withTitle: "ゴミ箱に入れる…")?.isEnabled = selectionCount > 0
+
+        // Pinning targets folders; with nothing selected it means the folder on
+        // screen, which is always a folder.
+        let folders = selectedItems.filter(\.isDirectory).map(\.url)
+        let target = folders.first ?? navigator.currentDirectory
+        let pinItem = menu.item(withTitle: "サイドバーにピン留め")
+            ?? menu.item(withTitle: "サイドバーのピン留めを解除")
+        pinItem?.isEnabled = selectedItems.isEmpty || !folders.isEmpty
+        pinItem?.title = preferences.pins.contains(target)
+            ? "サイドバーのピン留めを解除"
+            : "サイドバーにピン留め"
     }
 }
 

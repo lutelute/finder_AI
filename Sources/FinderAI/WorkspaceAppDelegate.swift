@@ -15,8 +15,11 @@ final class WorkspaceAppDelegate: NSObject, NSApplicationDelegate {
         coordinator?.prepareForTermination() ?? .terminateNow
     }
 
+    /// Quitting with the last window is right for a single-window app; with ⌘N it
+    /// would also mean closing your only open window kills sessions running in the
+    /// drawer. `showWorkspace` below reopens a window from the Dock instead.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        false
     }
 
     func applicationShouldHandleReopen(

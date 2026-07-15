@@ -1,3 +1,4 @@
+import FinderAICore
 import Foundation
 
 /// Durable UI state. Everything here is a convenience the user re-establishes by
@@ -19,6 +20,33 @@ struct WorkspacePreferences {
         static let terminalHeight = "workspace.terminalHeight"
         static let terminalExpanded = "workspace.terminalExpanded"
         static let lastDirectory = "workspace.lastDirectory"
+        static let pins = "workspace.pins"
+        static let visits = "workspace.visits"
+    }
+
+    // MARK: - Sidebar
+
+    /// Paths, not bookmarks — see `lastDirectory` for why.
+    var pins: WorkspacePins {
+        get { WorkspacePins(paths: defaults.stringArray(forKey: Key.pins) ?? []) }
+        nonmutating set { defaults.set(newValue.storedPaths, forKey: Key.pins) }
+    }
+
+    /// A corrupt log costs the user nothing to rebuild, so a decode failure starts
+    /// over instead of surfacing.
+    var visitLog: WorkspaceVisitLog {
+        get {
+            guard let data = defaults.data(forKey: Key.visits),
+                  let visits = try? JSONDecoder().decode(
+                      [WorkspaceVisitLog.Visit].self,
+                      from: data
+                  ) else { return WorkspaceVisitLog() }
+            return WorkspaceVisitLog(visits: visits)
+        }
+        nonmutating set {
+            guard let data = try? JSONEncoder().encode(newValue.all) else { return }
+            defaults.set(data, forKey: Key.visits)
+        }
     }
 
     // MARK: - Sidebar

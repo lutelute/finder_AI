@@ -11,12 +11,17 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     private var positioned = false
     private let preferences: WorkspacePreferences
 
+    var onClose: (() -> Void)?
+    private let restoresFrame: Bool
+
     init(
         sessionManager: any TerminalSessionManaging,
         initialDirectory: URL,
-        preferences: WorkspacePreferences = WorkspacePreferences()
+        preferences: WorkspacePreferences = WorkspacePreferences(),
+        restoresFrame: Bool = true
     ) {
         self.preferences = preferences
+        self.restoresFrame = restoresFrame
         browser = WorkspaceBrowserViewController(
             initialDirectory: initialDirectory,
             preferences: preferences
@@ -43,7 +48,13 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 820, height: 520)
         window.collectionBehavior = [.fullScreenPrimary]
-        window.tabbingMode = .preferred
+        // `.preferred` forces every new window to merge into the existing one as a
+        // tab: ⌘N produced a second tab at the identical frame, not a window.
+        // `.automatic` follows the user's "Prefer tabs" setting, whose default is
+        // full screen only — so ⌘N gives a real window, and anyone who wants tabs
+        // still gets them.
+        window.tabbingMode = .automatic
+        window.tabbingIdentifier = "FinderAIWorkspace"
         window.contentViewController = rootController
         super.init(window: window)
         window.delegate = self
@@ -104,9 +115,10 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func show() {
-        if !positioned {
-            // Let AppKit restore the saved frame; centre only on a first run where
-            // there is nothing to restore.
+        // Only the first window claims the autosaved frame. Giving every window
+        // the same autosave name would have them overwrite each other's position
+        // and reopen stacked.
+        if !positioned, restoresFrame {
             if window?.setFrameUsingName(Self.frameAutosaveName) != true {
                 window?.center()
             }
@@ -118,7 +130,41 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// Places this window one step along the cascade and returns where the next
+    /// one goes.
+    ///
+    /// The running point has to be owned by the caller, not derived from "the
+    /// window in front": opening several in a row leaves the key window unchanged
+    /// between calls, so every new window cascaded off window 1 and landed on the
+    /// same spot. `cascadeTopLeft(from:)` is AppKit's own walk and wraps back to
+    /// the top when it reaches the screen edge.
+    @discardableResult
+    func cascade(from point: NSPoint) -> NSPoint {
+        positioned = true
+        guard let window else { return point }
+        let seed = point == .zero
+            ? NSPoint(x: window.frame.minX, y: window.frame.maxY)
+            : point
+        return window.cascadeTopLeft(from: seed)
+    }
+
+    /// Where the *next* window should go if the cascade starts from this one.
+    ///
+    /// `cascadeTopLeft(from:)` places the window at the point it is given and
+    /// returns the following slot, so handing it this window's own top-left leaves
+    /// the window exactly where it is and yields the next position. Seeding a
+    /// cascade with the raw origin instead drops the new window straight onto this
+    /// one.
+    var cascadeOrigin: NSPoint {
+        guard let window else { return .zero }
+        return window.cascadeTopLeft(from: NSPoint(x: window.frame.minX, y: window.frame.maxY))
+    }
+
     private static let frameAutosaveName = NSWindow.FrameAutosaveName("FinderAIWorkspaceWindow")
+
+    func windowWillClose(_ notification: Notification) {
+        onClose?()
+    }
 
     @objc func toggleTerminal() {
         terminalExpanded.toggle()

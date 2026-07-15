@@ -99,6 +99,83 @@ struct WorkspaceWindowLayoutTests {
         #expect(controller.clampedTerminalHeight(300) == 160)
     }
 
+    /// Every window sharing one autosave name would have them overwrite each
+    /// other's saved position and reopen stacked.
+    @Test("only the frame-restoring window claims the autosave name")
+    func onlyOneWindowAutosaves() throws {
+        _ = NSApplication.shared
+        let restoring = WorkspaceWindowController(
+            sessionManager: TerminalSessionManager(),
+            initialDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            preferences: Self.isolatedPreferences(),
+            restoresFrame: true
+        )
+        let cascading = WorkspaceWindowController(
+            sessionManager: TerminalSessionManager(),
+            initialDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            preferences: Self.isolatedPreferences(),
+            restoresFrame: false
+        )
+        restoring.show()
+        cascading.cascade(from: restoring.cascadeOrigin)
+
+        #expect(restoring.window?.frameAutosaveName == "FinderAIWorkspaceWindow")
+        #expect(cascading.window?.frameAutosaveName.isEmpty == true)
+        restoring.close()
+        cascading.close()
+    }
+
+    /// Opening several in a row leaves the key window unchanged between calls, so
+    /// deriving each offset from "the window in front" stacked them all on one
+    /// spot. The running point is what keeps them apart.
+    @Test("each cascaded window lands somewhere new")
+    func cascadeWalks() throws {
+        _ = NSApplication.shared
+        let first = WorkspaceWindowController(
+            sessionManager: TerminalSessionManager(),
+            initialDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            preferences: Self.isolatedPreferences()
+        )
+        let window = try #require(first.window)
+        window.setFrameOrigin(NSPoint(x: 200, y: 200))
+
+        var point = first.cascadeOrigin
+        var origins: [NSPoint] = [window.frame.origin]
+        var controllers: [WorkspaceWindowController] = [first]
+
+        for _ in 0..<3 {
+            let next = WorkspaceWindowController(
+                sessionManager: TerminalSessionManager(),
+                initialDirectory: FileManager.default.homeDirectoryForCurrentUser,
+                preferences: Self.isolatedPreferences(),
+                restoresFrame: false
+            )
+            point = next.cascade(from: point)
+            origins.append(try #require(next.window).frame.origin)
+            controllers.append(next)
+        }
+
+        let distinct = Set(origins.map { "\($0.x),\($0.y)" })
+        #expect(distinct.count == origins.count)
+        controllers.forEach { $0.close() }
+    }
+
+    @Test("closing a window reports itself so the coordinator can release it")
+    func closeIsReported() throws {
+        _ = NSApplication.shared
+        let controller = WorkspaceWindowController(
+            sessionManager: TerminalSessionManager(),
+            initialDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            preferences: Self.isolatedPreferences()
+        )
+        var closed = false
+        controller.onClose = { closed = true }
+        controller.showWindow(nil)
+        controller.close()
+
+        #expect(closed)
+    }
+
     private func firstSplitView(in view: NSView) -> NSSplitView? {
         if let split = view as? NSSplitView { return split }
         return view.subviews.lazy.compactMap(firstSplitView).first
