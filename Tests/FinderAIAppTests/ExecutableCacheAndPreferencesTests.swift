@@ -145,16 +145,4 @@ struct WorkspacePreferencesTests {
         preferences.lastDirectory = folder
         #expect(preferences.lastDirectory?.standardizedFileURL == folder.standardizedFileURL)
     }
-
-    @Test("a deleted folder is not restored")
-    func lastDirectoryIgnoresMissingFolder() throws {
-        let preferences = WorkspacePreferences(defaults: try makeDefaults())
-        let folder = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-            .appendingPathComponent("prefs-gone-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        preferences.lastDirectory = folder
-        try FileManager.default.removeItem(at: folder)
-
-        #expect(preferences.lastDirectory == nil)
-    }
 }

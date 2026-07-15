@@ -55,6 +55,50 @@ struct WorkspaceWindowLayoutTests {
         #expect(abs(split.subviews[1].frame.width - 899) < 2)
     }
 
+    /// A terminal tall enough to squeeze the file list used to just clip it: the
+    /// status bar and last rows went out of view with nothing to stop them.
+    @Test("terminal height yields to the file list's minimum")
+    func terminalCannotEatTheFileList() throws {
+        _ = NSApplication.shared
+        let controller = WorkspaceWindowController(
+            sessionManager: TerminalSessionManager(),
+            initialDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            preferences: Self.isolatedPreferences()
+        )
+        let window = try #require(controller.window)
+        window.setContentSize(NSSize(width: 1180, height: 760))
+        window.contentView?.layoutSubtreeIfNeeded()
+
+        let contentHeight = try #require(window.contentView?.bounds.height)
+        let ceiling = contentHeight - WorkspaceWindowController.minimumBrowserHeight
+
+        // Asking for more than fits is capped, not honoured.
+        #expect(controller.clampedTerminalHeight(5_000) <= ceiling)
+        #expect(controller.clampedTerminalHeight(5_000) <= 600)
+        // A reasonable request is untouched.
+        #expect(controller.clampedTerminalHeight(300) == 300)
+        // Below the floor is raised, never negative.
+        #expect(controller.clampedTerminalHeight(10) == 160)
+        #expect(controller.clampedTerminalHeight(-500) == 160)
+    }
+
+    @Test("a window too short for both still returns a usable height")
+    func shortWindowDoesNotProduceNonsense() throws {
+        _ = NSApplication.shared
+        let controller = WorkspaceWindowController(
+            sessionManager: TerminalSessionManager(),
+            initialDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            preferences: Self.isolatedPreferences()
+        )
+        let window = try #require(controller.window)
+        window.setContentSize(NSSize(width: 820, height: 260))
+        window.contentView?.layoutSubtreeIfNeeded()
+
+        // 260 - 220 leaves less than the 160 floor; the result must still be the
+        // floor rather than a negative or zero height.
+        #expect(controller.clampedTerminalHeight(300) == 160)
+    }
+
     private func firstSplitView(in view: NSView) -> NSSplitView? {
         if let split = view as? NSSplitView { return split }
         return view.subviews.lazy.compactMap(firstSplitView).first

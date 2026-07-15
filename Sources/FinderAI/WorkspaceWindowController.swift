@@ -2,7 +2,7 @@ import AppKit
 import FinderAICore
 
 @MainActor
-final class WorkspaceWindowController: NSWindowController {
+final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     let browser: WorkspaceBrowserViewController
     private let terminal: DrawerContentViewController
     private var terminalHeightConstraint: NSLayoutConstraint!
@@ -46,6 +46,7 @@ final class WorkspaceWindowController: NSWindowController {
         window.tabbingMode = .preferred
         window.contentViewController = rootController
         super.init(window: window)
+        window.delegate = self
 
         rootController.addChild(browser)
         rootController.addChild(terminal)
@@ -58,11 +59,23 @@ final class WorkspaceWindowController: NSWindowController {
         terminalHeightConstraint = terminalView.heightAnchor.constraint(
             equalToConstant: PanelPlacement.collapsedHeight
         )
+        // The terminal height must yield to the browser's minimum, otherwise a
+        // tall terminal in a short window silently eats the file list from the
+        // bottom up: the status bar and last rows get clipped out of view with
+        // nothing to stop it. Ranking the height below the minimum makes the
+        // terminal shrink instead of the list disappearing.
+        terminalHeightConstraint.priority = .defaultHigh
+        let browserMinimum = browserView.heightAnchor.constraint(
+            greaterThanOrEqualToConstant: Self.minimumBrowserHeight
+        )
+        browserMinimum.priority = .required
+
         NSLayoutConstraint.activate([
             browserView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             browserView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             browserView.topAnchor.constraint(equalTo: root.topAnchor),
             browserView.bottomAnchor.constraint(equalTo: terminalView.topAnchor),
+            browserMinimum,
             terminalView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             terminalView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             terminalView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
@@ -111,10 +124,9 @@ final class WorkspaceWindowController: NSWindowController {
         terminalExpanded.toggle()
         preferences.terminalExpanded = terminalExpanded
         terminal.setExpanded(terminalExpanded)
-        let target = terminalExpanded
-            ? requestedTerminalHeight
+        terminalHeightConstraint.constant = terminalExpanded
+            ? clampedTerminalHeight(requestedTerminalHeight)
             : PanelPlacement.collapsedHeight
-        terminalHeightConstraint.constant = target
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.16
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
@@ -125,11 +137,34 @@ final class WorkspaceWindowController: NSWindowController {
     var terminalPanelHeight: CGFloat { terminalHeightConstraint.constant }
     var isTerminalExpanded: Bool { terminalExpanded }
 
+    static let minimumBrowserHeight: CGFloat = 220
+    private static let minimumTerminalHeight: CGFloat = 160
+    private static let maximumTerminalHeight: CGFloat = 600
+
+    /// The tallest terminal this window can show while the file list still keeps
+    /// its minimum. A height saved from a taller window, or a window shrunk after
+    /// the fact, would otherwise push the list's bottom out of sight.
+    func clampedTerminalHeight(_ proposed: CGFloat) -> CGFloat {
+        let available = window?.contentView?.bounds.height ?? 0
+        let ceiling = available > 0
+            ? min(Self.maximumTerminalHeight, available - Self.minimumBrowserHeight)
+            : Self.maximumTerminalHeight
+        // A window too short for both still has to produce a usable number.
+        guard ceiling > Self.minimumTerminalHeight else { return Self.minimumTerminalHeight }
+        return min(max(proposed, Self.minimumTerminalHeight), ceiling)
+    }
+
     private func resizeTerminal(by delta: CGFloat) {
-        guard terminalExpanded, let contentHeight = window?.contentView?.bounds.height else { return }
-        let maximum = min(600, max(160, contentHeight - 220))
-        requestedTerminalHeight = min(max(requestedTerminalHeight + delta, 160), maximum)
+        guard terminalExpanded else { return }
+        requestedTerminalHeight = clampedTerminalHeight(requestedTerminalHeight + delta)
         terminalHeightConstraint.constant = requestedTerminalHeight
         preferences.terminalHeight = requestedTerminalHeight
+    }
+
+    /// Shrinking the window must not let a previously fine terminal height start
+    /// eating the list.
+    func windowDidResize(_ notification: Notification) {
+        guard terminalExpanded else { return }
+        terminalHeightConstraint.constant = clampedTerminalHeight(requestedTerminalHeight)
     }
 }

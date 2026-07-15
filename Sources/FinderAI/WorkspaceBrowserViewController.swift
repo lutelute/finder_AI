@@ -130,6 +130,7 @@ final class WorkspaceBrowserViewController: NSViewController {
     private var sortIdentifier = Column.name
     private var sortAscending = true
     private var quickLookURLs: [URL] = []
+    private var pathComponentURLs: [URL] = []
 
     private lazy var sidebarLocations = Self.makeSidebarLocations()
     private let sidebarTable = NSTableView()
@@ -456,7 +457,12 @@ final class WorkspaceBrowserViewController: NSViewController {
         }
     }
 
-    private func navigate(to url: URL, addHistory: Bool = true) {
+    /// Moves to `url` as if the user had clicked it, history included.
+    func navigate(to url: URL) {
+        navigate(to: url, addHistory: true)
+    }
+
+    private func navigate(to url: URL, addHistory: Bool) {
         if addHistory { navigator.navigate(to: url) }
         let directory = navigator.currentDirectory
         searchField.stringValue = ""
@@ -485,13 +491,48 @@ final class WorkspaceBrowserViewController: NSViewController {
         backButton.isEnabled = navigator.canGoBack
         forwardButton.isEnabled = navigator.canGoForward
         upButton.isEnabled = navigator.canGoUp
-        pathControl.url = navigator.currentDirectory
+        updatePathControl(for: navigator.currentDirectory)
         if let index = sidebarLocations.firstIndex(where: { $0.url == navigator.currentDirectory }) {
             sidebarTable.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
         } else {
             sidebarTable.deselectAll(nil)
         }
     }
+
+    /// Builds the breadcrumb without letting AppKit resolve it.
+    ///
+    /// `pathControl.url = ...` looks up a display name and icon for every path
+    /// component through a *synchronous* XPC round-trip. On a TCC-protected
+    /// folder that call blocks the main thread until the permission dialog is
+    /// answered — clicking Desktop or Downloads froze the whole app with the
+    /// spinner still turning. A stack sample showed 100% of main-thread time in
+    /// `xpc_connection_send_message_with_reply_sync` under this one assignment.
+    ///
+    /// Setting `pathItems` ourselves keeps it to string and icon work we already
+    /// have, so nothing on this path can block.
+    private func updatePathControl(for directory: URL) {
+        let crumbs = WorkspaceBreadcrumb.crumbs(for: directory)
+        // `NSPathControlItem.url` is read-only, so the click target is recovered
+        // by index instead.
+        pathComponentURLs = crumbs.map(\.url)
+        pathControl.pathItems = crumbs.map { crumb in
+            let item = NSPathControlItem()
+            item.title = crumb.title
+            item.image = Self.pathComponentIcon
+            return item
+        }
+    }
+
+    /// One generic folder icon for every breadcrumb component: per-path icons are
+    /// what made the breadcrumb reach the filesystem in the first place.
+    private static let pathComponentIcon: NSImage = {
+        let image = NSImage(
+            systemSymbolName: "folder.fill",
+            accessibilityDescription: "フォルダ"
+        ) ?? NSImage()
+        image.size = NSSize(width: 14, height: 14)
+        return image
+    }()
 
     /// The stored task is the detached one so that `cancel()` reaches the
     /// enumeration itself. Wrapping a detached task inside a `Task` would leave the
@@ -806,8 +847,10 @@ final class WorkspaceBrowserViewController: NSViewController {
     }
 
     @objc func pathComponentClicked() {
-        guard let url = pathControl.clickedPathItem?.url else { return }
-        navigate(to: url)
+        guard let clicked = pathControl.clickedPathItem,
+              let index = pathControl.pathItems.firstIndex(of: clicked),
+              pathComponentURLs.indices.contains(index) else { return }
+        navigate(to: pathComponentURLs[index])
     }
 
     @objc func toggleTerminal() {

@@ -72,35 +72,26 @@ struct WorkspacePreferences {
 
     // MARK: - Last directory
 
-    /// Stored as a security-scoped bookmark so a restart still resolves the folder
-    /// after the user moves or renames it, and so resolution failure is detectable
-    /// rather than silently landing on a path that no longer exists.
+    /// A plain path, and deliberately not a bookmark: resolving a bookmark to a
+    /// protected folder took ~15s before the first window could appear, because
+    /// it reaches the filesystem and TCC. This getter touches nothing but
+    /// `UserDefaults`, so it is safe on the launch path — whether the folder
+    /// still exists is the caller's problem, checked off the main thread.
+    ///
+    /// The trade-off is that a folder moved between launches is not followed;
+    /// that is worth 15 seconds.
     var lastDirectory: URL? {
         get {
-            guard let data = defaults.data(forKey: Key.lastDirectory) else { return nil }
-            var isStale = false
-            guard let url = try? URL(
-                resolvingBookmarkData: data,
-                options: [.withoutUI],
-                relativeTo: nil,
-                bookmarkDataIsStale: &isStale
-            ) else { return nil }
-            var isDirectory: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
-                  isDirectory.boolValue else { return nil }
-            return url.standardizedFileURL
+            guard let path = defaults.string(forKey: Key.lastDirectory),
+                  !path.isEmpty else { return nil }
+            return URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
         }
         nonmutating set {
-            guard let newValue,
-                  let data = try? newValue.bookmarkData(
-                      options: [],
-                      includingResourceValuesForKeys: nil,
-                      relativeTo: nil
-                  ) else {
+            guard let newValue else {
                 defaults.removeObject(forKey: Key.lastDirectory)
                 return
             }
-            defaults.set(data, forKey: Key.lastDirectory)
+            defaults.set(newValue.standardizedFileURL.path, forKey: Key.lastDirectory)
         }
     }
 }

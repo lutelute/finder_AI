@@ -6,13 +6,41 @@ final class WorkspaceAppCoordinator {
     private let preferences = WorkspacePreferences()
     private lazy var workspace = WorkspaceWindowController(
         sessionManager: sessionManager,
-        initialDirectory: preferences.lastDirectory ?? Self.defaultDirectory(),
+        initialDirectory: Self.defaultDirectory(),
         preferences: preferences
     )
 
     func start() {
         configureMainMenu()
         workspace.show()
+        restoreLastDirectory()
+    }
+
+    /// The window opens on the always-known home URL first, then moves to the
+    /// previous folder once it is confirmed to exist.
+    ///
+    /// The check has to stay off the launch path: `fileExists` on a protected or
+    /// File Provider folder blocks, and doing it before the first window is what
+    /// made launch take 15 seconds instead of 0.4.
+    private func restoreLastDirectory() {
+        guard let candidate = preferences.lastDirectory,
+              candidate != Self.defaultDirectory() else { return }
+        Task { [weak self] in
+            guard await Self.isReachableDirectory(candidate) else { return }
+            self?.workspace.browser.navigate(to: candidate)
+        }
+    }
+
+    /// `nonisolated` so the blocking `fileExists` runs off the main actor.
+    nonisolated static func isReachableDirectory(_ url: URL) async -> Bool {
+        await Task.detached(priority: .utility) {
+            var isDirectory: ObjCBool = false
+            let exists = FileManager.default.fileExists(
+                atPath: url.path,
+                isDirectory: &isDirectory
+            )
+            return exists && isDirectory.boolValue
+        }.value
     }
 
     func showWorkspace() {
