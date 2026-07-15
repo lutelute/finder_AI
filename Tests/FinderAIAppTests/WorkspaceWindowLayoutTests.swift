@@ -6,12 +6,21 @@ import Testing
 @Suite("Workspace window layout")
 @MainActor
 struct WorkspaceWindowLayoutTests {
+    /// Each controller gets a throwaway defaults suite. Sharing `UserDefaults
+    /// .standard` would let `toggleTerminal()` below rewrite the developer's real
+    /// preferences and make these expectations depend on run order.
+    static func isolatedPreferences() -> WorkspacePreferences {
+        let suite = UserDefaults(suiteName: "finderai.layout.\(UUID().uuidString)")
+        return WorkspacePreferences(defaults: suite ?? .standard)
+    }
+
     @Test("workspace opens at a useful desktop size with one embedded terminal")
     func initialSizeAndTerminal() {
         _ = NSApplication.shared
         let controller = WorkspaceWindowController(
             sessionManager: TerminalSessionManager(),
-            initialDirectory: FileManager.default.homeDirectoryForCurrentUser
+            initialDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            preferences: Self.isolatedPreferences()
         )
 
         #expect(controller.window?.contentView?.frame.width == 1180)
@@ -29,7 +38,8 @@ struct WorkspaceWindowLayoutTests {
         _ = NSApplication.shared
         let controller = WorkspaceWindowController(
             sessionManager: TerminalSessionManager(),
-            initialDirectory: FileManager.default.homeDirectoryForCurrentUser
+            initialDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            preferences: Self.isolatedPreferences()
         )
         let root = try #require(controller.window?.contentView)
         root.layoutSubtreeIfNeeded()

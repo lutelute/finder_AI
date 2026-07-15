@@ -9,9 +9,18 @@ final class WorkspaceWindowController: NSWindowController {
     private var terminalExpanded = false
     private var requestedTerminalHeight: CGFloat = 300
     private var positioned = false
+    private let preferences: WorkspacePreferences
 
-    init(sessionManager: any TerminalSessionManaging, initialDirectory: URL) {
-        browser = WorkspaceBrowserViewController(initialDirectory: initialDirectory)
+    init(
+        sessionManager: any TerminalSessionManaging,
+        initialDirectory: URL,
+        preferences: WorkspacePreferences = WorkspacePreferences()
+    ) {
+        self.preferences = preferences
+        browser = WorkspaceBrowserViewController(
+            initialDirectory: initialDirectory,
+            preferences: preferences
+        )
         terminal = DrawerContentViewController(sessionManager: sessionManager)
         let rootController = NSViewController()
         let root = NSView()
@@ -59,8 +68,13 @@ final class WorkspaceWindowController: NSWindowController {
             terminalView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             terminalHeightConstraint
         ])
+        requestedTerminalHeight = preferences.terminalHeight
+        terminalExpanded = preferences.terminalExpanded
+        terminalHeightConstraint.constant = terminalExpanded
+            ? requestedTerminalHeight
+            : PanelPlacement.collapsedHeight
         terminal.setDirectory(initialDirectory)
-        terminal.setExpanded(false)
+        terminal.setExpanded(terminalExpanded)
 
         browser.onDirectoryChange = { [weak self] url in
             self?.terminal.setDirectory(url)
@@ -78,7 +92,12 @@ final class WorkspaceWindowController: NSWindowController {
 
     func show() {
         if !positioned {
-            window?.center()
+            // Let AppKit restore the saved frame; centre only on a first run where
+            // there is nothing to restore.
+            if window?.setFrameUsingName(Self.frameAutosaveName) != true {
+                window?.center()
+            }
+            window?.setFrameAutosaveName(Self.frameAutosaveName)
             positioned = true
         }
         showWindow(nil)
@@ -86,8 +105,11 @@ final class WorkspaceWindowController: NSWindowController {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    private static let frameAutosaveName = NSWindow.FrameAutosaveName("FinderAIWorkspaceWindow")
+
     @objc func toggleTerminal() {
         terminalExpanded.toggle()
+        preferences.terminalExpanded = terminalExpanded
         terminal.setExpanded(terminalExpanded)
         let target = terminalExpanded
             ? requestedTerminalHeight
@@ -108,5 +130,6 @@ final class WorkspaceWindowController: NSWindowController {
         let maximum = min(600, max(160, contentHeight - 220))
         requestedTerminalHeight = min(max(requestedTerminalHeight + delta, 160), maximum)
         terminalHeightConstraint.constant = requestedTerminalHeight
+        preferences.terminalHeight = requestedTerminalHeight
     }
 }

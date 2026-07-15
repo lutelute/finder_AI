@@ -1,3 +1,4 @@
+import AppKit
 import FinderAICore
 import Foundation
 
@@ -10,21 +11,53 @@ final class TerminalSessionManager: TerminalSessionManaging {
     private var sessionsByKey: [TerminalSessionKey: any ManagedTerminalSession] = [:]
     private var insertionOrder: [TerminalSessionKey] = []
 
+    /// Locating a command scans every PATH entry with synchronous `stat` calls.
+    /// `canStart` runs on every folder change, so the result is cached and dropped
+    /// only when the app is reactivated — that is when a CLI installed in another
+    /// window becomes worth re-checking.
+    private var executableCache: [String: URL?] = [:]
+    // Read back only in `deinit`, which cannot hop to the main actor.
+    private nonisolated(unsafe) var activationObserver: (any NSObjectProtocol)?
+
     init(
         builder: any TerminalSessionBuilding = SwiftTermSessionBuilder(),
         commandLocator: any CommandLocating = SystemCommandLocator()
     ) {
         self.builder = builder
         self.commandLocator = commandLocator
+        activationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, !self.executableCache.isEmpty else { return }
+                self.executableCache.removeAll()
+                self.onChange?()
+            }
+        }
+    }
+
+    deinit {
+        if let activationObserver {
+            NotificationCenter.default.removeObserver(activationObserver)
+        }
     }
 
     var runningCount: Int {
         sessionsByKey.values.filter(\.isRunning).count
     }
 
+    private func locate(_ command: String) -> URL? {
+        if let cached = executableCache[command] { return cached }
+        let located = commandLocator.locate(command: command)
+        executableCache[command] = located
+        return located
+    }
+
     func canStart(_ kind: TerminalSessionKind) -> Bool {
         guard let command = kind.commandName else { return true }
-        return commandLocator.locate(command: command) != nil
+        return locate(command) != nil
     }
 
     func sessions(for directoryURL: URL) -> [any ManagedTerminalSession] {
@@ -47,7 +80,10 @@ final class TerminalSessionManager: TerminalSessionManaging {
 
         let executableURL: URL?
         if let command = kind.commandName {
-            guard let located = commandLocator.locate(command: command) else {
+            guard let located = locate(command) else {
+                // A stale negative would keep the CLI unreachable for the whole
+                // session, so drop it and let the next check hit the filesystem.
+                executableCache.removeValue(forKey: command)
                 throw SessionCreationError.executableNotFound(kind.displayName)
             }
             executableURL = located

@@ -1,5 +1,6 @@
 import AppKit
 import FinderAICore
+import QuickLookUI
 
 @MainActor
 private final class WorkspaceNameCellView: NSTableCellView {
@@ -78,6 +79,26 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
     }
 }
 
+/// Table subclass that routes the keys a file list is expected to answer.
+/// `NSTableView` has no built-in notion of "open the selection", so Return and
+/// Space have to be claimed here rather than left to the responder chain.
+@MainActor
+private final class WorkspaceFileTableView: NSTableView {
+    var onOpen: (() -> Void)?
+    var onQuickLook: (() -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        switch event.charactersIgnoringModifiers {
+        case "\r", "\u{3}":
+            onOpen?()
+        case " ":
+            onQuickLook?()
+        default:
+            super.keyDown(with: event)
+        }
+    }
+}
+
 @MainActor
 final class WorkspaceBrowserViewController: NSViewController {
     var onDirectoryChange: ((URL) -> Void)?
@@ -98,16 +119,21 @@ final class WorkspaceBrowserViewController: NSViewController {
 
     private var navigator: WorkspaceNavigator
     private let fileService = WorkspaceFileService()
+    private let preferences: WorkspacePreferences
+    private let watcher = DirectoryWatcher()
     private var allItems: [WorkspaceItem] = []
     private var displayedItems: [WorkspaceItem] = []
     private var listingTask: Task<Void, Never>?
+    private var loadingIndicatorTask: Task<Void, Never>?
+    private var filterTask: Task<Void, Never>?
     private var pendingSelectionURL: URL?
     private var sortIdentifier = Column.name
     private var sortAscending = true
+    private var quickLookURLs: [URL] = []
 
     private lazy var sidebarLocations = Self.makeSidebarLocations()
     private let sidebarTable = NSTableView()
-    private let fileTable = NSTableView()
+    private let fileTable = WorkspaceFileTableView()
     private let pathControl = NSPathControl()
     private let searchField = NSSearchField()
     private let backButton = NSButton()
@@ -120,9 +146,15 @@ final class WorkspaceBrowserViewController: NSViewController {
     private let splitView = NSSplitView()
     private var didSetInitialSidebarPosition = false
 
-    init(initialDirectory: URL) {
+    init(
+        initialDirectory: URL,
+        preferences: WorkspacePreferences = WorkspacePreferences()
+    ) {
+        self.preferences = preferences
         navigator = WorkspaceNavigator(initialDirectory: initialDirectory)
         super.init(nibName: nil, bundle: nil)
+        sortIdentifier = NSUserInterfaceItemIdentifier(preferences.sortColumn)
+        sortAscending = preferences.sortAscending
     }
 
     required init?(coder: NSCoder) {
@@ -161,6 +193,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         configureContextMenu()
         updateNavigationUI()
         reloadContents()
+        watchCurrentDirectory()
     }
 
     override func viewDidAppear() {
@@ -172,7 +205,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         super.viewDidLayout()
         guard !didSetInitialSidebarPosition,
               splitView.bounds.width >= 761 else { return }
-        splitView.setPosition(210, ofDividerAt: 0)
+        splitView.setPosition(preferences.sidebarWidth, ofDividerAt: 0)
         didSetInitialSidebarPosition = true
     }
 
@@ -342,6 +375,8 @@ final class WorkspaceBrowserViewController: NSViewController {
         fileTable.target = self
         fileTable.doubleAction = #selector(openSelection)
         fileTable.registerForDraggedTypes([.fileURL])
+        fileTable.onOpen = { [weak self] in self?.openSelection() }
+        fileTable.onQuickLook = { [weak self] in self?.toggleQuickLook() }
 
         let scroll = NSScrollView()
         scroll.drawsBackground = true
@@ -423,12 +458,27 @@ final class WorkspaceBrowserViewController: NSViewController {
 
     private func navigate(to url: URL, addHistory: Bool = true) {
         if addHistory { navigator.navigate(to: url) }
+        let directory = navigator.currentDirectory
+        searchField.stringValue = ""
         updateNavigationUI()
         reloadContents()
-        onDirectoryChange?(navigator.currentDirectory)
-        view.window?.title = navigator.currentDirectory.lastPathComponent.isEmpty
-            ? navigator.currentDirectory.path
-            : navigator.currentDirectory.lastPathComponent
+        watchCurrentDirectory()
+        preferences.lastDirectory = directory
+        onDirectoryChange?(directory)
+        view.window?.title = directory.lastPathComponent.isEmpty
+            ? directory.path
+            : directory.lastPathComponent
+    }
+
+    private func watchCurrentDirectory() {
+        watcher.start(url: navigator.currentDirectory) { [weak self] in
+            // The folder changed underneath us; refresh without disturbing the
+            // user's selection or scroll position more than necessary.
+            guard let self else { return }
+            let selected = self.selectedItems.first?.url
+            self.pendingSelectionURL = selected
+            self.reloadContents()
+        }
     }
 
     private func updateNavigationUI() {
@@ -443,30 +493,66 @@ final class WorkspaceBrowserViewController: NSViewController {
         }
     }
 
+    /// The stored task is the detached one so that `cancel()` reaches the
+    /// enumeration itself. Wrapping a detached task inside a `Task` would leave the
+    /// listing running after cancellation and let rapid navigation pile up
+    /// concurrent enumerations on the same volume.
     private func reloadContents() {
         listingTask?.cancel()
         let directory = navigator.currentDirectory
-        progress.startAnimation(nil)
-        statusLabel.stringValue = "読み込み中…"
-        listingTask = Task { [weak self] in
+        let showHidden = preferences.showHiddenFiles
+        beginLoadingIndicator()
+
+        listingTask = Task.detached(priority: .userInitiated) { [weak self] in
             do {
-                let items = try await Task.detached(priority: .userInitiated) {
-                    try WorkspaceDirectoryListing.contents(of: directory)
-                }.value
-                guard let self, !Task.isCancelled,
-                      self.navigator.currentDirectory == directory else { return }
-                self.allItems = items
-                self.applyFilterAndSort()
-                self.progress.stopAnimation(nil)
-                self.selectPendingItemIfNeeded()
+                let items = try WorkspaceDirectoryListing.contents(
+                    of: directory,
+                    showHiddenFiles: showHidden
+                )
+                guard !Task.isCancelled else { return }
+                await self?.applyListing(items, for: directory)
+            } catch is CancellationError {
+                return
             } catch {
-                guard let self, !Task.isCancelled else { return }
-                self.progress.stopAnimation(nil)
-                self.allItems = []
-                self.applyFilterAndSort()
-                self.presentError(title: "フォルダを読み込めません", message: error.localizedDescription)
+                guard !Task.isCancelled else { return }
+                await self?.applyListingFailure(error, for: directory)
             }
         }
+    }
+
+    private func applyListing(_ items: [WorkspaceItem], for directory: URL) {
+        guard navigator.currentDirectory == directory else { return }
+        endLoadingIndicator()
+        allItems = items
+        applyFilterAndSort()
+        selectPendingItemIfNeeded()
+    }
+
+    private func applyListingFailure(_ error: any Error, for directory: URL) {
+        guard navigator.currentDirectory == directory else { return }
+        endLoadingIndicator()
+        allItems = []
+        applyFilterAndSort()
+        presentError(title: "フォルダを読み込めません", message: error.localizedDescription)
+    }
+
+    /// A local listing finishes in single-digit milliseconds, so showing the
+    /// spinner immediately only produces a flash that reads as slowness. Delay it
+    /// past the point where the wait is actually perceptible.
+    private func beginLoadingIndicator() {
+        loadingIndicatorTask?.cancel()
+        loadingIndicatorTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled, let self else { return }
+            self.progress.startAnimation(nil)
+            self.statusLabel.stringValue = "読み込み中…"
+        }
+    }
+
+    private func endLoadingIndicator() {
+        loadingIndicatorTask?.cancel()
+        loadingIndicatorTask = nil
+        progress.stopAnimation(nil)
     }
 
     private func applyFilterAndSort() {
@@ -590,15 +676,94 @@ final class WorkspaceBrowserViewController: NSViewController {
         NSWorkspace.shared.activateFileViewerSelecting(urls.isEmpty ? [navigator.currentDirectory] : urls)
     }
 
+    private var workspaceUndoManager: UndoManager? { view.window?.undoManager }
+
     @objc func createFolder() {
         do {
             let created = try fileService.createFolder(in: navigator.currentDirectory)
+            // Undoing a creation trashes it rather than deleting outright, so a
+            // mistaken undo is still recoverable from the Finder trash.
+            workspaceUndoManager?.registerUndo(withTarget: self) { target in
+                MainActor.assumeIsolated {
+                    try? target.fileService.moveToTrash([created])
+                    target.reloadContents()
+                }
+            }
+            workspaceUndoManager?.setActionName("新規フォルダ")
             searchField.stringValue = ""
             pendingSelectionURL = created
             reloadContents()
         } catch {
             presentError(title: "フォルダを作成できません", message: error.localizedDescription)
         }
+    }
+
+    /// Renaming registers its own inverse, so undo and redo are the same code path.
+    private func renameItem(at source: URL, to newName: String) {
+        let originalName = source.lastPathComponent
+        do {
+            let renamed = try fileService.rename(source, to: newName)
+            guard renamed != source else { return }
+            workspaceUndoManager?.registerUndo(withTarget: self) { target in
+                MainActor.assumeIsolated {
+                    target.renameItem(at: renamed, to: originalName)
+                }
+            }
+            workspaceUndoManager?.setActionName("名前の変更")
+            searchField.stringValue = ""
+            pendingSelectionURL = renamed
+            reloadContents()
+        } catch {
+            presentError(title: "名前を変更できません", message: error.localizedDescription)
+        }
+    }
+
+    private func transferItems(_ sources: [URL], to destination: URL, copy: Bool) {
+        do {
+            let results = try fileService.transfer(sources, to: destination, copy: copy)
+            registerTransferUndo(results, copy: copy)
+            reloadContents()
+        } catch {
+            presentError(title: "ファイルを移動できません", message: error.localizedDescription)
+        }
+    }
+
+    private func registerTransferUndo(
+        _ results: [(source: URL, destination: URL)],
+        copy: Bool
+    ) {
+        guard let undoManager = workspaceUndoManager, !results.isEmpty else { return }
+        if copy {
+            // The originals were untouched, so undo only has to remove the copies.
+            let copies = results.map(\.destination)
+            undoManager.registerUndo(withTarget: self) { target in
+                MainActor.assumeIsolated {
+                    try? target.fileService.moveToTrash(copies)
+                    target.reloadContents()
+                }
+            }
+            undoManager.setActionName("コピー")
+        } else {
+            // Sources may come from several folders, so each item is returned to
+            // its own parent. Grouping keeps that a single undo/redo step.
+            let moves = results.map {
+                (current: $0.destination, parent: $0.source.deletingLastPathComponent())
+            }
+            undoManager.registerUndo(withTarget: self) { target in
+                MainActor.assumeIsolated {
+                    target.undoMoves(moves)
+                }
+            }
+            undoManager.setActionName("移動")
+        }
+    }
+
+    private func undoMoves(_ moves: [(current: URL, parent: URL)]) {
+        workspaceUndoManager?.beginUndoGrouping()
+        for move in moves {
+            transferItems([move.current], to: move.parent, copy: false)
+        }
+        workspaceUndoManager?.endUndoGrouping()
     }
 
     @objc func renameSelection() {
@@ -614,14 +779,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         alert.addButton(withTitle: "キャンセル")
         alert.beginSheetModal(for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn, let self else { return }
-            do {
-                let renamed = try self.fileService.rename(item.url, to: input.stringValue)
-                self.searchField.stringValue = ""
-                self.pendingSelectionURL = renamed
-                self.reloadContents()
-            } catch {
-                self.presentError(title: "名前を変更できません", message: error.localizedDescription)
-            }
+            self.renameItem(at: item.url, to: input.stringValue)
         }
     }
 
@@ -654,6 +812,60 @@ final class WorkspaceBrowserViewController: NSViewController {
 
     @objc func toggleTerminal() {
         onToggleTerminal?()
+    }
+
+    @objc func toggleHiddenFiles() {
+        preferences.showHiddenFiles.toggle()
+        reloadContents()
+    }
+
+    @objc func focusSearchField() {
+        view.window?.makeFirstResponder(searchField)
+    }
+
+    @objc func toggleQuickLook() {
+        guard let panel = QLPreviewPanel.shared() else { return }
+        if QLPreviewPanel.sharedPreviewPanelExists(), panel.isVisible {
+            panel.orderOut(nil)
+        } else {
+            panel.makeKeyAndOrderFront(nil)
+        }
+    }
+}
+
+// MARK: - Quick Look
+
+extension WorkspaceBrowserViewController: @preconcurrency QLPreviewPanelDataSource, @preconcurrency QLPreviewPanelDelegate {
+    override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool {
+        !selectedItems.isEmpty
+    }
+
+    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        quickLookURLs = selectedItems.map(\.url)
+        panel.dataSource = self
+        panel.delegate = self
+    }
+
+    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        panel.dataSource = nil
+        panel.delegate = nil
+        quickLookURLs = []
+    }
+
+    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
+        quickLookURLs.count
+    }
+
+    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> (any QLPreviewItem)! {
+        quickLookURLs.indices.contains(index) ? quickLookURLs[index] as NSURL : nil
+    }
+
+    /// Lets the preview panel forward arrow keys back to the table so the user can
+    /// keep moving through the list while previewing.
+    func previewPanel(_ panel: QLPreviewPanel!, handle event: NSEvent!) -> Bool {
+        guard event.type == .keyDown else { return false }
+        fileTable.keyDown(with: event)
+        return true
     }
 }
 
@@ -736,6 +948,16 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
             return
         }
         updateStatus()
+        refreshQuickLookIfVisible()
+    }
+
+    private func refreshQuickLookIfVisible() {
+        guard QLPreviewPanel.sharedPreviewPanelExists(),
+              let panel = QLPreviewPanel.shared(),
+              panel.isVisible,
+              panel.dataSource === self else { return }
+        quickLookURLs = selectedItems.map(\.url)
+        panel.reloadData()
     }
 
     func tableView(_ tableView: NSTableView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
@@ -743,6 +965,8 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
               let key = descriptor.key else { return }
         sortIdentifier = NSUserInterfaceItemIdentifier(key)
         sortAscending = descriptor.ascending
+        preferences.sortColumn = key
+        preferences.sortAscending = descriptor.ascending
         applyFilterAndSort()
     }
 
@@ -780,18 +1004,8 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
         let destination = displayedItems.indices.contains(row) && displayedItems[row].isDirectory
             ? displayedItems[row].url
             : navigator.currentDirectory
-        do {
-            try fileService.transfer(
-                sources,
-                to: destination,
-                copy: NSEvent.modifierFlags.contains(.option)
-            )
-            reloadContents()
-            return true
-        } catch {
-            presentError(title: "ファイルを移動できません", message: error.localizedDescription)
-            return false
-        }
+        transferItems(sources, to: destination, copy: NSEvent.modifierFlags.contains(.option))
+        return true
     }
 
     private func draggedFileURLs(from info: any NSDraggingInfo) -> [URL] {
@@ -819,8 +1033,15 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
 }
 
 extension WorkspaceBrowserViewController: NSSearchFieldDelegate {
+    /// Filtering re-sorts every item, so running it per keystroke makes typing lag
+    /// in large folders. Coalesce bursts; a lone keystroke still lands quickly.
     func controlTextDidChange(_ obj: Notification) {
-        applyFilterAndSort()
+        filterTask?.cancel()
+        filterTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(60))
+            guard !Task.isCancelled else { return }
+            self?.applyFilterAndSort()
+        }
     }
 }
 
@@ -840,6 +1061,12 @@ extension WorkspaceBrowserViewController: NSMenuDelegate {
 }
 
 extension WorkspaceBrowserViewController: NSSplitViewDelegate {
+    func splitViewDidResizeSubviews(_ notification: Notification) {
+        guard didSetInitialSidebarPosition,
+              let sidebar = splitView.arrangedSubviews.first else { return }
+        preferences.sidebarWidth = sidebar.frame.width
+    }
+
     func splitView(
         _ splitView: NSSplitView,
         constrainMinCoordinate proposedMinimumPosition: CGFloat,

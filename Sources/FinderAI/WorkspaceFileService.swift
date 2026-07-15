@@ -31,7 +31,10 @@ struct WorkspaceFileService {
         return destination
     }
 
-    func transfer(_ sources: [URL], to directory: URL, copy: Bool) throws {
+    /// Returns each source paired with where it landed, so callers can register an
+    /// exact inverse instead of recomputing destinations and risking drift.
+    @discardableResult
+    func transfer(_ sources: [URL], to directory: URL, copy: Bool) throws -> [(source: URL, destination: URL)] {
         let directory = directory.standardizedFileURL
         var destinationIsDirectory: ObjCBool = false
         guard fileManager.fileExists(
@@ -80,6 +83,7 @@ struct WorkspaceFileService {
                 try fileManager.moveItem(at: source, to: destination)
             }
         }
+        return operations.map { (source: $0.0, destination: $0.1) }
     }
 
     private static func isDescendant(_ candidate: URL, of ancestor: URL) -> Bool {

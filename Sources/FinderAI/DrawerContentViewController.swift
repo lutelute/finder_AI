@@ -28,6 +28,17 @@ final class DrawerContentViewController: NSViewController {
     private var activeSession: (any ManagedTerminalSession)?
     private var expanded = false
     private var bodyLayoutConstraints: [NSLayoutConstraint] = []
+    private var mountedSessionID: UUID?
+    private var renderedTabs: [TabSnapshot] = []
+
+    /// The tab strip is rebuilt from scratch on every reload; this is what the
+    /// strip currently shows, so an unchanged folder can skip the teardown.
+    private struct TabSnapshot: Equatable {
+        let id: UUID
+        let title: String
+        let isRunning: Bool
+        let isActive: Bool
+    }
 
     private let resizeHandle = ResizeHandleView()
     private let topBorder = NSView()
@@ -307,29 +318,40 @@ final class DrawerContentViewController: NSViewController {
             activeSession = visibleSessions.last
         }
 
-        sessionTabs.arrangedSubviews.forEach {
-            sessionTabs.removeArrangedSubview($0)
-            $0.removeFromSuperview()
+        let snapshots = visibleSessions.map {
+            TabSnapshot(
+                id: $0.id,
+                title: $0.kind.displayName,
+                isRunning: $0.isRunning,
+                isActive: $0.id == activeSession?.id
+            )
         }
-        for (index, session) in visibleSessions.enumerated() {
-            let button = SessionTabButton()
-            button.title = session.isRunning
-                ? "●  \(session.kind.displayName)"
-                : session.kind.displayName
-            button.font = .systemFont(ofSize: 11, weight: .medium)
-            button.contentTintColor = session.isRunning
-                ? IntegratedPanelTheme.text
-                : IntegratedPanelTheme.secondaryText
-            button.isBordered = false
-            button.tag = index
-            button.target = self
-            button.action = #selector(selectSession(_:))
-            button.isActiveTab = session.id == activeSession?.id
-            button.toolTip = "\(session.kind.displayName) — \(session.directoryURL.path(percentEncoded: false))"
-            button.translatesAutoresizingMaskIntoConstraints = false
-            button.widthAnchor.constraint(greaterThanOrEqualToConstant: 68).isActive = true
-            button.heightAnchor.constraint(equalToConstant: 26).isActive = true
-            sessionTabs.addArrangedSubview(button)
+        if snapshots != renderedTabs {
+            sessionTabs.arrangedSubviews.forEach {
+                sessionTabs.removeArrangedSubview($0)
+                $0.removeFromSuperview()
+            }
+            for (index, session) in visibleSessions.enumerated() {
+                let button = SessionTabButton()
+                button.title = session.isRunning
+                    ? "●  \(session.kind.displayName)"
+                    : session.kind.displayName
+                button.font = .systemFont(ofSize: 11, weight: .medium)
+                button.contentTintColor = session.isRunning
+                    ? IntegratedPanelTheme.text
+                    : IntegratedPanelTheme.secondaryText
+                button.isBordered = false
+                button.tag = index
+                button.target = self
+                button.action = #selector(selectSession(_:))
+                button.isActiveTab = session.id == activeSession?.id
+                button.toolTip = "\(session.kind.displayName) — \(session.directoryURL.path(percentEncoded: false))"
+                button.translatesAutoresizingMaskIntoConstraints = false
+                button.widthAnchor.constraint(greaterThanOrEqualToConstant: 68).isActive = true
+                button.heightAnchor.constraint(equalToConstant: 26).isActive = true
+                sessionTabs.addArrangedSubview(button)
+            }
+            renderedTabs = snapshots
         }
         sessionTabs.isHidden = visibleSessions.isEmpty
         closeButton.isEnabled = activeSession != nil
@@ -341,11 +363,17 @@ final class DrawerContentViewController: NSViewController {
         showActiveTerminal()
     }
 
+    /// Re-adding a terminal view forces SwiftTerm to re-lay-out and reflow its
+    /// buffer, so the mounted view is left alone when the active session has not
+    /// actually changed — every folder change reaches this path.
     private func showActiveTerminal() {
+        guard mountedSessionID != activeSession?.id else { return }
+
         for subview in terminalContainer.subviews where subview !== emptyState {
             subview.removeFromSuperview()
         }
         guard let session = activeSession else {
+            mountedSessionID = nil
             emptyState.isHidden = false
             return
         }
@@ -359,6 +387,7 @@ final class DrawerContentViewController: NSViewController {
             terminal.topAnchor.constraint(equalTo: terminalContainer.topAnchor, constant: 6),
             terminal.bottomAnchor.constraint(equalTo: terminalContainer.bottomAnchor, constant: -6)
         ])
+        mountedSessionID = session.id
     }
 
     private func startSession(kind: TerminalSessionKind) {
@@ -413,17 +442,29 @@ final class DrawerContentViewController: NSViewController {
     }
 
     @objc private func closeSession() {
-        guard let activeSession else { return }
-        if activeSession.isRunning {
-            let alert = NSAlert()
-            alert.messageText = "実行中の\(activeSession.kind.displayName)を終了しますか？"
-            alert.informativeText = "FinderAIが開始したこのPTYプロセスだけを終了します。"
-            alert.addButton(withTitle: "終了")
-            alert.addButton(withTitle: "キャンセル")
-            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard let session = activeSession else { return }
+        guard session.isRunning else {
+            removeSession(session)
+            return
         }
-        sessionManager.remove(activeSession)
-        self.activeSession = nil
+        let alert = NSAlert()
+        alert.messageText = "実行中の\(session.kind.displayName)を終了しますか？"
+        alert.informativeText = "FinderAIが開始したこのPTYプロセスだけを終了します。"
+        alert.addButton(withTitle: "終了")
+        alert.addButton(withTitle: "キャンセル")
+        guard let window = view.window else {
+            if alert.runModal() == .alertFirstButtonReturn { removeSession(session) }
+            return
+        }
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            self?.removeSession(session)
+        }
+    }
+
+    private func removeSession(_ session: any ManagedTerminalSession) {
+        sessionManager.remove(session)
+        if activeSession?.id == session.id { activeSession = nil }
         reloadSessions()
     }
 
@@ -432,6 +473,10 @@ final class DrawerContentViewController: NSViewController {
         alert.alertStyle = .warning
         alert.messageText = title
         alert.informativeText = message
-        alert.runModal()
+        if let window = view.window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
     }
 }

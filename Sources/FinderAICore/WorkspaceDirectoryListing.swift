@@ -30,6 +30,12 @@ public struct WorkspaceItem: Equatable, Sendable, Identifiable {
 }
 
 public enum WorkspaceDirectoryListing {
+    /// Throws `CancellationError` if the enclosing `Task` is cancelled.
+    ///
+    /// The per-URL `resourceValues` loop is where slow volumes (SMB, File Provider)
+    /// spend their time, so it polls cancellation on every item. Without this the
+    /// caller's `cancel()` cannot stop a listing already in flight, and rapid
+    /// navigation piles up concurrent enumerations on the same volume.
     public static func contents(
         of directory: URL,
         showHiddenFiles: Bool = false,
@@ -54,28 +60,36 @@ public enum WorkspaceDirectoryListing {
             includingPropertiesForKeys: keys,
             options: options
         )
+        try Task.checkCancellation()
 
-        return urls.map { url in
-            let values = try? url.resourceValues(forKeys: Set(keys))
+        let keySet = Set(keys)
+        var items: [WorkspaceItem] = []
+        items.reserveCapacity(urls.count)
+        for url in urls {
+            try Task.checkCancellation()
+            let values = try? url.resourceValues(forKeys: keySet)
             let isDirectory = values?.isDirectory ?? url.hasDirectoryPath
-            let typeDescription: String
-            if isDirectory {
-                typeDescription = "フォルダ"
-            } else if url.pathExtension.isEmpty {
-                typeDescription = "ファイル"
-            } else {
-                typeDescription = "\(url.pathExtension.uppercased()) ファイル"
-            }
-            return WorkspaceItem(
-                url: url,
-                name: url.lastPathComponent,
-                isDirectory: isDirectory,
-                isHidden: values?.isHidden ?? url.lastPathComponent.hasPrefix("."),
-                fileSize: values?.fileSize.map(Int64.init),
-                modifiedAt: values?.contentModificationDate,
-                typeDescription: typeDescription
+            items.append(
+                WorkspaceItem(
+                    url: url,
+                    name: url.lastPathComponent,
+                    isDirectory: isDirectory,
+                    isHidden: values?.isHidden ?? url.lastPathComponent.hasPrefix("."),
+                    fileSize: values?.fileSize.map(Int64.init),
+                    modifiedAt: values?.contentModificationDate,
+                    typeDescription: Self.typeDescription(for: url, isDirectory: isDirectory)
+                )
             )
-        }.sorted(by: defaultSort)
+        }
+        try Task.checkCancellation()
+        items.sort(by: defaultSort)
+        return items
+    }
+
+    private static func typeDescription(for url: URL, isDirectory: Bool) -> String {
+        if isDirectory { return "フォルダ" }
+        if url.pathExtension.isEmpty { return "ファイル" }
+        return "\(url.pathExtension.uppercased()) ファイル"
     }
 
     public static func defaultSort(_ lhs: WorkspaceItem, _ rhs: WorkspaceItem) -> Bool {
