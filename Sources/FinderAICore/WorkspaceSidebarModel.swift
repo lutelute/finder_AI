@@ -96,8 +96,8 @@ public enum WorkspaceSidebarModel {
         ].filter { !$0.items.isEmpty }
     }
 
-    /// Finder shows the home folder under the account's short name rather than
-    /// "shigenoburyuto"'s literal path component, and "/" as the startup disk.
+    /// Finder labels the home folder with the account's short name and "/" as the
+    /// startup disk, rather than showing either as a raw path component.
     public static func displayName(for url: URL, home: URL) -> String {
         let path = url.standardizedFileURL.path
         if path == home.standardizedFileURL.path { return NSUserName() }
