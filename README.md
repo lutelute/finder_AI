@@ -2,7 +2,7 @@
 
 FinderAI Workspaceは、ファイル整理とShell・Codex・Claudeを一つのネイティブmacOSウインドウへまとめたワークスペースです。左に場所、中央にファイル一覧、下に開閉・リサイズ可能なTerminalを置きます。標準Finderへ注入・改造・リサイズを行いません。
 
-標準Finder内部へ第三者のTerminalを埋め込む公開APIはありません。別ウインドウをFinderへ重ねる方式も実装済みですが、位置・フォーカス・Spaceの境界を完全には消せません。そのため0.2.0では、幅とライフサイクルが最初から一致する`FinderAI Workspace`を主製品にしています。
+標準Finder内部へ第三者のTerminalを埋め込む公開APIはありません。別ウインドウをFinderへ重ねる方式も実装済みですが、位置・フォーカス・Spaceの境界を完全には消せません。そのため、幅とライフサイクルが最初から一致する`FinderAI Workspace`を主製品にしています。
 
 ## すぐ使う
 
