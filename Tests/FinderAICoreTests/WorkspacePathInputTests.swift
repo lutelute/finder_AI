@@ -67,4 +67,23 @@ struct WorkspacePathInputTests {
         // Nothing here reaches a shell; it is just an unusual folder name.
         #expect(parse("/tmp/$(rm -rf *)")?.path == "/tmp/$(rm -rf *)")
     }
+
+    /// A Japanese IME left on turns "~" into "〜" and "/" into "／" — observed
+    /// live as "〜/Documents／GitHub". Refusing that makes the path bar unusable
+    /// for anyone typing with the IME active.
+    @Test("full-width separators from the IME are folded")
+    func imeInput() {
+        #expect(parse("〜/Documents／GitHub")?.path == "\(home)/Documents/GitHub")
+        #expect(parse("～/Documents")?.path == "\(home)/Documents")
+        #expect(parse("／Users／someone")?.path == "/Users/someone")
+    }
+
+    /// The fold must not eat these characters where they are part of a name.
+    @Test("a tilde inside a folder name survives")
+    func tildeInNames() {
+        #expect(parse("/tmp/2025～2026年度")?.path == "/tmp/2025～2026年度")
+        #expect(parse("/tmp/a〜b")?.path == "/tmp/a〜b")
+        // Full-width spaces occur in names and never in separators.
+        #expect(parse("/tmp/書類　控え")?.path == "/tmp/書類　控え")
+    }
 }

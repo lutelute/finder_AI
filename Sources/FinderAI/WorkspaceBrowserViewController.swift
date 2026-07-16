@@ -153,21 +153,31 @@ private final class WorkspaceSidebarHeaderView: NSTableCellView {
 /// Breadcrumb that tells a crumb click from an empty-area click.
 ///
 /// A crumb click navigates to that folder; a click past the last crumb turns the
-/// bar into a text field — the Windows Explorer address bar split. `NSPathControl`
-/// only reports the former: its action fires (synchronously, inside `mouseDown`'s
-/// tracking loop) when a crumb is hit, and stays silent otherwise. So the action
-/// handler raises a flag, and `mouseDown` returning without the flag is the
-/// empty-area click. A gesture recognizer here instead raced the control's own
-/// tracking, firing both paths on a crumb click.
+/// bar into a text field — the Windows Explorer address bar split.
+///
+/// The split is decided by hit-testing the component cells' actual frames.
+/// Inferring it from whether the control's action fired does not work:
+/// `NSPathControl` maps clicks in the trailing empty area onto the *last*
+/// component, so the action fires — with a component — for clicks that should
+/// open the editor, and the editor never appeared.
 @MainActor
-private final class WorkspacePathBar: NSPathControl {
+final class WorkspacePathBar: NSPathControl {
     var onEmptyAreaClick: (() -> Void)?
-    var crumbClickHandled = false
+
+    func isOnCrumb(_ point: NSPoint) -> Bool {
+        guard let pathCell = cell as? NSPathCell else { return false }
+        return pathCell.pathComponentCells.contains { component in
+            pathCell.rect(of: component, withFrame: bounds, in: self).contains(point)
+        }
+    }
 
     override func mouseDown(with event: NSEvent) {
-        crumbClickHandled = false
+        let point = convert(event.locationInWindow, from: nil)
+        guard isOnCrumb(point) else {
+            onEmptyAreaClick?()
+            return
+        }
         super.mouseDown(with: event)
-        if !crumbClickHandled { onEmptyAreaClick?() }
     }
 }
 
@@ -246,6 +256,7 @@ final class WorkspaceBrowserViewController: NSViewController {
     private let fileArea = NSView()
     private let columnView = WorkspaceColumnView()
     private var listScrollView: NSScrollView?
+    private let ribbonPath = NSPathControl()
     private let searchField = NSSearchField()
     private let backButton = NSButton()
     private let forwardButton = NSButton()
@@ -475,7 +486,8 @@ final class WorkspaceBrowserViewController: NSViewController {
         }
         listScrollView = listScroll
 
-        [navigationBar, fileArea, statusBar].forEach {
+        let ribbon = makeRibbon()
+        [navigationBar, fileArea, ribbon, statusBar].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview($0)
         }
@@ -487,7 +499,11 @@ final class WorkspaceBrowserViewController: NSViewController {
             fileArea.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             fileArea.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             fileArea.topAnchor.constraint(equalTo: navigationBar.bottomAnchor),
-            fileArea.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
+            fileArea.bottomAnchor.constraint(equalTo: ribbon.topAnchor),
+            ribbon.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            ribbon.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            ribbon.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
+            ribbon.heightAnchor.constraint(equalToConstant: 22),
             statusBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             statusBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             statusBar.bottomAnchor.constraint(equalTo: root.bottomAnchor),
@@ -495,6 +511,31 @@ final class WorkspaceBrowserViewController: NSViewController {
         ])
         applyViewMode()
         return root
+    }
+
+    /// Finder's パスバー: a slim strip above the status bar showing where you are,
+    /// every ancestor clickable. Fed the same self-built items as the top bar —
+    /// letting it resolve paths itself would reintroduce the synchronous XPC that
+    /// froze the app on protected folders.
+    private func makeRibbon() -> NSView {
+        let bar = NSView()
+        bar.wantsLayer = true
+        bar.layer?.backgroundColor = IntegratedPanelTheme.header.cgColor
+
+        ribbonPath.pathStyle = .standard
+        ribbonPath.controlSize = .small
+        ribbonPath.font = .systemFont(ofSize: 10.5)
+        ribbonPath.target = self
+        ribbonPath.action = #selector(ribbonComponentClicked)
+        ribbonPath.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        ribbonPath.translatesAutoresizingMaskIntoConstraints = false
+        bar.addSubview(ribbonPath)
+        NSLayoutConstraint.activate([
+            ribbonPath.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
+            ribbonPath.trailingAnchor.constraint(lessThanOrEqualTo: bar.trailingAnchor, constant: -10),
+            ribbonPath.centerYAnchor.constraint(equalTo: bar.centerYAnchor)
+        ])
+        return bar
     }
 
     private func configureColumnView() {
@@ -593,6 +634,13 @@ final class WorkspaceBrowserViewController: NSViewController {
         stack.orientation = .horizontal
         stack.alignment = .centerY
         stack.spacing = 7
+        // The default gravity distribution keeps every view at its natural width
+        // and clusters them leading, which parked the search field mid-bar with
+        // dead space to its right. `.fill` stretches the lowest-hugging view —
+        // the path slot — so the search field lands on the right edge and the
+        // path's clickable empty area grows to everything in between.
+        stack.distribution = .fill
+        pathSlot.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         stack.translatesAutoresizingMaskIntoConstraints = false
         bar.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -1024,12 +1072,18 @@ final class WorkspaceBrowserViewController: NSViewController {
         // `NSPathControlItem.url` is read-only, so the click target is recovered
         // by index instead.
         pathComponentURLs = crumbs.map(\.url)
-        pathControl.pathItems = crumbs.map { crumb in
-            let item = NSPathControlItem()
-            item.title = crumb.title
-            item.image = Self.pathComponentIcon
-            return item
+        func items() -> [NSPathControlItem] {
+            crumbs.map { crumb in
+                let item = NSPathControlItem()
+                item.title = crumb.title
+                item.image = Self.pathComponentIcon
+                return item
+            }
         }
+        // Two controls, same crumbs: NSPathControlItem cannot be shared between
+        // controls, so each gets its own instances.
+        pathControl.pathItems = items()
+        ribbonPath.pathItems = items()
     }
 
     /// One generic folder icon for every breadcrumb component: per-path icons are
@@ -1358,13 +1412,16 @@ final class WorkspaceBrowserViewController: NSViewController {
     }
 
     @objc func pathComponentClicked() {
-        // The action can also fire for a click on the bar's empty area, with
-        // clickedPathItem nil. Raising the flag before checking swallowed those
-        // clicks and the editor never opened — the flag may only mean "a real
-        // crumb was hit", everything else falls through to the editor.
-        guard let clicked = pathControl.clickedPathItem else { return }
-        pathControl.crumbClickHandled = true
-        guard let index = pathControl.pathItems.firstIndex(of: clicked),
+        guard let clicked = pathControl.clickedPathItem,
+              let index = pathControl.pathItems.firstIndex(of: clicked),
+              pathComponentURLs.indices.contains(index) else { return }
+        navigate(to: pathComponentURLs[index])
+    }
+
+    /// The bottom ribbon's crumbs: same URLs, own control.
+    @objc func ribbonComponentClicked() {
+        guard let clicked = ribbonPath.clickedPathItem,
+              let index = ribbonPath.pathItems.firstIndex(of: clicked),
               pathComponentURLs.indices.contains(index) else { return }
         navigate(to: pathComponentURLs[index])
     }
