@@ -22,6 +22,43 @@ struct WorkspacePreferences {
         static let lastDirectory = "workspace.lastDirectory"
         static let pins = "workspace.pins"
         static let visits = "workspace.visits"
+        static let splitEnabled = "workspace.splitEnabled"
+        static let splitRatio = "workspace.splitRatio"
+        static let secondDirectory = "workspace.secondDirectory"
+    }
+
+    // MARK: - Split view
+
+    var splitEnabled: Bool {
+        get { defaults.bool(forKey: Key.splitEnabled) }
+        nonmutating set { defaults.set(newValue, forKey: Key.splitEnabled) }
+    }
+
+    /// Left pane's share of the width. Clamped so a restored value can never hide
+    /// a pane outright.
+    var splitRatio: CGFloat {
+        get {
+            let stored = defaults.double(forKey: Key.splitRatio)
+            guard stored > 0 else { return 0.5 }
+            return min(max(CGFloat(stored), 0.2), 0.8)
+        }
+        nonmutating set { defaults.set(Double(newValue), forKey: Key.splitRatio) }
+    }
+
+    /// Plain path, for the same reason as `lastDirectory`.
+    var secondDirectory: URL? {
+        get {
+            guard let path = defaults.string(forKey: Key.secondDirectory),
+                  !path.isEmpty else { return nil }
+            return URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+        }
+        nonmutating set {
+            guard let newValue else {
+                defaults.removeObject(forKey: Key.secondDirectory)
+                return
+            }
+            defaults.set(newValue.standardizedFileURL.path, forKey: Key.secondDirectory)
+        }
     }
 
     // MARK: - Sidebar

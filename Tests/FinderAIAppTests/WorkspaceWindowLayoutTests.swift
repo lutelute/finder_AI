@@ -43,7 +43,9 @@ struct WorkspaceWindowLayoutTests {
         )
         let root = try #require(controller.window?.contentView)
         root.layoutSubtreeIfNeeded()
-        let split = try #require(firstSplitView(in: root))
+        // Search from the browser, not the window: the window's own split view
+        // holds the two panes and would be found first.
+        let split = try #require(firstSplitView(in: controller.browser.view))
         #expect(split.subviews.count == 2)
         #expect(split.subviews[0].frame.width >= 160)
         #expect(split.subviews[0].frame.width <= 360)
@@ -176,6 +178,97 @@ struct WorkspaceWindowLayoutTests {
         #expect(closed)
     }
 
+    @Test("splitting adds a second pane on the same folder, and closing it returns focus")
+    func splitTogglesPanes() throws {
+        _ = NSApplication.shared
+        let controller = WorkspaceWindowController(
+            sessionManager: TerminalSessionManager(),
+            initialDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            preferences: Self.isolatedPreferences()
+        )
+        _ = controller.window?.contentView
+        let left = controller.browser
+
+        #expect(!controller.isSplit)
+        controller.toggleSplit()
+        #expect(controller.isSplit)
+        // The second pane opens where you already are; you then navigate one side
+        // away. `browser` still points at the pane commands will hit.
+        #expect(controller.browser.currentDirectory == left.currentDirectory)
+
+        controller.toggleSplit()
+        #expect(!controller.isSplit)
+        // A closed pane must not keep receiving commands.
+        #expect(controller.browser === left)
+        controller.close()
+    }
+
+    /// A pane is about half a window wide. The sidebar's 160pt minimum only binds
+    /// a drag, so the initial layout squeezed it into an unreadable strip of
+    /// truncated labels — neither pane keeps one while split, and the left pane
+    /// gets its sidebar back when the split closes.
+    @Test("no sidebars while split, and the left one returns after")
+    func sidebarsFoldAwayWhileSplit() throws {
+        _ = NSApplication.shared
+        let controller = WorkspaceWindowController(
+            sessionManager: TerminalSessionManager(),
+            initialDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            preferences: Self.isolatedPreferences()
+        )
+        let window = try #require(controller.window)
+        window.setContentSize(NSSize(width: 1180, height: 760))
+        window.contentView?.layoutSubtreeIfNeeded()
+        let split = controller.paneSplitViewForTesting
+
+        // Unsplit: sidebar plus file area.
+        #expect(try #require(firstSplitView(in: split.arrangedSubviews[0])).arrangedSubviews.count == 2)
+
+        controller.toggleSplit()
+        split.layoutSubtreeIfNeeded()
+        #expect(try #require(firstSplitView(in: split.arrangedSubviews[0])).arrangedSubviews.count == 1)
+        #expect(try #require(firstSplitView(in: split.arrangedSubviews[1])).arrangedSubviews.count == 1)
+
+        controller.toggleSplit()
+        split.layoutSubtreeIfNeeded()
+        #expect(try #require(firstSplitView(in: split.arrangedSubviews[0])).arrangedSubviews.count == 2)
+        controller.close()
+    }
+
+    @Test("a pane cannot be squeezed to an unreadable strip")
+    func paneWidthIsBounded() throws {
+        _ = NSApplication.shared
+        let controller = WorkspaceWindowController(
+            sessionManager: TerminalSessionManager(),
+            initialDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            preferences: Self.isolatedPreferences()
+        )
+        let window = try #require(controller.window)
+        window.setContentSize(NSSize(width: 1180, height: 760))
+        controller.toggleSplit()
+        window.contentView?.layoutSubtreeIfNeeded()
+
+        let split = controller.paneSplitViewForTesting
+        #expect(split.arrangedSubviews.count == 2)
+
+        // Checks what a drag actually produces rather than
+        // minPossiblePositionOfDivider, which reports the unconstrained value for
+        // a constraint-based split view even when the delegate clamps the drag.
+        let minimum = WorkspaceWindowController.minimumPaneWidth
+        split.setPosition(10, ofDividerAt: 0)
+        split.layoutSubtreeIfNeeded()
+        #expect(split.arrangedSubviews[0].frame.width >= minimum)
+
+        split.setPosition(split.bounds.width - 10, ofDividerAt: 0)
+        split.layoutSubtreeIfNeeded()
+        // Each pane carries its own sidebar and columns; neither may become a
+        // strip too narrow to read.
+        #expect(split.arrangedSubviews[1].frame.width >= minimum)
+        controller.close()
+    }
+
+    /// Searches inside the browser rather than the window: the window now hosts an
+    /// outer split view for the two panes, and a depth-first search from the root
+    /// finds that one first.
     private func firstSplitView(in view: NSView) -> NSSplitView? {
         if let split = view as? NSSplitView { return split }
         return view.subviews.lazy.compactMap(firstSplitView).first

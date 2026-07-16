@@ -219,6 +219,9 @@ final class WorkspaceAppCoordinator {
         let viewItem = NSMenuItem()
         let viewMenu = NSMenu(title: "表示")
         viewMenu.addItem(item("Terminalを開く／隠す", action: #selector(WorkspaceWindowController.toggleTerminal), key: "j"))
+        let split = item("2画面に分割／解除", action: #selector(WorkspaceWindowController.toggleSplit), key: "s")
+        split.keyEquivalentModifierMask = [.command, .option]
+        viewMenu.addItem(split)
         let hidden = item("隠しファイルを表示／隠す", action: #selector(WorkspaceBrowserViewController.toggleHiddenFiles), key: ".")
         hidden.keyEquivalentModifierMask = [.command, .shift]
         viewMenu.addItem(hidden)

@@ -174,6 +174,8 @@ private final class WorkspaceFileTableView: NSTableView {
 final class WorkspaceBrowserViewController: NSViewController {
     var onDirectoryChange: ((URL) -> Void)?
     var onToggleTerminal: (() -> Void)?
+    /// Fires when this pane takes focus, so the window can follow it.
+    var onBecameActive: (() -> Void)?
 
     /// A flattened section list: `NSTableView` has no sections, so headers and
     /// items share one row space and `isGroupRow` tells them apart.
@@ -208,11 +210,14 @@ final class WorkspaceBrowserViewController: NSViewController {
     private var openWithURL: URL?
     private var shareURLs: [URL] = []
 
+    private var sidebarContainer = NSView()
     private var sidebarRows: [SidebarRow] = []
     private var finderFavorites: [URL] = []
     private var volumes: [URL] = []
     private var sidebarLoadTask: Task<Void, Never>?
     private nonisolated(unsafe) var volumeObservers: [any NSObjectProtocol] = []
+    private nonisolated(unsafe) var focusObserver: (any NSObjectProtocol)?
+    private var paneIsActive = true
     private let sidebarTable = NSTableView()
     private let fileTable = WorkspaceFileTableView()
     private let pathControl = NSPathControl()
@@ -227,11 +232,19 @@ final class WorkspaceBrowserViewController: NSViewController {
     private let splitView = NSSplitView()
     private var didSetInitialSidebarPosition = false
 
+    /// The second pane of a split has no sidebar: one set of places is enough for
+    /// a window, and at split width a pane is too narrow to spare 210pt for a
+    /// duplicate. Left implicit it collapsed to nothing anyway, because the
+    /// sidebar's initial position is only applied above 761pt.
+    private let showsSidebar: Bool
+
     init(
         initialDirectory: URL,
-        preferences: WorkspacePreferences = WorkspacePreferences()
+        preferences: WorkspacePreferences = WorkspacePreferences(),
+        showsSidebar: Bool = true
     ) {
         self.preferences = preferences
+        self.showsSidebar = showsSidebar
         navigator = WorkspaceNavigator(initialDirectory: initialDirectory)
         super.init(nibName: nil, bundle: nil)
         sortIdentifier = NSUserInterfaceItemIdentifier(preferences.sortColumn)
@@ -245,6 +258,7 @@ final class WorkspaceBrowserViewController: NSViewController {
     deinit {
         let center = NSWorkspace.shared.notificationCenter
         volumeObservers.forEach(center.removeObserver)
+        if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }
     }
 
     var currentDirectory: URL { navigator.currentDirectory }
@@ -269,12 +283,18 @@ final class WorkspaceBrowserViewController: NSViewController {
             split.bottomAnchor.constraint(equalTo: root.bottomAnchor)
         ])
 
-        let sidebar = makeSidebar()
         let browser = makeBrowser()
-        sidebar.frame.size.width = 210
-        split.addArrangedSubview(sidebar)
-        split.addArrangedSubview(browser)
-        split.setHoldingPriority(.defaultHigh, forSubviewAt: 0)
+        // The sidebar view is always built — its table feeds the sidebar code
+        // paths whether or not it is on screen — but only mounted when shown.
+        sidebarContainer = makeSidebar()
+        sidebarContainer.frame.size.width = 210
+        if showsSidebar {
+            split.addArrangedSubview(sidebarContainer)
+            split.addArrangedSubview(browser)
+            split.setHoldingPriority(.defaultHigh, forSubviewAt: 0)
+        } else {
+            split.addArrangedSubview(browser)
+        }
 
         configureContextMenu()
         // Draw the sidebar from what needs no I/O, then fill in Finder's
@@ -290,6 +310,54 @@ final class WorkspaceBrowserViewController: NSViewController {
         super.viewDidAppear()
         view.window?.makeFirstResponder(fileTable)
         observeVolumeChanges()
+        observeFocusChanges()
+    }
+
+    /// Clicking anywhere in a pane makes it the active one. Watching the window's
+    /// first responder covers every route in — the file list, the sidebar, the
+    /// search field — without each of them having to report separately.
+    private func observeFocusChanges() {
+        guard focusObserver == nil, let window = view.window else { return }
+        focusObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didUpdateNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self,
+                      let responder = self.view.window?.firstResponder as? NSView,
+                      responder.isDescendant(of: self.view) else { return }
+                self.onBecameActive?()
+            }
+        }
+    }
+
+    /// Dims the pane that commands will not hit. With two identical panes there is
+    /// otherwise nothing to say which is which.
+    func setPaneActive(_ active: Bool) {
+        paneIsActive = active
+        view.alphaValue = active ? 1.0 : 0.72
+    }
+
+    /// Hidden while split: a pane is about half a window wide, and the sidebar's
+    /// 160pt minimum only binds a drag — the initial layout squeezed it to an
+    /// unreadable strip of truncated labels instead.
+    func setSidebarVisible(_ visible: Bool) {
+        guard showsSidebar, isViewLoaded else { return }
+        let mounted = splitView.arrangedSubviews.first === sidebarContainer
+        guard visible != mounted else { return }
+
+        if visible {
+            splitView.insertArrangedSubview(sidebarContainer, at: 0)
+            splitView.setHoldingPriority(.defaultHigh, forSubviewAt: 0)
+            didSetInitialSidebarPosition = false
+            splitView.layoutSubtreeIfNeeded()
+            splitView.setPosition(preferences.sidebarWidth, ofDividerAt: 0)
+            didSetInitialSidebarPosition = true
+        } else {
+            splitView.removeArrangedSubview(sidebarContainer)
+            sidebarContainer.removeFromSuperview()
+        }
     }
 
     /// Plugging a drive in or ejecting one should be reflected without a restart.
@@ -311,7 +379,7 @@ final class WorkspaceBrowserViewController: NSViewController {
 
     override func viewDidLayout() {
         super.viewDidLayout()
-        guard !didSetInitialSidebarPosition,
+        guard showsSidebar, !didSetInitialSidebarPosition,
               splitView.bounds.width >= 761 else { return }
         splitView.setPosition(preferences.sidebarWidth, ofDividerAt: 0)
         didSetInitialSidebarPosition = true
@@ -1609,7 +1677,7 @@ extension WorkspaceBrowserViewController: NSMenuDelegate {
 
 extension WorkspaceBrowserViewController: NSSplitViewDelegate {
     func splitViewDidResizeSubviews(_ notification: Notification) {
-        guard didSetInitialSidebarPosition,
+        guard showsSidebar, didSetInitialSidebarPosition,
               let sidebar = splitView.arrangedSubviews.first else { return }
         preferences.sidebarWidth = sidebar.frame.width
     }

@@ -3,13 +3,24 @@ import FinderAICore
 
 @MainActor
 final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
-    let browser: WorkspaceBrowserViewController
+    /// The pane commands act on. Menu items reach the window controller through
+    /// the responder chain and are forwarded here, so "the browser" has to mean
+    /// the one the user last touched, not always the left one.
+    var browser: WorkspaceBrowserViewController { activePane }
+
+    private let leftPane: WorkspaceBrowserViewController
+    private var rightPane: WorkspaceBrowserViewController?
+    private var activePane: WorkspaceBrowserViewController
+    private let paneSplit = NSSplitView()
+    private var splitEnabled = false
     private let terminal: DrawerContentViewController
     private var terminalHeightConstraint: NSLayoutConstraint!
     private var terminalExpanded = false
     private var requestedTerminalHeight: CGFloat = 300
     private var positioned = false
     private let preferences: WorkspacePreferences
+    private let sessionManager: any TerminalSessionManaging
+    private var rootController: NSViewController!
 
     var onClose: (() -> Void)?
     private let restoresFrame: Bool
@@ -22,10 +33,12 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     ) {
         self.preferences = preferences
         self.restoresFrame = restoresFrame
-        browser = WorkspaceBrowserViewController(
+        self.sessionManager = sessionManager
+        leftPane = WorkspaceBrowserViewController(
             initialDirectory: initialDirectory,
             preferences: preferences
         )
+        activePane = leftPane
         terminal = DrawerContentViewController(sessionManager: sessionManager)
         let rootController = NSViewController()
         let root = NSView()
@@ -59,9 +72,18 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         super.init(window: window)
         window.delegate = self
 
-        rootController.addChild(browser)
+        rootController.addChild(leftPane)
         rootController.addChild(terminal)
-        let browserView = browser.view
+        self.rootController = rootController
+
+        // The panes live in a split view even when there is only one, so turning
+        // the second on is adding a subview rather than rebuilding the window.
+        paneSplit.isVertical = true
+        paneSplit.dividerStyle = .thin
+        paneSplit.addArrangedSubview(leftPane.view)
+        paneSplit.delegate = self
+
+        let browserView: NSView = paneSplit
         let terminalView = terminal.view
         [browserView, terminalView].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
@@ -100,14 +122,31 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         terminal.setDirectory(initialDirectory)
         terminal.setExpanded(terminalExpanded)
 
-        browser.onDirectoryChange = { [weak self] url in
-            self?.terminal.setDirectory(url)
-            self?.window?.representedURL = url
-        }
-        browser.onToggleTerminal = { [weak self] in self?.toggleTerminal() }
+        wire(leftPane)
         terminal.onToggle = { [weak self] in self?.toggleTerminal() }
         terminal.onResizeDelta = { [weak self] delta in self?.resizeTerminal(by: delta) }
         window.setContentSize(NSSize(width: 1180, height: 760))
+
+        if preferences.splitEnabled { setSplitEnabled(true) }
+    }
+
+    /// A pane reports its folder and its focus; the terminal and the title follow
+    /// whichever pane the user is actually in.
+    private func wire(_ pane: WorkspaceBrowserViewController) {
+        pane.onDirectoryChange = { [weak self, weak pane] url in
+            guard let self, let pane, pane === self.activePane else { return }
+            self.terminal.setDirectory(url)
+            self.window?.representedURL = url
+        }
+        pane.onToggleTerminal = { [weak self] in self?.toggleTerminal() }
+        pane.onBecameActive = { [weak self, weak pane] in
+            guard let self, let pane, pane !== self.activePane else { return }
+            self.activePane = pane
+            self.terminal.setDirectory(pane.currentDirectory)
+            self.window?.representedURL = pane.currentDirectory
+            self.window?.title = pane.currentDirectory.lastPathComponent
+            self.updatePaneHighlight()
+        }
     }
 
     required init?(coder: NSCoder) {
@@ -163,7 +202,48 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     private static let frameAutosaveName = NSWindow.FrameAutosaveName("FinderAIWorkspaceWindow")
 
     func windowWillClose(_ notification: Notification) {
+        if let rightPane { preferences.secondDirectory = rightPane.currentDirectory }
         onClose?()
+    }
+}
+
+extension WorkspaceWindowController: NSSplitViewDelegate {
+    func splitView(
+        _ splitView: NSSplitView,
+        constrainMinCoordinate proposedMinimumPosition: CGFloat,
+        ofSubviewAt dividerIndex: Int
+    ) -> CGFloat {
+        splitView === paneSplit ? Self.minimumPaneWidth : proposedMinimumPosition
+    }
+
+    func splitView(
+        _ splitView: NSSplitView,
+        constrainMaxCoordinate proposedMaximumPosition: CGFloat,
+        ofSubviewAt dividerIndex: Int
+    ) -> CGFloat {
+        guard splitView === paneSplit else { return proposedMaximumPosition }
+        // Each pane carries its own sidebar and columns; letting one shrink past
+        // this leaves a strip too narrow to read. The divider sits between them,
+        // so its thickness comes out of the width too — without it the right pane
+        // lands one point short of the minimum.
+        return max(
+            Self.minimumPaneWidth,
+            splitView.bounds.width - Self.minimumPaneWidth - splitView.dividerThickness
+        )
+    }
+
+    func splitViewDidResizeSubviews(_ notification: Notification) {
+        guard notification.object as? NSSplitView === paneSplit,
+              rightPane != nil,
+              paneSplit.bounds.width > 0,
+              let left = paneSplit.arrangedSubviews.first else { return }
+        preferences.splitRatio = left.frame.width / paneSplit.bounds.width
+    }
+
+    func splitView(_ splitView: NSSplitView, canCollapseSubview subview: NSView) -> Bool {
+        // Collapsing would leave an invisible pane still taking commands; ⌘⌥S is
+        // the way out.
+        false
     }
 
     @objc func toggleTerminal() {
@@ -183,7 +263,73 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     var terminalPanelHeight: CGFloat { terminalHeightConstraint.constant }
     var isTerminalExpanded: Bool { terminalExpanded }
 
+    /// ⌘⌥S. The second pane opens on the same folder, which is what "split this"
+    /// almost always means — you then navigate one side away.
+    @objc func toggleSplit() {
+        setSplitEnabled(!splitEnabled)
+        preferences.splitEnabled = splitEnabled
+    }
+
+    var isSplit: Bool { splitEnabled }
+
+    /// The pane splitter. Exposed because it is indistinguishable from a pane's
+    /// own sidebar splitter by inspection — both are vertical with two subviews.
+    var paneSplitViewForTesting: NSSplitView { paneSplit }
+
+    private func setSplitEnabled(_ enabled: Bool) {
+        guard enabled != splitEnabled else { return }
+        splitEnabled = enabled
+
+        if enabled {
+            let directory = preferences.secondDirectory ?? leftPane.currentDirectory
+            let pane = WorkspaceBrowserViewController(
+                initialDirectory: directory,
+                preferences: preferences,
+                showsSidebar: false
+            )
+            rootController.addChild(pane)
+            paneSplit.addArrangedSubview(pane.view)
+            wire(pane)
+            rightPane = pane
+            // Half a window is not enough for a sidebar and a readable list.
+            leftPane.setSidebarVisible(false)
+            paneSplit.layoutSubtreeIfNeeded()
+            applySplitRatio()
+        } else {
+            // Closing the split hands focus back rather than leaving commands
+            // pointed at a pane that no longer exists.
+            if let rightPane {
+                preferences.secondDirectory = rightPane.currentDirectory
+                rightPane.view.removeFromSuperview()
+                rightPane.removeFromParent()
+            }
+            rightPane = nil
+            activePane = leftPane
+            leftPane.setSidebarVisible(true)
+            terminal.setDirectory(leftPane.currentDirectory)
+        }
+        updatePaneHighlight()
+        window?.makeFirstResponder(activePane.view)
+    }
+
+    private func applySplitRatio() {
+        guard rightPane != nil, paneSplit.bounds.width > 0 else { return }
+        paneSplit.setPosition(paneSplit.bounds.width * preferences.splitRatio, ofDividerAt: 0)
+    }
+
+    /// With two identical panes there is nothing to say which one a command will
+    /// hit, so the inactive one is dimmed.
+    private func updatePaneHighlight() {
+        guard rightPane != nil else {
+            leftPane.setPaneActive(true)
+            return
+        }
+        leftPane.setPaneActive(activePane === leftPane)
+        rightPane?.setPaneActive(activePane === rightPane)
+    }
+
     static let minimumBrowserHeight: CGFloat = 220
+    static let minimumPaneWidth: CGFloat = 380
     private static let minimumTerminalHeight: CGFloat = 160
     private static let maximumTerminalHeight: CGFloat = 600
 
