@@ -221,6 +221,7 @@ final class WorkspaceBrowserViewController: NSViewController {
     private let sidebarTable = NSTableView()
     private let fileTable = WorkspaceFileTableView()
     private let pathControl = NSPathControl()
+    private let pathField = NSTextField()
     private let searchField = NSSearchField()
     private let backButton = NSButton()
     private let forwardButton = NSButton()
@@ -472,13 +473,39 @@ final class WorkspaceBrowserViewController: NSViewController {
         pathControl.font = .systemFont(ofSize: 12)
         pathControl.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
+        // The editable path sits in the same slot as the breadcrumb and swaps in.
+        pathField.font = .monospacedSystemFont(ofSize: 11.5, weight: .regular)
+        pathField.delegate = self
+        pathField.isHidden = true
+        pathField.focusRingType = .none
+        pathField.placeholderString = "パスを入力"
+        pathField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let pathSlot = NSView()
+        pathSlot.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        [pathControl, pathField].forEach {
+            $0.translatesAutoresizingMaskIntoConstraints = false
+            pathSlot.addSubview($0)
+            NSLayoutConstraint.activate([
+                $0.leadingAnchor.constraint(equalTo: pathSlot.leadingAnchor),
+                $0.trailingAnchor.constraint(equalTo: pathSlot.trailingAnchor),
+                $0.centerYAnchor.constraint(equalTo: pathSlot.centerYAnchor)
+            ])
+        }
+        pathSlot.heightAnchor.constraint(equalToConstant: 22).isActive = true
+
+        // A click on empty breadcrumb space edits the path; a click on a crumb
+        // still navigates, because NSPathControl consumes that first.
+        let editGesture = NSClickGestureRecognizer(target: self, action: #selector(beginPathEditing))
+        pathControl.addGestureRecognizer(editGesture)
+
         searchField.placeholderString = "このフォルダを検索"
         searchField.sendsSearchStringImmediately = true
         searchField.delegate = self
         searchField.widthAnchor.constraint(equalToConstant: 190).isActive = true
 
         let stack = NSStackView(views: [
-            backButton, forwardButton, upButton, pathControl,
+            backButton, forwardButton, upButton, pathSlot,
             searchField, refreshButton, newFolderButton
         ])
         stack.orientation = .horizontal
@@ -1383,6 +1410,59 @@ final class WorkspaceBrowserViewController: NSViewController {
         view.window?.makeFirstResponder(searchField)
     }
 
+    /// ⌘L, or a click on the breadcrumb's empty space. Shows the real path,
+    /// selected, so it can be copied or replaced outright.
+    @objc func beginPathEditing() {
+        guard pathField.isHidden else { return }
+        pathField.stringValue = navigator.currentDirectory.path(percentEncoded: false)
+        pathControl.isHidden = true
+        pathField.isHidden = false
+        view.window?.makeFirstResponder(pathField)
+        pathField.currentEditor()?.selectAll(nil)
+    }
+
+    private func endPathEditing() {
+        guard !pathField.isHidden else { return }
+        pathField.isHidden = true
+        pathControl.isHidden = false
+        view.window?.makeFirstResponder(fileTable)
+    }
+
+    /// Accepts what a user actually pastes: `~`, a trailing slash, surrounding
+    /// quotes or spaces from a copied path, and a `file://` URL.
+    private func commitPathEditing() {
+        guard let candidate = WorkspacePathInput.parse(pathField.stringValue) else {
+            endPathEditing()
+            return
+        }
+        endPathEditing()
+
+        // A path pointing at a file opens it and stays put; that is what typing
+        // one means, and navigating to its parent instead would be a guess.
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDirectory) else {
+            presentError(
+                title: "その場所が見つかりません",
+                message: "“\(candidate.path(percentEncoded: false))”は存在しません。"
+            )
+            return
+        }
+        if isDirectory.boolValue {
+            navigate(to: candidate)
+        } else {
+            NSWorkspace.shared.open(candidate)
+        }
+    }
+
+    @objc func copyCurrentPath() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(
+            navigator.currentDirectory.path(percentEncoded: false),
+            forType: .string
+        )
+    }
+
     @objc func toggleQuickLook() {
         guard let panel = QLPreviewPanel.shared() else { return }
         if QLPreviewPanel.sharedPreviewPanelExists(), panel.isVisible {
@@ -1618,9 +1698,30 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
 }
 
 extension WorkspaceBrowserViewController: NSSearchFieldDelegate {
+    /// Return commits the path, Escape abandons it. Both fields share this
+    /// delegate, so the path field has to be told apart from the search field.
+    func control(
+        _ control: NSControl,
+        textView: NSTextView,
+        doCommandBy selector: Selector
+    ) -> Bool {
+        guard control === pathField else { return false }
+        switch selector {
+        case #selector(NSResponder.insertNewline(_:)):
+            commitPathEditing()
+            return true
+        case #selector(NSResponder.cancelOperation(_:)):
+            endPathEditing()
+            return true
+        default:
+            return false
+        }
+    }
+
     /// Filtering re-sorts every item, so running it per keystroke makes typing lag
     /// in large folders. Coalesce bursts; a lone keystroke still lands quickly.
     func controlTextDidChange(_ obj: Notification) {
+        guard obj.object as? NSTextField !== pathField else { return }
         filterTask?.cancel()
         filterTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(60))

@@ -228,6 +228,10 @@ final class WorkspaceAppCoordinator {
         viewMenu.addItem(item("サイドバーにピン留め／解除", action: #selector(WorkspaceBrowserViewController.togglePin), key: "d"))
         viewMenu.addItem(.separator())
         viewMenu.addItem(item("このフォルダを検索", action: #selector(WorkspaceBrowserViewController.focusSearchField), key: "f"))
+        viewMenu.addItem(item("パスを入力…", action: #selector(WorkspaceBrowserViewController.beginPathEditing), key: "l"))
+        let copyPath = item("パスをコピー", action: #selector(WorkspaceBrowserViewController.copyCurrentPath), key: "c")
+        copyPath.keyEquivalentModifierMask = [.command, .option]
+        viewMenu.addItem(copyPath)
         viewItem.submenu = viewMenu
         main.addItem(viewItem)
 
