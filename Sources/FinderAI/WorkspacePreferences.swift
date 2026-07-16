@@ -22,9 +22,17 @@ struct WorkspacePreferences {
         static let lastDirectory = "workspace.lastDirectory"
         static let pins = "workspace.pins"
         static let visits = "workspace.visits"
+        static let columnView = "workspace.columnView"
         static let splitEnabled = "workspace.splitEnabled"
         static let splitRatio = "workspace.splitRatio"
         static let secondDirectory = "workspace.secondDirectory"
+    }
+
+    // MARK: - View mode
+
+    var usesColumnView: Bool {
+        get { defaults.bool(forKey: Key.columnView) }
+        nonmutating set { defaults.set(newValue, forKey: Key.columnView) }
     }
 
     // MARK: - Split view

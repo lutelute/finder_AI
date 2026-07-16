@@ -222,6 +222,9 @@ final class WorkspaceBrowserViewController: NSViewController {
     private let fileTable = WorkspaceFileTableView()
     private let pathControl = NSPathControl()
     private let pathField = NSTextField()
+    private let fileArea = NSView()
+    private let columnView = WorkspaceColumnView()
+    private var listScrollView: NSScrollView?
     private let searchField = NSSearchField()
     private let backButton = NSButton()
     private let forwardButton = NSButton()
@@ -433,10 +436,25 @@ final class WorkspaceBrowserViewController: NSViewController {
         root.wantsLayer = true
         root.layer?.backgroundColor = IntegratedPanelTheme.background.cgColor
         let navigationBar = makeNavigationBar()
-        let scroll = makeFileTable()
+        let listScroll = makeFileTable()
         let statusBar = makeStatusBar()
+        configureColumnView()
 
-        [navigationBar, scroll, statusBar].forEach {
+        // Both views occupy the same slot; only one is unhidden at a time.
+        fileArea.addSubview(listScroll)
+        fileArea.addSubview(columnView)
+        [listScroll, columnView].forEach {
+            $0.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                $0.leadingAnchor.constraint(equalTo: fileArea.leadingAnchor),
+                $0.trailingAnchor.constraint(equalTo: fileArea.trailingAnchor),
+                $0.topAnchor.constraint(equalTo: fileArea.topAnchor),
+                $0.bottomAnchor.constraint(equalTo: fileArea.bottomAnchor)
+            ])
+        }
+        listScrollView = listScroll
+
+        [navigationBar, fileArea, statusBar].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview($0)
         }
@@ -445,16 +463,60 @@ final class WorkspaceBrowserViewController: NSViewController {
             navigationBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             navigationBar.topAnchor.constraint(equalTo: root.topAnchor),
             navigationBar.heightAnchor.constraint(equalToConstant: 46),
-            scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: navigationBar.bottomAnchor),
-            scroll.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
+            fileArea.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            fileArea.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            fileArea.topAnchor.constraint(equalTo: navigationBar.bottomAnchor),
+            fileArea.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
             statusBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             statusBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             statusBar.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             statusBar.heightAnchor.constraint(equalToConstant: 25)
         ])
+        applyViewMode()
         return root
+    }
+
+    private func configureColumnView() {
+        columnView.onDirectoryChange = { [weak self] url in
+            // The column view walks the path itself; the rest of the UI follows
+            // without it re-driving the column view and looping.
+            guard let self, url != self.navigator.currentDirectory else { return }
+            self.navigator.navigate(to: url)
+            self.syncAfterColumnNavigation(to: url)
+        }
+        columnView.onOpenFile = { url in NSWorkspace.shared.open(url) }
+        columnView.onSelectionChange = { [weak self] _ in self?.updateStatus() }
+        columnView.contextMenuProvider = { [weak self] in self?.fileTable.menu }
+    }
+
+    private func syncAfterColumnNavigation(to url: URL) {
+        updateNavigationUI()
+        watchCurrentDirectory()
+        preferences.lastDirectory = url
+        recordVisit(url)
+        onDirectoryChange?(url)
+        view.window?.title = url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent
+        updateStatus()
+    }
+
+    /// ⌘2 / ⌘1. Column view is the only one that shows where a folder sits in the
+    /// tree; the list is better for sorting and comparing.
+    @objc func toggleColumnView() {
+        preferences.usesColumnView.toggle()
+        applyViewMode()
+    }
+
+    private func applyViewMode() {
+        let column = preferences.usesColumnView
+        columnView.isHidden = !column
+        listScrollView?.isHidden = column
+        if column {
+            columnView.show(
+                directory: navigator.currentDirectory,
+                showHiddenFiles: preferences.showHiddenFiles
+            )
+        }
+        updateStatus()
     }
 
     private func makeNavigationBar() -> NSView {
@@ -880,6 +942,11 @@ final class WorkspaceBrowserViewController: NSViewController {
         searchField.stringValue = ""
         updateNavigationUI()
         reloadContents()
+        // The column view keeps its own columns; this is for navigation that did
+        // not originate there (sidebar, breadcrumb, back/forward, path bar).
+        if preferences.usesColumnView, isViewLoaded {
+            columnView.show(directory: directory, showHiddenFiles: preferences.showHiddenFiles)
+        }
         watchCurrentDirectory()
         preferences.lastDirectory = directory
         recordVisit(directory)
@@ -1056,7 +1123,8 @@ final class WorkspaceBrowserViewController: NSViewController {
     }
 
     private var selectedItems: [WorkspaceItem] {
-        fileTable.selectedRowIndexes.compactMap { index in
+        if preferences.usesColumnView { return columnView.selectedItems }
+        return fileTable.selectedRowIndexes.compactMap { index in
             displayedItems.indices.contains(index) ? displayedItems[index] : nil
         }
     }
@@ -1107,6 +1175,7 @@ final class WorkspaceBrowserViewController: NSViewController {
 
     @objc func refresh() {
         reloadContents()
+        if preferences.usesColumnView { columnView.reloadCurrent() }
     }
 
     @objc func openFolderChooser() {
@@ -1404,6 +1473,12 @@ final class WorkspaceBrowserViewController: NSViewController {
     @objc func toggleHiddenFiles() {
         preferences.showHiddenFiles.toggle()
         reloadContents()
+        if preferences.usesColumnView {
+            columnView.show(
+                directory: navigator.currentDirectory,
+                showHiddenFiles: preferences.showHiddenFiles
+            )
+        }
     }
 
     @objc func focusSearchField() {
