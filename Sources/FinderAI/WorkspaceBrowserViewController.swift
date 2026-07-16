@@ -6,6 +6,7 @@ import QuickLookUI
 private final class WorkspaceNameCellView: NSTableCellView {
     private let iconView = NSImageView()
     private let label = NSTextField(labelWithString: "")
+    private let cloudView = NSImageView()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -13,18 +14,27 @@ private final class WorkspaceNameCellView: NSTableCellView {
         iconView.imageScaling = .scaleProportionallyDown
         label.lineBreakMode = .byTruncatingMiddle
         label.textColor = IntegratedPanelTheme.text
-        [iconView, label].forEach {
+        cloudView.imageScaling = .scaleProportionallyDown
+        cloudView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
+        [iconView, label, cloudView].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             addSubview($0)
         }
+        // The badge sits after the name and is hugged tight, so a long name
+        // truncates instead of pushing the badge out of the cell.
+        cloudView.setContentHuggingPriority(.required, for: .horizontal)
+        cloudView.setContentCompressionResistancePriority(.required, for: .horizontal)
         NSLayoutConstraint.activate([
             iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
             iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
             iconView.widthAnchor.constraint(equalToConstant: 18),
             iconView.heightAnchor.constraint(equalToConstant: 18),
             label.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 7),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -5),
-            label.centerYAnchor.constraint(equalTo: centerYAnchor)
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            cloudView.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 6),
+            cloudView.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -5),
+            cloudView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            cloudView.widthAnchor.constraint(equalToConstant: 14)
         ])
         imageView = iconView
         textField = label
@@ -34,10 +44,43 @@ private final class WorkspaceNameCellView: NSTableCellView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func configure(name: String, image: NSImage) {
+    func configure(name: String, image: NSImage, cloud: WorkspaceCloudStatus) {
         label.stringValue = name
         label.toolTip = name
         iconView.image = image
+        applyCloud(cloud)
+    }
+
+    private func applyCloud(_ status: WorkspaceCloudStatus) {
+        switch status {
+        case .none:
+            cloudView.isHidden = true
+            cloudView.image = nil
+        case .notDownloaded:
+            cloudView.isHidden = false
+            cloudView.image = NSImage(
+                systemSymbolName: "icloud.and.arrow.down",
+                accessibilityDescription: "未ダウンロード"
+            )
+            cloudView.contentTintColor = IntegratedPanelTheme.secondaryText
+            cloudView.toolTip = "このMacにダウンロードされていません"
+        case .downloading:
+            cloudView.isHidden = false
+            cloudView.image = NSImage(
+                systemSymbolName: "arrow.down.circle",
+                accessibilityDescription: "ダウンロード中"
+            )
+            cloudView.contentTintColor = IntegratedPanelTheme.accent
+            cloudView.toolTip = "ダウンロード中"
+        case .uploading:
+            cloudView.isHidden = false
+            cloudView.image = NSImage(
+                systemSymbolName: "arrow.up.circle",
+                accessibilityDescription: "アップロード中"
+            )
+            cloudView.contentTintColor = IntegratedPanelTheme.accent
+            cloudView.toolTip = "アップロード中"
+        }
     }
 }
 
@@ -1373,7 +1416,7 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
                 withIdentifier: NSUserInterfaceItemIdentifier("WorkspaceNameCell"),
                 owner: self
             ) as? WorkspaceNameCellView ?? WorkspaceNameCellView()
-            cell.configure(name: item.name, image: icon(for: item))
+            cell.configure(name: item.name, image: icon(for: item), cloud: item.cloudStatus)
             return cell
         }
 
