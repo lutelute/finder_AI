@@ -25,8 +25,14 @@
       <stop offset="1" stop-color="#3E9AE8"/>
     </linearGradient>
     <linearGradient id="folderFace" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#42A0EF"/>
-      <stop offset="1" stop-color="#0F6FC4"/>
+      <stop offset="0" stop-color="#46A8F5"/>
+      <stop offset="0.55" stop-color="#2489DB"/>
+      <stop offset="1" stop-color="#0B68B9"/>
+    </linearGradient>
+    <linearGradient id="folderSheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.16"/>
+      <stop offset="0.22" stop-color="#FFFFFF" stop-opacity="0.03"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
     </linearGradient>
     <!--
       Fades out well before the shell's lower edge. An ellipse was used here
@@ -46,6 +52,21 @@
     <clipPath id="squircle">
       <rect x="100" y="100" width="824" height="824" rx="185.4" ry="185.4"/>
     </clipPath>
+    <clipPath id="folderFaceClip">
+      <path d="M252 426
+               h520
+               a64 64 0 0 1 64 64
+               v218
+               a64 64 0 0 1 -64 64
+               H252
+               a64 64 0 0 1 -64 -64
+               V490
+               a64 64 0 0 1 64 -64 Z"/>
+    </clipPath>
+    <filter id="folderShadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18"
+                    flood-color="#000000" flood-opacity="0.30"/>
+    </filter>
   </defs>
 
   <rect x="100" y="100" width="824" height="824" rx="185.4" ry="185.4" fill="url(#shell)"/>
@@ -55,39 +76,48 @@
     <rect x="100" y="100" width="824" height="824" fill="url(#topLight)"/>
   </g>
 
-  <!-- Folder back panel with its tab -->
-  <path d="M232 396
-           a56 56 0 0 1 56 -56
-           h150
-           a40 40 0 0 1 30 14
-           l44 50
-           h220
-           a56 56 0 0 1 56 56
-           v40
-           H232 Z"
-        fill="url(#folderBack)"/>
+  <g filter="url(#folderShadow)">
+    <!--
+      Taller back panel and tab. The previous folder was 672x400 overall and
+      its face only 288pt high, which made the whole mark look compressed.
+    -->
+    <path d="M252 392
+             a64 64 0 0 1 64 -64
+             h132
+             a44 44 0 0 1 33 15
+             l57 65
+             h234
+             a64 64 0 0 1 64 64
+             v36
+             H252 Z"
+          fill="url(#folderBack)"/>
 
-  <!-- Folder front face -->
-  <path d="M232 452
-           h560
-           a56 56 0 0 1 56 56
-           v176
-           a56 56 0 0 1 -56 56
-           H232
-           a56 56 0 0 1 -56 -56
-           V508
-           a56 56 0 0 1 56 -56 Z"
-        fill="url(#folderFace)"/>
+    <!-- Folder front face: 648x346, up from the old 672x288 silhouette. -->
+    <path d="M252 426
+             h520
+             a64 64 0 0 1 64 64
+             v218
+             a64 64 0 0 1 -64 64
+             H252
+             a64 64 0 0 1 -64 -64
+             V490
+             a64 64 0 0 1 64 -64 Z"
+          fill="url(#folderFace)"/>
+
+    <!-- A soft top-plane highlight keeps the taller face from reading flat. -->
+    <rect x="188" y="426" width="648" height="346"
+          clip-path="url(#folderFaceClip)" fill="url(#folderSheen)"/>
+  </g>
 
   <!--
     Accent seam where the drawer meets the list in the real window. Inset to the
     folder's own corner radius so it cannot poke out past the face.
   -->
-  <rect x="232" y="452" width="560" height="6" fill="#007ACC" opacity="0.9"/>
+  <rect x="252" y="426" width="520" height="7" fill="#007ACC" opacity="0.9"/>
 
   <!-- Shell prompt: the half that is not a file browser -->
-  <path d="M330 540 l72 62 l-72 62"
-        fill="none" stroke="#2BD048" stroke-width="34"
+  <path d="M320 516 l88 76 l-88 76"
+        fill="none" stroke="#2BD048" stroke-width="36"
         stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="446" y="646" width="180" height="30" rx="15" fill="#FFFFFF"/>
+  <rect x="460" y="652" width="196" height="32" rx="16" fill="#FFFFFF"/>
 </svg>
