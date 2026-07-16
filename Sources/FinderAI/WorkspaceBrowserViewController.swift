@@ -160,6 +160,10 @@ final class WorkspaceBrowserViewController: NSViewController {
     private var sortAscending = true
     private var quickLookURLs: [URL] = []
     private var pathComponentURLs: [URL] = []
+    private var openWithItem = NSMenuItem()
+    private var shareItem = NSMenuItem()
+    private var openWithURL: URL?
+    private var shareURLs: [URL] = []
 
     private var sidebarRows: [SidebarRow] = []
     private var finderFavorites: [URL] = []
@@ -482,22 +486,125 @@ final class WorkspaceBrowserViewController: NSViewController {
     private func configureContextMenu() {
         let menu = NSMenu(title: "ファイル操作")
         menu.delegate = self
-        let items: [(String, Selector)] = [
-            ("開く", #selector(openSelection)),
-            ("Finderで表示", #selector(revealSelectionInFinder)),
-            ("サイドバーにピン留め", #selector(togglePin)),
-            ("名前を変更…", #selector(renameSelection)),
-            ("新規フォルダ", #selector(createFolder)),
-            ("ゴミ箱に入れる…", #selector(trashSelection))
-        ]
-        for (index, pair) in items.enumerated() {
-            if index == 4 || index == 5 { menu.addItem(.separator()) }
-            let item = NSMenuItem(title: pair.0, action: pair.1, keyEquivalent: "")
+        func add(_ title: String, _ action: Selector) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
             menu.addItem(item)
         }
+
+        add("開く", #selector(openSelection))
+        // Populated in menuWillOpen: the list depends on what is selected.
+        openWithItem = NSMenuItem(title: "このアプリケーションで開く", action: nil, keyEquivalent: "")
+        openWithItem.submenu = NSMenu()
+        menu.addItem(openWithItem)
+        add("クイックルック", #selector(toggleQuickLook))
+        menu.addItem(.separator())
+
+        add("情報を見る", #selector(showInfo))
+        add("Finderで表示", #selector(revealSelectionInFinder))
+        add("サイドバーにピン留め", #selector(togglePin))
+        menu.addItem(.separator())
+
+        add("コピー", #selector(copySelection))
+        add("ペースト", #selector(pasteIntoCurrentFolder))
+        add("複製", #selector(duplicateSelection))
+        add("エイリアスを作成", #selector(makeAliasForSelection))
+        add("圧縮", #selector(compressSelection))
+        menu.addItem(.separator())
+
+        // The system fills these in; we only say where they go.
+        shareItem = NSMenuItem(title: "共有", action: nil, keyEquivalent: "")
+        shareItem.submenu = NSMenu()
+        menu.addItem(shareItem)
+        let services = NSMenuItem(title: "サービス", action: nil, keyEquivalent: "")
+        services.submenu = NSMenu()
+        NSApp.servicesMenu = services.submenu
+        menu.addItem(services)
+        menu.addItem(.separator())
+
+        add("名前を変更…", #selector(renameSelection))
+        add("新規フォルダ", #selector(createFolder))
+        menu.addItem(.separator())
+        add("ゴミ箱に入れる…", #selector(trashSelection))
+
         fileTable.menu = menu
         configureSidebarContextMenu()
+    }
+
+    private var pasteboardHasFiles: Bool {
+        NSPasteboard.general.canReadObject(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        )
+    }
+
+    /// Rebuilt per open because the candidate apps depend on the file's type, and
+    /// a multi-selection of mixed types has no single answer.
+    private func rebuildOpenWithSubmenu(for urls: [URL]) {
+        let submenu = NSMenu()
+        defer { openWithItem.submenu = submenu }
+
+        guard urls.count == 1, let url = urls.first, !url.hasDirectoryPath else {
+            openWithItem.isEnabled = false
+            return
+        }
+        openWithItem.isEnabled = true
+
+        let apps = NSWorkspace.shared.urlsForApplications(toOpen: url)
+        let defaultApp = NSWorkspace.shared.urlForApplication(toOpen: url)
+        openWithURL = url
+
+        for app in apps {
+            let name = FileManager.default.displayName(atPath: app.path)
+            let title = app == defaultApp ? "\(name)（デフォルト）" : name
+            let item = NSMenuItem(title: title, action: #selector(openWithApp(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = app
+            let icon = NSWorkspace.shared.icon(forFile: app.path)
+            icon.size = NSSize(width: 16, height: 16)
+            item.image = icon
+            submenu.addItem(item)
+        }
+        if apps.isEmpty {
+            submenu.addItem(NSMenuItem(title: "対応アプリがありません", action: nil, keyEquivalent: ""))
+        }
+    }
+
+    @objc private func openWithApp(_ sender: NSMenuItem) {
+        guard let app = sender.representedObject as? URL, let url = openWithURL else { return }
+        NSWorkspace.shared.open(
+            [url],
+            withApplicationAt: app,
+            configuration: NSWorkspace.OpenConfiguration()
+        )
+    }
+
+    /// The system supplies the services; we only place them.
+    private func rebuildShareSubmenu(for urls: [URL]) {
+        let submenu = NSMenu()
+        defer { shareItem.submenu = submenu }
+        guard !urls.isEmpty else {
+            shareItem.isEnabled = false
+            return
+        }
+        shareItem.isEnabled = true
+        shareURLs = urls
+
+        for service in NSSharingService.sharingServices(forItems: urls) {
+            let item = NSMenuItem(title: service.title, action: #selector(share(_:)), keyEquivalent: "")
+            item.target = self
+            item.image = service.image
+            item.representedObject = service
+            submenu.addItem(item)
+        }
+        if submenu.items.isEmpty {
+            submenu.addItem(NSMenuItem(title: "共有できる相手がありません", action: nil, keyEquivalent: ""))
+        }
+    }
+
+    @objc private func share(_ sender: NSMenuItem) {
+        guard let service = sender.representedObject as? NSSharingService else { return }
+        service.perform(withItems: shareURLs)
     }
 
     private func configureSidebarContextMenu() {
@@ -1063,6 +1170,99 @@ final class WorkspaceBrowserViewController: NSViewController {
         )
     }
 
+    @objc func showInfo() {
+        let targets = selectedItems.map(\.url)
+        for url in (targets.isEmpty ? [navigator.currentDirectory] : targets) {
+            WorkspaceInfoWindowController.show(for: url)
+        }
+    }
+
+    @objc func copySelection() {
+        let urls = selectedItems.map(\.url)
+        guard !urls.isEmpty else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.writeObjects(urls.map { $0 as NSURL })
+    }
+
+    /// Reads file URLs off the pasteboard, so a copy made in Finder pastes here.
+    @objc func pasteIntoCurrentFolder() {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        let urls = (NSPasteboard.general.readObjects(
+            forClasses: [NSURL.self],
+            options: options
+        ) as? [NSURL])?.map { $0 as URL } ?? []
+        guard !urls.isEmpty else { return }
+        // Pasting copies; the originals are somebody else's.
+        transferItems(urls, to: navigator.currentDirectory, copy: true)
+    }
+
+    @objc func duplicateSelection() {
+        let urls = selectedItems.map(\.url)
+        guard !urls.isEmpty else { return }
+        do {
+            var created: [URL] = []
+            for url in urls { created.append(try fileService.duplicate(url)) }
+            registerTrashUndo(created, actionName: "複製")
+            pendingSelectionURL = created.first
+            reloadContents()
+        } catch {
+            presentError(title: "複製できません", message: error.localizedDescription)
+        }
+    }
+
+    @objc func makeAliasForSelection() {
+        let urls = selectedItems.map(\.url)
+        guard !urls.isEmpty else { return }
+        do {
+            var created: [URL] = []
+            for url in urls { created.append(try fileService.makeAlias(for: url)) }
+            registerTrashUndo(created, actionName: "エイリアスを作成")
+            pendingSelectionURL = created.first
+            reloadContents()
+        } catch {
+            presentError(title: "エイリアスを作成できません", message: error.localizedDescription)
+        }
+    }
+
+    /// Zipping a big folder takes real time, so it runs off the main actor and the
+    /// spinner is left to say so.
+    @objc func compressSelection() {
+        let urls = selectedItems.map(\.url)
+        let targets = urls.isEmpty ? [navigator.currentDirectory] : urls
+        let directory = navigator.currentDirectory
+        beginLoadingIndicator()
+
+        Task { [weak self] in
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { try WorkspaceArchiver.archive(targets, in: directory) }
+            }.value
+            guard let self else { return }
+            self.endLoadingIndicator()
+            switch result {
+            case .success(let archive):
+                self.registerTrashUndo([archive], actionName: "圧縮")
+                self.pendingSelectionURL = archive
+                self.reloadContents()
+            case .failure(let error):
+                self.presentError(title: "圧縮できません", message: error.localizedDescription)
+            }
+        }
+    }
+
+    /// Undo for anything that creates files: put them in the trash, so a mistaken
+    /// undo is still recoverable.
+    private func registerTrashUndo(_ created: [URL], actionName: String) {
+        guard let undoManager = workspaceUndoManager, !created.isEmpty else { return }
+        undoManager.registerUndo(withTarget: self) { target in
+            MainActor.assumeIsolated {
+                try? target.fileService.moveToTrash(created)
+                target.reloadContents()
+            }
+        }
+        undoManager.setActionName(actionName)
+    }
+
     @objc func toggleHiddenFiles() {
         preferences.showHiddenFiles.toggle()
         reloadContents()
@@ -1335,11 +1535,21 @@ extension WorkspaceBrowserViewController: NSMenuDelegate {
            !fileTable.selectedRowIndexes.contains(clickedRow) {
             fileTable.selectRowIndexes(IndexSet(integer: clickedRow), byExtendingSelection: false)
         }
-        let selectionCount = selectedItems.count
+        let selection = selectedItems
+        let selectionCount = selection.count
         menu.item(withTitle: "開く")?.isEnabled = selectionCount > 0
+        menu.item(withTitle: "クイックルック")?.isEnabled = selectionCount > 0
         menu.item(withTitle: "Finderで表示")?.isEnabled = true
+        menu.item(withTitle: "情報を見る")?.isEnabled = true
+        menu.item(withTitle: "コピー")?.isEnabled = selectionCount > 0
+        menu.item(withTitle: "複製")?.isEnabled = selectionCount > 0
+        menu.item(withTitle: "エイリアスを作成")?.isEnabled = selectionCount > 0
+        menu.item(withTitle: "圧縮")?.isEnabled = true
         menu.item(withTitle: "名前を変更…")?.isEnabled = selectionCount == 1
         menu.item(withTitle: "ゴミ箱に入れる…")?.isEnabled = selectionCount > 0
+        menu.item(withTitle: "ペースト")?.isEnabled = pasteboardHasFiles
+        rebuildOpenWithSubmenu(for: selection.map(\.url))
+        rebuildShareSubmenu(for: selection.map(\.url))
 
         // Pinning targets folders; with nothing selected it means the folder on
         // screen, which is always a folder.

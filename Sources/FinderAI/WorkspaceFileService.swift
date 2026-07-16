@@ -105,6 +105,75 @@ struct WorkspaceFileService {
             try fileManager.trashItem(at: url, resultingItemURL: &resultingURL)
         }
     }
+
+    /// Copies alongside the original as "name のコピー", matching Finder's naming
+    /// and its habit of numbering rather than overwriting.
+    @discardableResult
+    func duplicate(_ source: URL) throws -> URL {
+        let source = source.standardizedFileURL
+        let directory = source.deletingLastPathComponent()
+        let ext = source.pathExtension
+        let stem = source.deletingPathExtension().lastPathComponent
+
+        func candidate(_ suffix: String) -> URL {
+            let name = ext.isEmpty ? "\(stem)\(suffix)" : "\(stem)\(suffix).\(ext)"
+            return directory.appendingPathComponent(name, isDirectory: source.hasDirectoryPath)
+        }
+
+        var destination = candidate(" のコピー")
+        var index = 2
+        while fileManager.fileExists(atPath: destination.path) {
+            destination = candidate(" のコピー \(index)")
+            index += 1
+        }
+        try fileManager.copyItem(at: source, to: destination)
+        return destination.standardizedFileURL
+    }
+
+    /// A real macOS alias, not a symlink: an alias survives the original being
+    /// moved or renamed, which is the whole reason to make one.
+    @discardableResult
+    func makeAlias(for source: URL) throws -> URL {
+        let source = source.standardizedFileURL
+        let directory = source.deletingLastPathComponent()
+        let stem = source.deletingPathExtension().lastPathComponent
+        let ext = source.pathExtension
+
+        func candidate(_ suffix: String) -> URL {
+            let name = ext.isEmpty ? "\(stem)\(suffix)" : "\(stem)\(suffix).\(ext)"
+            return directory.appendingPathComponent(name)
+        }
+
+        var destination = candidate(" のエイリアス")
+        var index = 2
+        while fileManager.fileExists(atPath: destination.path) {
+            destination = candidate(" のエイリアス \(index)")
+            index += 1
+        }
+
+        let bookmark = try source.bookmarkData(
+            options: .suitableForBookmarkFile,
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        )
+        try URL.writeBookmarkData(bookmark, to: destination)
+        return destination.standardizedFileURL
+    }
+
+    /// Reads and writes Finder's tags, which live on the file itself, so tagging
+    /// here shows up in Finder and vice versa.
+    func tags(of url: URL) -> [String] {
+        (try? url.resourceValues(forKeys: [.tagNamesKey]))?.tagNames ?? []
+    }
+
+    /// Goes through `NSURL`: `URLResourceValues.tagNames` only gained a setter in
+    /// macOS 26, and this app supports 15.
+    func setTags(_ tags: [String], on url: URL) throws {
+        try (url as NSURL).setResourceValue(
+            tags.isEmpty ? nil : tags as NSArray,
+            forKey: .tagNamesKey
+        )
+    }
 }
 
 enum WorkspaceFileOperationError: LocalizedError, Equatable {
