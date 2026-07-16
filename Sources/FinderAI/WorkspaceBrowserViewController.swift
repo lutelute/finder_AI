@@ -1048,8 +1048,11 @@ final class WorkspaceBrowserViewController: NSViewController {
         ribbonPath.pathItems = items()
         // Never clobber a path the user is mid-typing: navigation triggered from
         // elsewhere (sidebar, ribbon) while the field is being edited would
-        // silently discard their input.
-        if view.window?.firstResponder !== pathField.currentEditor() {
+        // silently discard their input. `currentEditor()` is non-nil exactly
+        // while an edit session is active — comparing responders instead left
+        // the field permanently empty, because nil === nil counted as "editing"
+        // before the window ever existed.
+        if pathField.currentEditor() == nil {
             pathField.stringValue = directory.path(percentEncoded: false)
         }
     }
