@@ -150,6 +150,27 @@ private final class WorkspaceSidebarHeaderView: NSTableCellView {
     }
 }
 
+/// Breadcrumb that tells a crumb click from an empty-area click.
+///
+/// A crumb click navigates to that folder; a click past the last crumb turns the
+/// bar into a text field — the Windows Explorer address bar split. `NSPathControl`
+/// only reports the former: its action fires (synchronously, inside `mouseDown`'s
+/// tracking loop) when a crumb is hit, and stays silent otherwise. So the action
+/// handler raises a flag, and `mouseDown` returning without the flag is the
+/// empty-area click. A gesture recognizer here instead raced the control's own
+/// tracking, firing both paths on a crumb click.
+@MainActor
+private final class WorkspacePathBar: NSPathControl {
+    var onEmptyAreaClick: (() -> Void)?
+    var crumbClickHandled = false
+
+    override func mouseDown(with event: NSEvent) {
+        crumbClickHandled = false
+        super.mouseDown(with: event)
+        if !crumbClickHandled { onEmptyAreaClick?() }
+    }
+}
+
 /// Table subclass that routes the keys a file list is expected to answer.
 /// `NSTableView` has no built-in notion of "open the selection", so Return and
 /// Space have to be claimed here rather than left to the responder chain.
@@ -220,7 +241,7 @@ final class WorkspaceBrowserViewController: NSViewController {
     private var paneIsActive = true
     private let sidebarTable = NSTableView()
     private let fileTable = WorkspaceFileTableView()
-    private let pathControl = NSPathControl()
+    private let pathControl = WorkspacePathBar()
     private let pathField = NSTextField()
     private let fileArea = NSView()
     private let columnView = WorkspaceColumnView()
@@ -556,10 +577,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         }
         pathSlot.heightAnchor.constraint(equalToConstant: 22).isActive = true
 
-        // A click on empty breadcrumb space edits the path; a click on a crumb
-        // still navigates, because NSPathControl consumes that first.
-        let editGesture = NSClickGestureRecognizer(target: self, action: #selector(beginPathEditing))
-        pathControl.addGestureRecognizer(editGesture)
+        pathControl.onEmptyAreaClick = { [weak self] in self?.beginPathEditing() }
 
         searchField.placeholderString = "このフォルダを検索"
         searchField.sendsSearchStringImmediately = true
@@ -1338,6 +1356,9 @@ final class WorkspaceBrowserViewController: NSViewController {
     }
 
     @objc func pathComponentClicked() {
+        // Reaching here means a crumb was hit, whether or not it resolves below —
+        // the empty-area fallback must not fire on top of a crumb click.
+        pathControl.crumbClickHandled = true
         guard let clicked = pathControl.clickedPathItem,
               let index = pathControl.pathItems.firstIndex(of: clicked),
               pathComponentURLs.indices.contains(index) else { return }

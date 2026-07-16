@@ -22,6 +22,22 @@ final class WorkspaceUpdater {
             updaterDelegate: nil,
             userDriverDelegate: nil
         )
+        // Fully automatic: the daily background check downloads the update
+        // silently and Sparkle's Autoupdate swaps it in when the app quits.
+        // Without this the check only *offers* the update and every version
+        // needs a click. Menu-initiated checks still show their UI.
+        //
+        // Note this cannot help an app that is force-killed: install-on-quit
+        // needs a normal termination for Sparkle to hand over to its installer.
+        controller.updater.automaticallyChecksForUpdates = true
+        controller.updater.automaticallyDownloadsUpdates = true
+
+        // Deterministic trigger for testing the pipeline end-to-end: the daily
+        // scheduler is otherwise the only thing that starts a *silent* check,
+        // and waiting a day is not a test.
+        if ProcessInfo.processInfo.environment["FINDERAI_CHECK_UPDATES"] == "1" {
+            controller.updater.checkForUpdatesInBackground()
+        }
     }
 
     /// Wired to the app menu; Sparkle handles the "you're up to date" case.
