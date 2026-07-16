@@ -1,3 +1,0 @@
-import FinderAIApp
-
-runFinderAI()

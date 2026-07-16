@@ -11,7 +11,7 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-APP_NAME="FinderAI Workspace.app"
+APP_NAME="FinderAI.app"
 SRC="$ROOT/dist/$APP_NAME"
 DEST="/Applications/$APP_NAME"
 
@@ -26,6 +26,15 @@ if pgrep -x FinderAIWorkspace >/dev/null 2>&1; then
     osascript -e 'tell application id "com.shigenoburyuto.finderai.workspace" to quit' 2>/dev/null || \
         killall FinderAIWorkspace 2>/dev/null || true
     sleep 1
+fi
+
+# The app used to install as "FinderAI Workspace.app"; leaving that behind
+# would put two FinderAIs in Launchpad again — the exact confusion this rename
+# is burying.
+LEGACY="/Applications/FinderAI Workspace.app"
+if [ -d "$LEGACY" ]; then
+    echo "Removing the old install: $LEGACY"
+    rm -rf "$LEGACY"
 fi
 
 echo "Installing to $DEST..."
@@ -44,6 +53,7 @@ echo "Signature verified."
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 if [ -x "$LSREGISTER" ]; then
     "$LSREGISTER" -u "$SRC" 2>/dev/null || true
+    "$LSREGISTER" -u "$LEGACY" 2>/dev/null || true
     "$LSREGISTER" -f "$DEST" 2>/dev/null || true
     echo "Launch Services: dist copy unregistered, installed copy refreshed."
 fi

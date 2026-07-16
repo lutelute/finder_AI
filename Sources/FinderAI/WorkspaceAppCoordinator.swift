@@ -120,7 +120,7 @@ final class WorkspaceAppCoordinator {
         }
 
         let alert = NSAlert()
-        alert.messageText = "FinderAI Workspaceを終了しますか？"
+        alert.messageText = "FinderAIを終了しますか？"
         alert.informativeText = "実行中のPTYセッションが\(runningCount)件あります。このアプリが開始したプロセスだけを終了します。"
         alert.addButton(withTitle: "終了")
         alert.addButton(withTitle: "キャンセル")
@@ -148,8 +148,8 @@ final class WorkspaceAppCoordinator {
         let main = NSMenu()
 
         let appItem = NSMenuItem()
-        let appMenu = NSMenu(title: "FinderAI Workspace")
-        let about = NSMenuItem(title: "FinderAI Workspaceについて", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        let appMenu = NSMenu(title: "FinderAI")
+        let about = NSMenuItem(title: "FinderAIについて", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         about.target = NSApp
         appMenu.addItem(about)
         appMenu.addItem(.separator())
@@ -161,7 +161,7 @@ final class WorkspaceAppCoordinator {
         update.target = updater
         appMenu.addItem(update)
         appMenu.addItem(.separator())
-        let quit = NSMenuItem(title: "FinderAI Workspaceを終了", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "FinderAIを終了", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.target = NSApp
         appMenu.addItem(quit)
         appItem.submenu = appMenu

@@ -10,7 +10,6 @@ let package = Package(
     products: [
         .library(name: "FinderAICore", targets: ["FinderAICore"]),
         .library(name: "FinderAIApp", targets: ["FinderAIApp"]),
-        .executable(name: "FinderAI", targets: ["FinderAI"]),
         .executable(name: "FinderAIWorkspace", targets: ["FinderAIWorkspace"])
     ],
     dependencies: [
@@ -33,11 +32,6 @@ let package = Package(
                 .product(name: "Sparkle", package: "Sparkle")
             ],
             path: "Sources/FinderAI"
-        ),
-        .executableTarget(
-            name: "FinderAI",
-            dependencies: ["FinderAIApp"],
-            path: "Sources/FinderAIMain"
         ),
         .executableTarget(
             name: "FinderAIWorkspace",

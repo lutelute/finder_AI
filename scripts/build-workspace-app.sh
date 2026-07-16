@@ -3,9 +3,9 @@ set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 MODULE_CACHE="$ROOT/.build/ModuleCache"
-APP_NAME="FinderAI Workspace.app"
+APP_NAME="FinderAI.app"
 DIST_APP="$ROOT/dist/$APP_NAME"
-ZIP="$ROOT/dist/FinderAI Workspace.zip"
+ZIP="$ROOT/dist/FinderAI.zip"
 STAGE_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/finderai-workspace-build.XXXXXX")
 APP="$STAGE_ROOT/$APP_NAME"
 CONTENTS="$APP/Contents"

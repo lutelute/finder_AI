@@ -22,9 +22,9 @@ NOTES="${2:-}"
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 REPO="lutelute/finder_AI"
-APP_NAME="FinderAI Workspace.app"
+APP_NAME="FinderAI.app"
 DIST="$ROOT/dist"
-ZIP="$DIST/FinderAI Workspace.zip"
+ZIP="$DIST/FinderAI.zip"
 PLIST="$ROOT/Resources/Workspace-Info.plist"
 
 SIGN_UPDATE=$(find "$ROOT/.build/artifacts" -name sign_update -type f 2>/dev/null | head -1)
@@ -52,7 +52,7 @@ echo "==> Appcast"
 BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$PLIST")
 MIN_OS=$(/usr/libexec/PlistBuddy -c "Print :LSMinimumSystemVersion" "$PLIST")
 PUBDATE=$(LC_ALL=C date -u "+%a, %d %b %Y %H:%M:%S +0000")
-URL="https://github.com/$REPO/releases/download/v$VERSION/FinderAI.Workspace.zip"
+URL="https://github.com/$REPO/releases/download/v$VERSION/FinderAI.zip"
 
 if [ -n "$NOTES" ] && [ -f "$NOTES" ]; then
     DESCRIPTION=$(sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g' "$NOTES")
@@ -85,7 +85,7 @@ EOF
 xmllint --noout "$DIST/appcast.xml" 2>/dev/null || echo "    (xmllint unavailable; skipping validation)"
 
 echo "==> Publishing v$VERSION"
-git tag -a "v$VERSION" -m "FinderAI Workspace $VERSION" 2>/dev/null || echo "    tag exists; reusing"
+git tag -a "v$VERSION" -m "FinderAI $VERSION" 2>/dev/null || echo "    tag exists; reusing"
 git push origin "v$VERSION" 2>/dev/null || true
 
 NOTES_ARG="--notes"
@@ -98,7 +98,7 @@ fi
 gh release create "v$VERSION" --repo "$REPO" \
     --title "$VERSION" \
     "$NOTES_ARG" "$NOTES_VALUE" \
-    "$ZIP#FinderAI Workspace $VERSION (macOS 15+, Apple Silicon)" \
+    "$ZIP#FinderAI $VERSION (macOS 15+, Apple Silicon)" \
     "$DIST/appcast.xml#appcast.xml"
 
 echo

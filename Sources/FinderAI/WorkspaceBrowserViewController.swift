@@ -150,37 +150,6 @@ private final class WorkspaceSidebarHeaderView: NSTableCellView {
     }
 }
 
-/// Breadcrumb that tells a crumb click from an empty-area click.
-///
-/// A crumb click navigates to that folder; a click past the last crumb turns the
-/// bar into a text field — the Windows Explorer address bar split.
-///
-/// The split is decided by hit-testing the component cells' actual frames.
-/// Inferring it from whether the control's action fired does not work:
-/// `NSPathControl` maps clicks in the trailing empty area onto the *last*
-/// component, so the action fires — with a component — for clicks that should
-/// open the editor, and the editor never appeared.
-@MainActor
-final class WorkspacePathBar: NSPathControl {
-    var onEmptyAreaClick: (() -> Void)?
-
-    func isOnCrumb(_ point: NSPoint) -> Bool {
-        guard let pathCell = cell as? NSPathCell else { return false }
-        return pathCell.pathComponentCells.contains { component in
-            pathCell.rect(of: component, withFrame: bounds, in: self).contains(point)
-        }
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
-        guard isOnCrumb(point) else {
-            onEmptyAreaClick?()
-            return
-        }
-        super.mouseDown(with: event)
-    }
-}
-
 /// Table subclass that routes the keys a file list is expected to answer.
 /// `NSTableView` has no built-in notion of "open the selection", so Return and
 /// Space have to be claimed here rather than left to the responder chain.
@@ -251,12 +220,13 @@ final class WorkspaceBrowserViewController: NSViewController {
     private var paneIsActive = true
     private let sidebarTable = NSTableView()
     private let fileTable = WorkspaceFileTableView()
-    private let pathControl = WorkspacePathBar()
     private let pathField = NSTextField()
     private let fileArea = NSView()
     private let columnView = WorkspaceColumnView()
     private var listScrollView: NSScrollView?
     private let ribbonPath = NSPathControl()
+    private let listingErrorLabel = NSTextField(wrappingLabelWithString: "")
+    private let openSettingsButton = NSButton()
     private let searchField = NSSearchField()
     private let backButton = NSButton()
     private let forwardButton = NSButton()
@@ -485,6 +455,7 @@ final class WorkspaceBrowserViewController: NSViewController {
             ])
         }
         listScrollView = listScroll
+        configureListingErrorState()
 
         let ribbon = makeRibbon()
         [navigationBar, fileArea, ribbon, statusBar].forEach {
@@ -591,34 +562,28 @@ final class WorkspaceBrowserViewController: NSViewController {
         configureNavigationButton(refreshButton, symbol: "arrow.clockwise", action: #selector(refresh), label: "再読み込み")
         configureNavigationButton(newFolderButton, symbol: "folder.badge.plus", action: #selector(createFolder), label: "新規フォルダ")
 
-        pathControl.pathStyle = .standard
-        pathControl.target = self
-        pathControl.action = #selector(pathComponentClicked)
-        pathControl.font = .systemFont(ofSize: 12)
-        pathControl.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        // The editable path sits in the same slot as the breadcrumb and swaps in.
+        // The top bar's path is a plain text address bar: always the current
+        // path, selectable and copyable, and typing a new one navigates. Clicking
+        // through ancestors is the bottom ribbon's job — a breadcrumb up here
+        // spent two revisions fighting NSPathControl's click handling for an
+        // empty-area editor that a text field gives for free.
         pathField.font = .monospacedSystemFont(ofSize: 11.5, weight: .regular)
         pathField.delegate = self
-        pathField.isHidden = true
-        pathField.focusRingType = .none
+        pathField.bezelStyle = .roundedBezel
         pathField.placeholderString = "パスを入力"
+        pathField.lineBreakMode = .byTruncatingHead
         pathField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         let pathSlot = NSView()
         pathSlot.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        [pathControl, pathField].forEach {
-            $0.translatesAutoresizingMaskIntoConstraints = false
-            pathSlot.addSubview($0)
-            NSLayoutConstraint.activate([
-                $0.leadingAnchor.constraint(equalTo: pathSlot.leadingAnchor),
-                $0.trailingAnchor.constraint(equalTo: pathSlot.trailingAnchor),
-                $0.centerYAnchor.constraint(equalTo: pathSlot.centerYAnchor)
-            ])
-        }
-        pathSlot.heightAnchor.constraint(equalToConstant: 22).isActive = true
-
-        pathControl.onEmptyAreaClick = { [weak self] in self?.beginPathEditing() }
+        pathField.translatesAutoresizingMaskIntoConstraints = false
+        pathSlot.addSubview(pathField)
+        NSLayoutConstraint.activate([
+            pathField.leadingAnchor.constraint(equalTo: pathSlot.leadingAnchor),
+            pathField.trailingAnchor.constraint(equalTo: pathSlot.trailingAnchor),
+            pathField.centerYAnchor.constraint(equalTo: pathSlot.centerYAnchor)
+        ])
+        pathSlot.heightAnchor.constraint(equalToConstant: 24).isActive = true
 
         searchField.placeholderString = "このフォルダを検索"
         searchField.sendsSearchStringImmediately = true
@@ -1080,10 +1045,13 @@ final class WorkspaceBrowserViewController: NSViewController {
                 return item
             }
         }
-        // Two controls, same crumbs: NSPathControlItem cannot be shared between
-        // controls, so each gets its own instances.
-        pathControl.pathItems = items()
         ribbonPath.pathItems = items()
+        // Never clobber a path the user is mid-typing: navigation triggered from
+        // elsewhere (sidebar, ribbon) while the field is being edited would
+        // silently discard their input.
+        if view.window?.firstResponder !== pathField.currentEditor() {
+            pathField.stringValue = directory.path(percentEncoded: false)
+        }
     }
 
     /// One generic folder icon for every breadcrumb component: per-path icons are
@@ -1127,17 +1095,65 @@ final class WorkspaceBrowserViewController: NSViewController {
     private func applyListing(_ items: [WorkspaceItem], for directory: URL) {
         guard navigator.currentDirectory == directory else { return }
         endLoadingIndicator()
+        listingErrorLabel.isHidden = true
+        openSettingsButton.isHidden = true
         allItems = items
         applyFilterAndSort()
         selectPendingItemIfNeeded()
     }
 
+    /// The failure lives *in* the list, not in a transient alert. An alert is
+    /// dismissed once and forgotten; what remained on screen was an empty list
+    /// with no explanation — reported as "デスクトップのフォルダが何も表示され
+    /// ない" (issue #2).
     private func applyListingFailure(_ error: any Error, for directory: URL) {
         guard navigator.currentDirectory == directory else { return }
         endLoadingIndicator()
         allItems = []
         applyFilterAndSort()
-        presentError(title: "フォルダを読み込めません", message: error.localizedDescription)
+
+        let nsError = error as NSError
+        let isPermission = nsError.domain == NSCocoaErrorDomain
+            && nsError.code == NSFileReadNoPermissionError
+        listingErrorLabel.stringValue = isPermission
+            ? "“\(directory.lastPathComponent)”を読む権限がありません。\nシステム設定 > プライバシーとセキュリティ で許可してください。"
+            : "フォルダを読み込めません: \(error.localizedDescription)"
+        listingErrorLabel.isHidden = false
+        openSettingsButton.isHidden = !isPermission
+    }
+
+    private func configureListingErrorState() {
+        listingErrorLabel.font = .systemFont(ofSize: 12)
+        listingErrorLabel.textColor = IntegratedPanelTheme.secondaryText
+        listingErrorLabel.alignment = .center
+        listingErrorLabel.isHidden = true
+
+        openSettingsButton.title = "システム設定を開く"
+        openSettingsButton.bezelStyle = .rounded
+        openSettingsButton.controlSize = .small
+        openSettingsButton.target = self
+        openSettingsButton.action = #selector(openPrivacySettings)
+        openSettingsButton.isHidden = true
+
+        let stack = NSStackView(views: [listingErrorLabel, openSettingsButton])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        fileArea.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: fileArea.centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: fileArea.centerYAnchor),
+            stack.leadingAnchor.constraint(greaterThanOrEqualTo: fileArea.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: fileArea.trailingAnchor, constant: -24)
+        ])
+    }
+
+    @objc private func openPrivacySettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders"
+        ) else { return }
+        NSWorkspace.shared.open(url)
     }
 
     /// A local listing finishes in single-digit milliseconds, so showing the
@@ -1411,13 +1427,6 @@ final class WorkspaceBrowserViewController: NSViewController {
         }
     }
 
-    @objc func pathComponentClicked() {
-        guard let clicked = pathControl.clickedPathItem,
-              let index = pathControl.pathItems.firstIndex(of: clicked),
-              pathComponentURLs.indices.contains(index) else { return }
-        navigate(to: pathComponentURLs[index])
-    }
-
     /// The bottom ribbon's crumbs: same URLs, own control.
     @objc func ribbonComponentClicked() {
         guard let clicked = ribbonPath.clickedPathItem,
@@ -1569,19 +1578,17 @@ final class WorkspaceBrowserViewController: NSViewController {
 
     /// ⌘L, or a click on the breadcrumb's empty space. Shows the real path,
     /// selected, so it can be copied or replaced outright.
+    /// ⌘L: focus the address bar with the whole path selected, ready to copy
+    /// or replace.
     @objc func beginPathEditing() {
-        guard pathField.isHidden else { return }
-        pathField.stringValue = navigator.currentDirectory.path(percentEncoded: false)
-        pathControl.isHidden = true
-        pathField.isHidden = false
         view.window?.makeFirstResponder(pathField)
         pathField.currentEditor()?.selectAll(nil)
     }
 
+    /// The field is permanent; ending an edit restores the truth and hands
+    /// focus back to the list.
     private func endPathEditing() {
-        guard !pathField.isHidden else { return }
-        pathField.isHidden = true
-        pathControl.isHidden = false
+        pathField.stringValue = navigator.currentDirectory.path(percentEncoded: false)
         view.window?.makeFirstResponder(fileTable)
     }
 

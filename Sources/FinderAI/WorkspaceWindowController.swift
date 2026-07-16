@@ -54,9 +54,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             defer: false
         )
         window.title = initialDirectory.lastPathComponent.isEmpty
-            ? "FinderAI Workspace"
+            ? "FinderAI"
             : initialDirectory.lastPathComponent
-        window.subtitle = "FinderAI Workspace"
+        window.subtitle = "FinderAI"
         window.titlebarSeparatorStyle = .shadow
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 820, height: 520)
