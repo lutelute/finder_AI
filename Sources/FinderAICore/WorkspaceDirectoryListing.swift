@@ -149,4 +149,24 @@ public enum WorkspaceDirectoryListing {
         if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
         return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
     }
+
+    /// How many entries the directory really holds, hidden ones included.
+    ///
+    /// The browser calls this only after a listing came back empty: a folder
+    /// whose every item carries the BSD hidden flag (desktop-cleanup tools do
+    /// exactly that to ~/Desktop) is indistinguishable from a truly empty one,
+    /// and rendering nothing reads as data loss — reported as「Desktopが何も
+    /// 表示されない」. Returns 0 on a read failure; the visible listing already
+    /// surfaced that error to the user.
+    public static func itemCountIncludingHidden(
+        of directory: URL,
+        fileManager: FileManager = .default
+    ) -> Int {
+        let urls = try? fileManager.contentsOfDirectory(
+            at: directory.standardizedFileURL,
+            includingPropertiesForKeys: [],
+            options: []
+        )
+        return urls?.count ?? 0
+    }
 }

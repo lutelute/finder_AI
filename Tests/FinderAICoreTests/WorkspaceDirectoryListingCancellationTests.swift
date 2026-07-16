@@ -55,4 +55,28 @@ struct WorkspaceDirectoryListingCancellationTests {
         )
         #expect(withHidden.contains { $0.name == ".hidden" })
     }
+
+    @Test("a folder of flag-hidden files lists empty but counts in full")
+    func flagHiddenFolderCountsInFull() throws {
+        // Desktop-cleanup tools set the BSD hidden flag on every item of
+        // ~/Desktop; the folder must not be indistinguishable from an empty one.
+        let directory = try makeCrowdedDirectory(fileCount: 3)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for index in 0..<3 {
+            var url = directory.appendingPathComponent("item-\(index).txt")
+            var values = URLResourceValues()
+            values.isHidden = true
+            try url.setResourceValues(values)
+        }
+
+        #expect(try WorkspaceDirectoryListing.contents(of: directory).isEmpty)
+        #expect(WorkspaceDirectoryListing.itemCountIncludingHidden(of: directory) == 3)
+    }
+
+    @Test("the hidden-inclusive count reports 0 for an unreadable folder")
+    func hiddenCountIsZeroOnFailure() {
+        let missing = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("does-not-exist-\(UUID().uuidString)", isDirectory: true)
+        #expect(WorkspaceDirectoryListing.itemCountIncludingHidden(of: missing) == 0)
+    }
 }

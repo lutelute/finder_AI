@@ -237,9 +237,16 @@ extension WorkspaceColumnView: NSTableViewDataSource, NSTableViewDelegate {
             withIdentifier: NSUserInterfaceItemIdentifier("WorkspaceColumnCell"),
             owner: self
         ) as? WorkspaceColumnCellView ?? WorkspaceColumnCellView()
-        let icon = NSWorkspace.shared.icon(forFile: item.url.path)
-        icon.size = NSSize(width: 16, height: 16)
-        cell.configure(name: item.name, image: icon, isDirectory: item.isDirectory)
+        cell.representedURL = item.url
+        cell.configure(
+            name: item.name,
+            image: WorkspaceIconProvider.shared.quickIcon(for: item),
+            isDirectory: item.isDirectory
+        )
+        WorkspaceIconProvider.shared.resolveIcon(for: item) { [weak cell] image in
+            guard let cell, cell.representedURL == item.url else { return }
+            cell.updateIcon(image)
+        }
         return cell
     }
 
@@ -307,11 +314,19 @@ private final class WorkspaceColumnCellView: NSTableCellView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    /// Which file this cell currently shows. The async icon resolution checks
+    /// it before applying, so a reused cell never receives a stale icon.
+    var representedURL: URL?
+
     func configure(name: String, image: NSImage, isDirectory: Bool) {
         label.stringValue = name
         label.toolTip = name
         iconView.image = image
         // The chevron says "this one goes deeper"; a file has nowhere to go.
         chevron.isHidden = !isDirectory
+    }
+
+    func updateIcon(_ image: NSImage) {
+        iconView.image = image
     }
 }

@@ -44,11 +44,19 @@ private final class WorkspaceNameCellView: NSTableCellView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    /// Which file this cell currently shows. The async icon resolution checks
+    /// it before applying, so a reused cell never receives a stale icon.
+    var representedURL: URL?
+
     func configure(name: String, image: NSImage, cloud: WorkspaceCloudStatus) {
         label.stringValue = name
         label.toolTip = name
         iconView.image = image
         applyCloud(cloud)
+    }
+
+    func updateIcon(_ image: NSImage) {
+        iconView.image = image
     }
 
     private func applyCloud(_ status: WorkspaceCloudStatus) {
@@ -92,7 +100,7 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         identifier = NSUserInterfaceItemIdentifier("WorkspaceSidebarCell")
-        label.font = .systemFont(ofSize: 12, weight: .medium)
+        label.font = .systemFont(ofSize: 11.5, weight: .medium)
         label.textColor = IntegratedPanelTheme.text
         iconView.contentTintColor = IntegratedPanelTheme.secondaryText
         [iconView, label].forEach {
@@ -100,11 +108,11 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
             addSubview($0)
         }
         NSLayoutConstraint.activate([
-            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
             iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            iconView.widthAnchor.constraint(equalToConstant: 16),
-            iconView.heightAnchor.constraint(equalToConstant: 16),
-            label.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 9),
+            iconView.widthAnchor.constraint(equalToConstant: 14),
+            iconView.heightAnchor.constraint(equalToConstant: 14),
+            label.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 6),
             label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             label.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
@@ -129,14 +137,14 @@ private final class WorkspaceSidebarHeaderView: NSTableCellView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         identifier = NSUserInterfaceItemIdentifier("WorkspaceSidebarHeader")
-        label.font = .systemFont(ofSize: 10.5, weight: .semibold)
+        label.font = .systemFont(ofSize: 10, weight: .semibold)
         label.textColor = IntegratedPanelTheme.secondaryText
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
             label.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
-            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4)
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -3)
         ])
         textField = label
     }
@@ -227,6 +235,7 @@ final class WorkspaceBrowserViewController: NSViewController {
     private let ribbonPath = NSPathControl()
     private let listingErrorLabel = NSTextField(wrappingLabelWithString: "")
     private let openSettingsButton = NSButton()
+    private let showHiddenButton = NSButton()
     private let searchField = NSSearchField()
     private let backButton = NSButton()
     private let forwardButton = NSButton()
@@ -410,7 +419,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         scroll.hasVerticalScroller = true
         sidebarTable.headerView = nil
         sidebarTable.backgroundColor = .clear
-        sidebarTable.rowHeight = 29
+        sidebarTable.rowHeight = 23
         sidebarTable.style = .sourceList
         sidebarTable.delegate = self
         sidebarTable.dataSource = self
@@ -1084,8 +1093,15 @@ final class WorkspaceBrowserViewController: NSViewController {
                     of: directory,
                     showHiddenFiles: showHidden
                 )
+                // A folder can look empty because every item carries the
+                // hidden flag (desktop-cleanup tools do this to ~/Desktop).
+                // Count what is really there — only for empty results, so the
+                // extra enumeration costs nothing on the normal path.
+                let hiddenCount = items.isEmpty && !showHidden
+                    ? WorkspaceDirectoryListing.itemCountIncludingHidden(of: directory)
+                    : 0
                 guard !Task.isCancelled else { return }
-                await self?.applyListing(items, for: directory)
+                await self?.applyListing(items, for: directory, hiddenItemCount: hiddenCount)
             } catch is CancellationError {
                 return
             } catch {
@@ -1095,14 +1111,27 @@ final class WorkspaceBrowserViewController: NSViewController {
         }
     }
 
-    private func applyListing(_ items: [WorkspaceItem], for directory: URL) {
+    private func applyListing(
+        _ items: [WorkspaceItem],
+        for directory: URL,
+        hiddenItemCount: Int = 0
+    ) {
         guard navigator.currentDirectory == directory else { return }
         endLoadingIndicator()
-        listingErrorLabel.isHidden = true
-        openSettingsButton.isHidden = true
         allItems = items
         applyFilterAndSort()
         selectPendingItemIfNeeded()
+
+        // 「空に見えるが実は全部隠しファイル」を無言の空リストにしない。
+        // Silence here was reported as a bug twice (issue #2, then again after
+        // v1.1.0); the folder must say why it shows nothing.
+        let allHidden = items.isEmpty && hiddenItemCount > 0
+        listingErrorLabel.stringValue = allHidden
+            ? "このフォルダの\(hiddenItemCount)個の項目はすべて非表示（隠しファイル）です。"
+            : ""
+        listingErrorLabel.isHidden = !allHidden
+        showHiddenButton.isHidden = !allHidden
+        openSettingsButton.isHidden = true
     }
 
     /// The failure lives *in* the list, not in a transient alert. An alert is
@@ -1123,6 +1152,7 @@ final class WorkspaceBrowserViewController: NSViewController {
             : "フォルダを読み込めません: \(error.localizedDescription)"
         listingErrorLabel.isHidden = false
         openSettingsButton.isHidden = !isPermission
+        showHiddenButton.isHidden = true
     }
 
     private func configureListingErrorState() {
@@ -1138,7 +1168,14 @@ final class WorkspaceBrowserViewController: NSViewController {
         openSettingsButton.action = #selector(openPrivacySettings)
         openSettingsButton.isHidden = true
 
-        let stack = NSStackView(views: [listingErrorLabel, openSettingsButton])
+        showHiddenButton.title = "隠しファイルを表示 (⇧⌘.)"
+        showHiddenButton.bezelStyle = .rounded
+        showHiddenButton.controlSize = .small
+        showHiddenButton.target = self
+        showHiddenButton.action = #selector(toggleHiddenFiles)
+        showHiddenButton.isHidden = true
+
+        let stack = NSStackView(views: [listingErrorLabel, openSettingsButton, showHiddenButton])
         stack.orientation = .vertical
         stack.alignment = .centerX
         stack.spacing = 10
@@ -1231,12 +1268,6 @@ final class WorkspaceBrowserViewController: NSViewController {
         fileTable.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
         fileTable.scrollRowToVisible(index)
         self.pendingSelectionURL = nil
-    }
-
-    private func icon(for item: WorkspaceItem) -> NSImage {
-        let image = NSWorkspace.shared.icon(forFile: item.url.path)
-        image.size = NSSize(width: 18, height: 18)
-        return image
     }
 
     private func presentError(title: String, message: String) {
@@ -1695,7 +1726,8 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         guard tableView === sidebarTable else { return 27 }
-        return self.tableView(tableView, isGroupRow: row) ? 24 : 29
+        // 詰めた行高: よく使うフォルダをスクロールなしで一覧できる数が優先。
+        return self.tableView(tableView, isGroupRow: row) ? 20 : 23
     }
 
     func tableView(
@@ -1731,7 +1763,16 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
                 withIdentifier: NSUserInterfaceItemIdentifier("WorkspaceNameCell"),
                 owner: self
             ) as? WorkspaceNameCellView ?? WorkspaceNameCellView()
-            cell.configure(name: item.name, image: icon(for: item), cloud: item.cloudStatus)
+            cell.representedURL = item.url
+            cell.configure(
+                name: item.name,
+                image: WorkspaceIconProvider.shared.quickIcon(for: item),
+                cloud: item.cloudStatus
+            )
+            WorkspaceIconProvider.shared.resolveIcon(for: item) { [weak cell] image in
+                guard let cell, cell.representedURL == item.url else { return }
+                cell.updateIcon(image)
+            }
             return cell
         }
 
