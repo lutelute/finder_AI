@@ -36,6 +36,18 @@ xattr -cr "$DEST"
 codesign --verify --deep --strict "$DEST"
 echo "Signature verified."
 
+# Launch Services ends up with two registrations for the same bundle ID whenever
+# the dist copy gets opened during development. Launchpad and Spotlight then
+# resolve to whichever they like — including the dist copy mid-rebuild, which
+# fails to open and shows a verification dialog — and the Dock shows a stale
+# icon. Keep exactly one registration: the installed app.
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [ -x "$LSREGISTER" ]; then
+    "$LSREGISTER" -u "$SRC" 2>/dev/null || true
+    "$LSREGISTER" -f "$DEST" 2>/dev/null || true
+    echo "Launch Services: dist copy unregistered, installed copy refreshed."
+fi
+
 echo
 echo "Designated requirement:"
 codesign -d -r- "$DEST" 2>&1 | grep 'designated' | sed 's/^/    /'
