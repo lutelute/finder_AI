@@ -53,14 +53,14 @@
       <rect x="100" y="100" width="824" height="824" rx="185.4" ry="185.4"/>
     </clipPath>
     <clipPath id="folderFaceClip">
-      <path d="M252 426
+      <path d="M252 356
                h520
                a64 64 0 0 1 64 64
-               v218
+               v288
                a64 64 0 0 1 -64 64
                H252
                a64 64 0 0 1 -64 -64
-               V490
+               V420
                a64 64 0 0 1 64 -64 Z"/>
     </clipPath>
     <filter id="folderShadow" x="-20%" y="-20%" width="140%" height="150%">
@@ -81,31 +81,31 @@
       Taller back panel and tab. The previous folder was 672x400 overall and
       its face only 288pt high, which made the whole mark look compressed.
     -->
-    <path d="M252 392
+    <path d="M252 304
              a64 64 0 0 1 64 -64
              h132
              a44 44 0 0 1 33 15
-             l57 65
+             l57 78
              h234
              a64 64 0 0 1 64 64
-             v36
+             v23
              H252 Z"
           fill="url(#folderBack)"/>
 
-    <!-- Folder front face: 648x346, up from the old 672x288 silhouette. -->
-    <path d="M252 426
+    <!-- Folder front face: 648x416, 1.2x taller than the first revision. -->
+    <path d="M252 356
              h520
              a64 64 0 0 1 64 64
-             v218
+             v288
              a64 64 0 0 1 -64 64
              H252
              a64 64 0 0 1 -64 -64
-             V490
+             V420
              a64 64 0 0 1 64 -64 Z"
           fill="url(#folderFace)"/>
 
     <!-- A soft top-plane highlight keeps the taller face from reading flat. -->
-    <rect x="188" y="426" width="648" height="346"
+    <rect x="188" y="356" width="648" height="416"
           clip-path="url(#folderFaceClip)" fill="url(#folderSheen)"/>
   </g>
 
@@ -113,11 +113,11 @@
     Accent seam where the drawer meets the list in the real window. Inset to the
     folder's own corner radius so it cannot poke out past the face.
   -->
-  <rect x="252" y="426" width="520" height="7" fill="#007ACC" opacity="0.9"/>
+  <rect x="252" y="356" width="520" height="7" fill="#007ACC" opacity="0.9"/>
 
   <!-- Shell prompt: the half that is not a file browser -->
-  <path d="M320 516 l88 76 l-88 76"
+  <path d="M320 468 l92 80 l-92 80"
         fill="none" stroke="#2BD048" stroke-width="36"
         stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="460" y="652" width="196" height="32" rx="16" fill="#FFFFFF"/>
+  <rect x="464" y="614" width="196" height="32" rx="16" fill="#FFFFFF"/>
 </svg>
