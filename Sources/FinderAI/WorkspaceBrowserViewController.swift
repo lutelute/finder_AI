@@ -584,9 +584,11 @@ final class WorkspaceBrowserViewController: NSViewController {
         searchField.delegate = self
         searchField.widthAnchor.constraint(equalToConstant: 190).isActive = true
 
+        // Finder's order: navigation, path, action buttons, and search hugging the
+        // right edge.
         let stack = NSStackView(views: [
             backButton, forwardButton, upButton, pathSlot,
-            searchField, refreshButton, newFolderButton
+            refreshButton, newFolderButton, searchField
         ])
         stack.orientation = .horizontal
         stack.alignment = .centerY
@@ -1356,11 +1358,13 @@ final class WorkspaceBrowserViewController: NSViewController {
     }
 
     @objc func pathComponentClicked() {
-        // Reaching here means a crumb was hit, whether or not it resolves below —
-        // the empty-area fallback must not fire on top of a crumb click.
+        // The action can also fire for a click on the bar's empty area, with
+        // clickedPathItem nil. Raising the flag before checking swallowed those
+        // clicks and the editor never opened — the flag may only mean "a real
+        // crumb was hit", everything else falls through to the editor.
+        guard let clicked = pathControl.clickedPathItem else { return }
         pathControl.crumbClickHandled = true
-        guard let clicked = pathControl.clickedPathItem,
-              let index = pathControl.pathItems.firstIndex(of: clicked),
+        guard let index = pathControl.pathItems.firstIndex(of: clicked),
               pathComponentURLs.indices.contains(index) else { return }
         navigate(to: pathComponentURLs[index])
     }
