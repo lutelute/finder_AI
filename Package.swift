@@ -15,6 +15,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", exact: "1.14.0"),
+        .package(url: "https://github.com/sparkle-project/Sparkle.git", exact: "2.9.4"),
         .package(
             url: "https://github.com/swiftlang/swift-testing.git",
             revision: "48a471ab313e858258ab0b9b0bf2cea55a50cefb"
@@ -28,7 +29,8 @@ let package = Package(
             name: "FinderAIApp",
             dependencies: [
                 "FinderAICore",
-                .product(name: "SwiftTerm", package: "SwiftTerm")
+                .product(name: "SwiftTerm", package: "SwiftTerm"),
+                .product(name: "Sparkle", package: "Sparkle")
             ],
             path: "Sources/FinderAI"
         ),

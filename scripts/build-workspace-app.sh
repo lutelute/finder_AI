@@ -11,6 +11,7 @@ APP="$STAGE_ROOT/$APP_NAME"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
+FRAMEWORKS="$CONTENTS/Frameworks"
 
 cleanup() {
     chmod -R u+w "$STAGE_ROOT" 2>/dev/null || true
@@ -50,6 +51,23 @@ for bundle in "$BIN_DIR"/*.bundle; do
     cp -R "$bundle" "$RESOURCES/$(basename -- "$bundle")"
 done
 
+# Sparkle ships as a framework the app links against; without it in the bundle
+# the app dies at launch with a dyld failure rather than merely losing updates.
+# ditto, not cp -R, or the xattrs it carries break codesign later.
+SPARKLE_FRAMEWORK=$(find "$ROOT/.build/artifacts" -type d -name 'Sparkle.framework' \
+    -path '*macos-arm64*' 2>/dev/null | head -1)
+[ -n "$SPARKLE_FRAMEWORK" ] || {
+    echo "Sparkle.framework not found — run 'swift build' first." >&2
+    exit 1
+}
+mkdir -p "$FRAMEWORKS"
+ditto "$SPARKLE_FRAMEWORK" "$FRAMEWORKS/Sparkle.framework"
+
+# The executable is built against @rpath/Sparkle.framework; point that rpath at
+# the bundle's own Frameworks directory.
+install_name_tool -add_rpath "@executable_path/../Frameworks" \
+    "$MACOS/FinderAIWorkspace" 2>/dev/null || true
+
 plutil -lint "$CONTENTS/Info.plist"
 xattr -cr "$APP"
 
@@ -62,13 +80,24 @@ xattr -cr "$APP"
 SIGN_IDENTITY="${FINDERAI_SIGN_IDENTITY:-FinderAI Local Signing}"
 if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$SIGN_IDENTITY"; then
     echo "Signing with stable identity: $SIGN_IDENTITY"
-    codesign --force --sign "$SIGN_IDENTITY" --timestamp=none "$APP"
+    SIGN_ARG="$SIGN_IDENTITY"
 else
     echo "No '$SIGN_IDENTITY' identity found; falling back to ad-hoc."
     echo "  macOS will re-ask for folder access after every rebuild."
     echo "  Run scripts/create-signing-identity.sh once to stop that."
-    codesign --force --sign - --timestamp=none "$APP"
+    SIGN_ARG="-"
 fi
+
+# Nested code signs first: signing the app seals its contents, so anything signed
+# afterwards invalidates that seal and --verify fails. Sparkle's XPC helpers and
+# its Autoupdate app are themselves nested inside the framework, so they are
+# signed before the framework, which is signed before the app.
+sign() { codesign --force --sign "$SIGN_ARG" --timestamp=none --options runtime "$@"; }
+
+find "$FRAMEWORKS/Sparkle.framework" \( -name '*.xpc' -o -name '*.app' \) -maxdepth 4 2>/dev/null |
+    while read -r nested; do sign "$nested"; done
+sign "$FRAMEWORKS/Sparkle.framework/Versions/B/Sparkle" 2>/dev/null || sign "$FRAMEWORKS/Sparkle.framework"
+sign "$APP"
 codesign --verify --deep --strict --verbose=4 "$APP"
 
 rm -f "$ZIP"

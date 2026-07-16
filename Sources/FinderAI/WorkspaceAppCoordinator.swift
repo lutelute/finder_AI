@@ -4,6 +4,7 @@ import AppKit
 final class WorkspaceAppCoordinator {
     private let sessionManager: any TerminalSessionManaging = TerminalSessionManager()
     private let preferences = WorkspacePreferences()
+    private let updater = WorkspaceUpdater()
     private var windows: [WorkspaceWindowController] = []
 
     /// Terminal sessions are keyed by folder and kind across the whole app, so two
@@ -151,6 +152,14 @@ final class WorkspaceAppCoordinator {
         let about = NSMenuItem(title: "FinderAI Workspaceについて", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         about.target = NSApp
         appMenu.addItem(about)
+        appMenu.addItem(.separator())
+        let update = NSMenuItem(
+            title: "アップデートを確認…",
+            action: #selector(WorkspaceUpdater.checkForUpdates(_:)),
+            keyEquivalent: ""
+        )
+        update.target = updater
+        appMenu.addItem(update)
         appMenu.addItem(.separator())
         let quit = NSMenuItem(title: "FinderAI Workspaceを終了", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.target = NSApp
