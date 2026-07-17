@@ -94,7 +94,12 @@ openssl pkcs12 -export -legacy -macalg sha1 \
     -out "$WORK/cert.p12" -passout "pass:$P12_PASS" -name "$CN" >/dev/null 2>&1
 
 echo "2/5  Creating a dedicated keychain..."
-security delete-keychain "$KEYCHAIN_NAME" 2>/dev/null || true
+# Delete by full path: name resolution goes through the search list, and a
+# keychain that fell out of the list would silently survive here — the next
+# create-keychain then fails or, worse, the stale file with an unknown
+# password lingers.
+security delete-keychain "$KEYCHAIN" 2>/dev/null || true
+rm -f "$KEYCHAIN"
 security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_NAME"
 # Without this the keychain relocks on a timer and codesign starts prompting
 # again mid-session.
@@ -110,13 +115,22 @@ security set-key-partition-list -S apple-tool:,apple:,codesign: \
     -s -k "$KEYCHAIN_PASS" "$KEYCHAIN_NAME" >/dev/null 2>&1
 
 echo "4/5  Adding it to your keychain search list..."
-# list-keychains -s replaces the list, so the existing entries have to be
-# repeated or they stop being searched.
-EXISTING=$(security list-keychains -d user | sed 's/[";]//g' | xargs)
-case "$EXISTING" in
-    *"$KEYCHAIN_NAME"*) security list-keychains -d user -s $EXISTING ;;
-    *) security list-keychains -d user -s $EXISTING "$KEYCHAIN" ;;
-esac
+# `list-keychains -s` replaces the whole list, so it is rebuilt from the
+# current entries plus ours. One entry per line — the previous sed|xargs
+# pipeline flattened the list into one word-split string and could write a
+# corrupt entry like '"login.keychain-db -db"', which dropped this keychain
+# from the list and made the identity invisible to codesign.
+security list-keychains -d user |
+    sed 's/^[[:space:]]*"//; s/"[[:space:]]*$//' |
+    grep -v "$KEYCHAIN_NAME" > "$WORK/search-list" || true
+printf '%s\n' "$KEYCHAIN" >> "$WORK/search-list"
+(
+    set -f
+    IFS='
+'
+    # shellcheck disable=SC2046
+    security list-keychains -d user -s $(cat "$WORK/search-list")
+)
 
 echo "5/5  Trusting it for code signing only..."
 security add-trusted-cert -r trustRoot -p codeSign -k "$KEYCHAIN" "$WORK/cert.pem"

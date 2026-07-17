@@ -78,6 +78,12 @@ xattr -cr "$APP"
 # the grants survive. FINDERAI_SIGN_IDENTITY names that identity; without one we
 # fall back to ad-hoc and say why.
 SIGN_IDENTITY="${FINDERAI_SIGN_IDENTITY:-FinderAI Local Signing}"
+# The signing keychain has broken twice (search-list corruption, unknown
+# password); repair or recreate it instead of stalling the build. Failure
+# still falls through to the ad-hoc path below.
+if [ "$SIGN_IDENTITY" = "FinderAI Local Signing" ]; then
+    "$ROOT/scripts/ensure-signing-identity.sh" || true
+fi
 if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$SIGN_IDENTITY"; then
     echo "Signing with stable identity: $SIGN_IDENTITY"
     SIGN_ARG="$SIGN_IDENTITY"
