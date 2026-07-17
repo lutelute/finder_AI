@@ -3,13 +3,28 @@ import FinderAICore
 import Foundation
 @preconcurrency import SwiftTerm
 
+/// ホストからの生バイトをターミナルへ流す前にログへ複製する。SwiftTerm組み込みの
+/// `setHostLogging`は読み取りチャンクごとに別ファイルを作るデバッグ機構で、
+/// 1本の追記ログにはならないため使わない。
+@MainActor
+final class LoggingTerminalView: LocalProcessTerminalView {
+    var outputLog: SessionOutputLog?
+
+    override func dataReceived(slice: ArraySlice<UInt8>) {
+        outputLog?.append(Array(slice))
+        super.dataReceived(slice: slice)
+    }
+}
+
 @MainActor
 final class TerminalSession: NSObject, @preconcurrency LocalProcessTerminalViewDelegate {
     let id = UUID()
     let key: TerminalSessionKey
     let directoryURL: URL
     let kind: TerminalSessionKind
+    let persistence: TerminalSessionPersistence?
     let terminalView: LocalProcessTerminalView
+    private let outputLog: SessionOutputLog?
 
     var onChange: (() -> Void)?
     private(set) var lifecycle: SessionLifecycle = .starting {
@@ -21,11 +36,43 @@ final class TerminalSession: NSObject, @preconcurrency LocalProcessTerminalViewD
         terminalView.process.running
     }
 
-    init(directoryURL: URL, kind: TerminalSessionKind, executableURL: URL?) throws {
+    init(
+        directoryURL: URL,
+        kind: TerminalSessionKind,
+        executableURL: URL?,
+        persistence: TerminalSessionPersistence?,
+        logsOutput: Bool
+    ) throws {
         self.directoryURL = directoryURL.standardizedFileURL
         self.kind = kind
         self.key = TerminalSessionKey(directoryURL: directoryURL, kind: kind)
-        self.terminalView = LocalProcessTerminalView(frame: .zero)
+        self.persistence = persistence
+        let view = LoggingTerminalView(frame: .zero)
+        self.terminalView = view
+
+        guard let plan = TerminalLaunchPlanner.plan(
+            kind: kind,
+            commandURL: executableURL,
+            persistence: persistence,
+            directoryPath: self.directoryURL.path
+        ) else {
+            throw SessionCreationError.executableNotFound(kind.displayName)
+        }
+
+        // ログはオプトイン。作れなくてもセッションは開始する — 検死ログは保険で
+        // あって前提ではない。
+        let log: SessionOutputLog?
+        if logsOutput {
+            log = SessionOutputLog(
+                directory: SessionLogStore.directory,
+                fileName: SessionLogStore.fileName(kind: kind, directoryURL: self.directoryURL),
+                header: SessionLogStore.header(kind: kind, directoryURL: self.directoryURL)
+            )
+        } else {
+            log = nil
+        }
+        self.outputLog = log
+        view.outputLog = log
         super.init()
 
         terminalView.processDelegate = self
@@ -35,25 +82,18 @@ final class TerminalSession: NSObject, @preconcurrency LocalProcessTerminalViewD
         terminalView.caretColor = IntegratedPanelTheme.accent
         terminalView.setHostLogging(directory: nil)
 
-        let launch: (executable: String, arguments: [String])
-        switch kind {
-        case .shell:
-            launch = ("/bin/zsh", ["-l"])
-        case .codex, .claude:
-            guard let executableURL else {
-                throw SessionCreationError.executableNotFound(kind.displayName)
-            }
-            launch = (executableURL.path, [])
-        }
-
         terminalView.startProcess(
-            executable: launch.executable,
-            args: launch.arguments,
-            environment: Self.childEnvironment(directoryURL: self.directoryURL),
+            executable: plan.executable,
+            args: plan.arguments,
+            environment: Self.childEnvironment(
+                directoryURL: self.directoryURL,
+                persistent: persistence != nil
+            ),
             currentDirectory: self.directoryURL.path
         )
         guard terminalView.process.running else {
             lifecycle = .failed(message: "PTYプロセスを開始できませんでした。")
+            outputLog?.close()
             throw SessionCreationError.processStartFailed
         }
         lifecycle = .running
@@ -78,9 +118,14 @@ final class TerminalSession: NSObject, @preconcurrency LocalProcessTerminalViewD
 
     func processTerminated(source: TerminalView, exitCode: Int32?) {
         lifecycle = .exited(code: exitCode)
+        outputLog?.appendLine("# FinderAI: process exited (code: \(exitCode.map(String.init) ?? "nil"))")
+        outputLog?.close()
     }
 
-    private static func childEnvironment(directoryURL: URL) -> [String] {
+    private static func childEnvironment(
+        directoryURL: URL,
+        persistent: Bool
+    ) -> [String] {
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = ExecutableLocator.augmentedPath(environment: environment)
         environment["TERM"] = "xterm-256color"
@@ -88,6 +133,11 @@ final class TerminalSession: NSObject, @preconcurrency LocalProcessTerminalViewD
         environment["TERM_PROGRAM"] = "FinderAI"
         environment["SHELL"] = "/bin/zsh"
         environment["PWD"] = directoryURL.path
+        if persistent {
+            // TMUXが残っているとtmuxはネスト起動とみなして拒否する。FinderAI自身が
+            // tmux内から起動された場合でも、子のtmuxクライアントは独立させる。
+            environment.removeValue(forKey: "TMUX")
+        }
         return environment.keys.sorted().compactMap { key in
             environment[key].map { "\(key)=\($0)" }
         }

@@ -12,6 +12,7 @@ private final class MockManagedSession: ManagedTerminalSession {
     let kind: TerminalSessionKind
     let contentView = NSView()
     var isRunning = true
+    var persistence: TerminalSessionPersistence?
     var onChange: (() -> Void)?
     private(set) var terminateCount = 0
 
@@ -33,6 +34,7 @@ private final class MockSessionBuilder: TerminalSessionBuilding {
         let directoryURL: URL
         let kind: TerminalSessionKind
         let executableURL: URL?
+        let persistence: TerminalSessionPersistence?
     }
 
     private(set) var requests: [Request] = []
@@ -41,14 +43,17 @@ private final class MockSessionBuilder: TerminalSessionBuilding {
     func makeSession(
         directoryURL: URL,
         kind: TerminalSessionKind,
-        executableURL: URL?
+        executableURL: URL?,
+        persistence: TerminalSessionPersistence?
     ) throws -> any ManagedTerminalSession {
         requests.append(Request(
             directoryURL: directoryURL,
             kind: kind,
-            executableURL: executableURL
+            executableURL: executableURL,
+            persistence: persistence
         ))
         let session = MockManagedSession(directoryURL: directoryURL, kind: kind)
+        session.persistence = persistence
         sessions.append(session)
         return session
     }
@@ -61,6 +66,46 @@ private struct MockCommandLocator: CommandLocating {
     func locate(command: String) -> URL? {
         commands[command]
     }
+}
+
+private actor RecordingTmuxController: TmuxControlling {
+    private var sessionNames: [String] = []
+    private var killedNames: [String] = []
+
+    func setSessions(_ names: [String]) {
+        sessionNames = names
+    }
+
+    func killed() -> [String] {
+        killedNames
+    }
+
+    func listSessionNames(tmuxExecutableURL: URL) async -> [String] {
+        sessionNames
+    }
+
+    func killSession(named name: String, tmuxExecutableURL: URL) async {
+        killedNames.append(name)
+    }
+}
+
+/// マネージャのtmux連携はTaskで走るため、状態が落ち着くまで短く待つ。
+@MainActor
+private func eventually(
+    _ condition: @MainActor () -> Bool
+) async throws {
+    for _ in 0..<400 where !condition() {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(condition())
+}
+
+@MainActor
+private func isolatedPreferences(_ name: String) -> WorkspacePreferences {
+    let suite = "finderai.tests.\(name)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defaults.removePersistentDomain(forName: suite)
+    return WorkspacePreferences(defaults: defaults)
 }
 
 @Suite("Terminal session ownership without launching a process")
@@ -138,5 +183,99 @@ struct TerminalSessionManagerTests {
         #expect(changeCount == 3)
         session.onChange?()
         #expect(changeCount == 3)
+    }
+
+    @Test("persistent sessions wrap in tmux and UI close kills the tmux session")
+    func persistentSessionLifecycle() async throws {
+        let builder = MockSessionBuilder()
+        let tmuxURL = URL(fileURLWithPath: "/mock/bin/tmux")
+        let controller = RecordingTmuxController()
+        let preferences = isolatedPreferences("persistent-lifecycle")
+        preferences.persistentSessions = true
+        let manager = TerminalSessionManager(
+            builder: builder,
+            commandLocator: MockCommandLocator(commands: ["tmux": tmuxURL]),
+            preferences: preferences,
+            tmuxController: controller
+        )
+        #expect(manager.persistenceAvailable)
+        #expect(manager.persistenceEnabled)
+
+        let folder = URL(fileURLWithPath: "/tmp/persistent", isDirectory: true)
+        let session = try manager.create(kind: .shell, directoryURL: folder)
+        let expectedName = TmuxSessionNaming.sessionName(for: session.key)
+
+        let request = try #require(builder.requests.first)
+        #expect(request.persistence == TerminalSessionPersistence(
+            tmuxExecutableURL: tmuxURL,
+            sessionName: expectedName
+        ))
+        #expect(manager.runningCount == 1)
+        #expect(manager.runningEphemeralCount == 0)
+
+        manager.remove(session)
+        // killはTaskで走るので、actorへの記録が届くまで直接ポーリングする。
+        var killed: [String] = []
+        for _ in 0..<400 {
+            killed = await controller.killed()
+            if killed.contains(expectedName) { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(killed == [expectedName])
+        #expect(manager.sessions(for: folder).isEmpty)
+    }
+
+    @Test("persistence falls back to ephemeral when tmux is missing")
+    func persistenceFallsBackWithoutTmux() throws {
+        let builder = MockSessionBuilder()
+        let preferences = isolatedPreferences("persistent-fallback")
+        preferences.persistentSessions = true
+        let manager = TerminalSessionManager(
+            builder: builder,
+            commandLocator: MockCommandLocator(commands: [:]),
+            preferences: preferences,
+            tmuxController: RecordingTmuxController()
+        )
+        #expect(!manager.persistenceAvailable)
+
+        _ = try manager.create(
+            kind: .shell,
+            directoryURL: URL(fileURLWithPath: "/tmp/fallback", isDirectory: true)
+        )
+        #expect(builder.requests.first?.persistence == nil)
+        #expect(manager.runningEphemeralCount == 1)
+    }
+
+    @Test("detached tmux sessions surface per folder and kind")
+    func detachedSessionDetection() async throws {
+        let builder = MockSessionBuilder()
+        let tmuxURL = URL(fileURLWithPath: "/mock/bin/tmux")
+        let controller = RecordingTmuxController()
+        let preferences = isolatedPreferences("persistent-detached")
+        preferences.persistentSessions = true
+        let manager = TerminalSessionManager(
+            builder: builder,
+            commandLocator: MockCommandLocator(commands: ["tmux": tmuxURL]),
+            preferences: preferences,
+            tmuxController: controller
+        )
+
+        let folder = URL(fileURLWithPath: "/tmp/detached", isDirectory: true)
+        let other = URL(fileURLWithPath: "/tmp/other", isDirectory: true)
+        let name = TmuxSessionNaming.sessionName(
+            for: TerminalSessionKey(directoryURL: folder, kind: .shell)
+        )
+        await controller.setSessions([name, "unrelated-session"])
+        manager.refreshDetachedSessions()
+
+        try await eventually {
+            manager.hasDetachedPersistentSession(kind: .shell, directoryURL: folder)
+        }
+        #expect(!manager.hasDetachedPersistentSession(kind: .claude, directoryURL: folder))
+        #expect(!manager.hasDetachedPersistentSession(kind: .shell, directoryURL: other))
+
+        // 設定を切れば「再接続」表示の根拠も消える。
+        manager.persistenceEnabled = false
+        #expect(!manager.hasDetachedPersistentSession(kind: .shell, directoryURL: folder))
     }
 }

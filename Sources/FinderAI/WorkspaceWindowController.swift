@@ -23,6 +23,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     private var rootController: NSViewController!
 
     var onClose: (() -> Void)?
+    /// どのペインであれフォルダが変わったら呼ばれる。コーディネータが復元用
+    /// スナップショットを撮り直すためのフックで、UIの追従とは独立。
+    var onDirectoryChanged: (() -> Void)?
     private let restoresFrame: Bool
 
     init(
@@ -134,7 +137,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// whichever pane the user is actually in.
     private func wire(_ pane: WorkspaceBrowserViewController) {
         pane.onDirectoryChange = { [weak self, weak pane] url in
-            guard let self, let pane, pane === self.activePane else { return }
+            guard let self, let pane else { return }
+            self.onDirectoryChanged?()
+            guard pane === self.activePane else { return }
             self.terminal.setDirectory(url)
             self.window?.representedURL = url
         }

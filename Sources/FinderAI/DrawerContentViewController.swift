@@ -58,10 +58,27 @@ final class DrawerContentViewController: NSViewController {
     private let codexButton = NSButton()
     private let claudeButton = NSButton()
 
+    // deinitでしか触らないため、managerのactivationObserverと同じ扱い。
+    private nonisolated(unsafe) var sessionsObserver: (any NSObjectProtocol)?
+
     init(sessionManager: any TerminalSessionManaging) {
         self.sessionManager = sessionManager
         super.init(nibName: nil, bundle: nil)
-        sessionManager.onChange = { [weak self] in self?.reloadSessions() }
+        // `onChange`はconsumerが1つしか持てず、複数ウインドウでは最後のドロワーが
+        // 奪って他が更新されなくなる。全ドロワーが等しく受けられる通知で観測する。
+        sessionsObserver = NotificationCenter.default.addObserver(
+            forName: .terminalSessionsDidChange,
+            object: sessionManager,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reloadSessions() }
+        }
+    }
+
+    deinit {
+        if let sessionsObserver {
+            NotificationCenter.default.removeObserver(sessionsObserver)
+        }
     }
 
     required init?(coder: NSCoder) {
@@ -360,7 +377,26 @@ final class DrawerContentViewController: NSViewController {
         codexButton.toolTip = codexButton.isEnabled ? nil : "codexコマンドが見つかりません"
         claudeButton.isEnabled = sessionManager.canStart(.claude)
         claudeButton.toolTip = claudeButton.isEnabled ? nil : "claudeコマンドが見つかりません"
+        updateStartButtonTitles()
         showActiveTerminal()
+    }
+
+    /// tmux側に生き残りがあるフォルダでは、開始ボタンは新規起動ではなく再接続に
+    /// なる（`new-session -A`が同じコマンドで両方を兼ねる）。表示だけ実態に合わせる。
+    private func updateStartButtonTitles() {
+        let buttons: [(NSButton, TerminalSessionKind)] = [
+            (shellButton, .shell),
+            (codexButton, .codex),
+            (claudeButton, .claude)
+        ]
+        for (button, kind) in buttons {
+            let reattaches = directoryURL.map {
+                sessionManager.hasDetachedPersistentSession(kind: kind, directoryURL: $0)
+            } ?? false
+            button.title = reattaches
+                ? "\(kind.displayName)に再接続"
+                : kind.displayName
+        }
     }
 
     /// Re-adding a terminal view forces SwiftTerm to re-lay-out and reflow its
@@ -449,7 +485,9 @@ final class DrawerContentViewController: NSViewController {
         }
         let alert = NSAlert()
         alert.messageText = "実行中の\(session.kind.displayName)を終了しますか？"
-        alert.informativeText = "FinderAIが開始したこのPTYプロセスだけを終了します。"
+        alert.informativeText = session.persistence != nil
+            ? "tmuxの永続セッションごと終了します。次回の再接続はできなくなります。"
+            : "FinderAIが開始したこのPTYプロセスだけを終了します。"
         alert.addButton(withTitle: "終了")
         alert.addButton(withTitle: "キャンセル")
         guard let window = view.window else {

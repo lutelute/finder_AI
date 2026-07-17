@@ -24,7 +24,8 @@ private struct StubSessionBuilder: TerminalSessionBuilding {
     func makeSession(
         directoryURL: URL,
         kind: TerminalSessionKind,
-        executableURL: URL?
+        executableURL: URL?,
+        persistence: TerminalSessionPersistence?
     ) throws -> any ManagedTerminalSession {
         throw SessionCreationError.executableNotFound(kind.displayName)
     }

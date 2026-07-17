@@ -26,6 +26,25 @@ struct WorkspacePreferences {
         static let splitEnabled = "workspace.splitEnabled"
         static let splitRatio = "workspace.splitRatio"
         static let secondDirectory = "workspace.secondDirectory"
+        static let persistentSessions = "workspace.persistentSessions"
+        static let sessionLogging = "workspace.sessionLogging"
+    }
+
+    // MARK: - Crash resilience
+
+    /// tmuxでセッションを生存させるか。既定はオフ：tmuxという外部依存を、
+    /// ユーザーが選んでいないのに背負わせない。
+    var persistentSessions: Bool {
+        get { defaults.bool(forKey: Key.persistentSessions) }
+        nonmutating set { defaults.set(newValue, forKey: Key.persistentSessions) }
+    }
+
+    /// Terminal出力をディスクへ残すか。既定はオフ：「Terminal内容を保存しない」が
+    /// このアプリのプライバシー方針で、クラッシュ検死ログはそれを破る側の機能。
+    /// ユーザーが明示的に選んだときだけ有効になる。
+    var sessionLogging: Bool {
+        get { defaults.bool(forKey: Key.sessionLogging) }
+        nonmutating set { defaults.set(newValue, forKey: Key.sessionLogging) }
     }
 
     // MARK: - View mode

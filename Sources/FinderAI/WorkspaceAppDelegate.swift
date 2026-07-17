@@ -15,6 +15,12 @@ final class WorkspaceAppDelegate: NSObject, NSApplicationDelegate {
         coordinator?.prepareForTermination() ?? .terminateNow
     }
 
+    /// ここに到達した終了だけが「正常終了」。クラッシュや強制終了は到達せず、
+    /// 次回起動時に構成復元の提案対象になる。
+    func applicationWillTerminate(_ notification: Notification) {
+        coordinator?.finalizeTermination()
+    }
+
     /// Quitting with the last window is right for a single-window app; with ⌘N it
     /// would also mean closing your only open window kills sessions running in the
     /// drawer. `showWorkspace` below reopens a window from the Dock instead.
