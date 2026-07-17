@@ -24,10 +24,21 @@ private struct StubSessionBuilder: TerminalSessionBuilding {
     func makeSession(
         directoryURL: URL,
         kind: TerminalSessionKind,
-        executableURL: URL?
+        executableURL: URL?,
+        tmuxURL: URL?
     ) throws -> any ManagedTerminalSession {
         throw SessionCreationError.executableNotFound(kind.displayName)
     }
+}
+
+@MainActor
+private final class StubRegistry: SessionRegistryStoring {
+    var records: [PersistedSessionRecord] = []
+}
+
+private struct StubTmuxController: TmuxControlling {
+    func liveSessionNames(tmuxPath: String) -> Set<String>? { [] }
+    func killSession(named name: String, tmuxPath: String) {}
 }
 
 @Suite("Executable lookups are cached across folder changes")
@@ -40,7 +51,9 @@ struct ExecutableCacheTests {
         )
         let manager = TerminalSessionManager(
             builder: StubSessionBuilder(),
-            commandLocator: locator
+            commandLocator: locator,
+            registry: StubRegistry(),
+            tmux: StubTmuxController()
         )
 
         // canStart runs on every folder change; ten navigations must not cost ten
@@ -57,7 +70,9 @@ struct ExecutableCacheTests {
         let locator = CountingCommandLocator(commands: [:])
         let manager = TerminalSessionManager(
             builder: StubSessionBuilder(),
-            commandLocator: locator
+            commandLocator: locator,
+            registry: StubRegistry(),
+            tmux: StubTmuxController()
         )
         #expect(manager.canStart(.shell))
         #expect(locator.lookups == 0)
@@ -68,7 +83,9 @@ struct ExecutableCacheTests {
         let locator = CountingCommandLocator(commands: [:])
         let manager = TerminalSessionManager(
             builder: StubSessionBuilder(),
-            commandLocator: locator
+            commandLocator: locator,
+            registry: StubRegistry(),
+            tmux: StubTmuxController()
         )
         let folder = URL(fileURLWithPath: "/tmp/cache-test", isDirectory: true)
 

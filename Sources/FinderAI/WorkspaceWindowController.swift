@@ -147,6 +147,12 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             self.window?.title = pane.currentDirectory.lastPathComponent
             self.updatePaneHighlight()
         }
+        pane.sessionOverview = { [weak self] in
+            self?.sessionManager.overviewEntries ?? []
+        }
+        sessionManager.observeChanges(owner: pane) { [weak pane] in
+            pane?.refreshSessionsSection()
+        }
     }
 
     required init?(coder: NSCoder) {

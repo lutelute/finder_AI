@@ -21,6 +21,8 @@ final class WorkspaceAppCoordinator {
         _ = makeWindow(directory: Self.defaultDirectory())
         windows.first?.show()
         restoreLastDirectory()
+        // 前回から生き残っているtmuxセッションをサイドバーに出すための照合。
+        sessionManager.refreshDetachedSessions()
     }
 
     @discardableResult
@@ -115,31 +117,48 @@ final class WorkspaceAppCoordinator {
     func prepareForTermination() -> NSApplication.TerminateReply {
         let runningCount = sessionManager.runningCount
         guard runningCount > 0 else {
-            sessionManager.shutdownOwnedProcesses()
+            sessionManager.shutdownOwnedProcesses(keepingDetachedAlive: true)
             return .terminateNow
         }
 
+        let persistent = sessionManager.persistsSessions
         let alert = NSAlert()
         alert.messageText = "FinderAIを終了しますか？"
-        alert.informativeText = "実行中のPTYセッションが\(runningCount)件あります。このアプリが開始したプロセスだけを終了します。"
-        alert.addButton(withTitle: "終了")
-        alert.addButton(withTitle: "キャンセル")
+        if persistent {
+            alert.informativeText = "実行中のセッションが\(runningCount)件あります。「保持して終了」ならtmuxにセッションが残り、次回起動時にサイドバーの「セッション」から再開できます。"
+            alert.addButton(withTitle: "保持して終了")
+            alert.addButton(withTitle: "すべて終了")
+            alert.addButton(withTitle: "キャンセル")
+        } else {
+            alert.informativeText = "実行中のPTYセッションが\(runningCount)件あります。このアプリが開始したプロセスだけを終了します。"
+            alert.addButton(withTitle: "終了")
+            alert.addButton(withTitle: "キャンセル")
+        }
+
+        // persistentの3択と従来の2択でボタンの意味を揃える:
+        // 第1ボタン=保持(または単純終了)、persistent時のみ第2ボタン=全終了。
+        let manager = sessionManager
+        func shutdown(for response: NSApplication.ModalResponse) -> Bool {
+            switch response {
+            case .alertFirstButtonReturn:
+                manager.shutdownOwnedProcesses(keepingDetachedAlive: persistent)
+                return true
+            case .alertSecondButtonReturn where persistent:
+                manager.shutdownOwnedProcesses(keepingDetachedAlive: false)
+                return true
+            default:
+                return false
+            }
+        }
 
         // Without a window there is no sheet to attach to, so fall back to a modal
         // rather than deferring a reply that nothing would ever send.
         guard let window = workspace.window, window.isVisible else {
-            guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
-            sessionManager.shutdownOwnedProcesses()
-            return .terminateNow
+            return shutdown(for: alert.runModal()) ? .terminateNow : .terminateCancel
         }
 
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard response == .alertFirstButtonReturn else {
-                NSApp.reply(toApplicationShouldTerminate: false)
-                return
-            }
-            self?.sessionManager.shutdownOwnedProcesses()
-            NSApp.reply(toApplicationShouldTerminate: true)
+        alert.beginSheetModal(for: window) { response in
+            NSApp.reply(toApplicationShouldTerminate: shutdown(for: response))
         }
         return .terminateLater
     }

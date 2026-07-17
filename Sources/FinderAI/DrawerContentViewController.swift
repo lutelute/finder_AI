@@ -54,14 +54,19 @@ final class DrawerContentViewController: NSViewController {
     private let bodyView = NSView()
     private let terminalContainer = NSView()
     private let emptyState = NSStackView()
+    private let emptyTitle = NSTextField(labelWithString: "このフォルダでTerminalを開始")
     private let shellButton = NSButton()
     private let codexButton = NSButton()
     private let claudeButton = NSButton()
+    private let resumeStack = NSStackView()
+    private var visibleDetached: [PersistedSessionRecord] = []
 
     init(sessionManager: any TerminalSessionManaging) {
         self.sessionManager = sessionManager
         super.init(nibName: nil, bundle: nil)
-        sessionManager.onChange = { [weak self] in self?.reloadSessions() }
+        sessionManager.observeChanges(owner: self) { [weak self] in
+            self?.reloadSessions()
+        }
     }
 
     required init?(coder: NSCoder) {
@@ -233,7 +238,6 @@ final class DrawerContentViewController: NSViewController {
         emptyIcon.contentTintColor = IntegratedPanelTheme.secondaryText
         emptyIcon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 25, weight: .regular)
 
-        let emptyTitle = NSTextField(labelWithString: "このフォルダでTerminalを開始")
         emptyTitle.font = .systemFont(ofSize: 14, weight: .medium)
         emptyTitle.textColor = IntegratedPanelTheme.text
         let emptyDetail = NSTextField(labelWithString: "閲覧しただけではプロセスを起動しません")
@@ -248,10 +252,14 @@ final class DrawerContentViewController: NSViewController {
         actions.alignment = .centerY
         actions.spacing = 8
 
+        resumeStack.orientation = .vertical
+        resumeStack.alignment = .centerX
+        resumeStack.spacing = 4
+
         emptyState.orientation = .vertical
         emptyState.alignment = .centerX
         emptyState.spacing = 8
-        [emptyIcon, emptyTitle, emptyDetail, actions].forEach(emptyState.addArrangedSubview)
+        [emptyIcon, emptyTitle, emptyDetail, resumeStack, actions].forEach(emptyState.addArrangedSubview)
 
         terminalContainer.translatesAutoresizingMaskIntoConstraints = false
         emptyState.translatesAutoresizingMaskIntoConstraints = false
@@ -309,6 +317,8 @@ final class DrawerContentViewController: NSViewController {
     private func reloadSessions(prefer preferred: (any ManagedTerminalSession)? = nil) {
         guard isViewLoaded else { return }
         visibleSessions = directoryURL.map(sessionManager.sessions(for:)) ?? []
+        visibleDetached = directoryURL.map(sessionManager.detachedRecords(for:)) ?? []
+        rebuildResumeRows()
 
         if let preferred, visibleSessions.contains(where: { $0.id == preferred.id }) {
             activeSession = preferred
@@ -390,6 +400,76 @@ final class DrawerContentViewController: NSViewController {
         mountedSessionID = session.id
     }
 
+    /// tmuxで生き残っているセッションを空状態に並べる。「再開」は通常の開始と
+    /// 同じ経路で、`tmux new-session -A` が同名セッションに再アタッチする。
+    private func rebuildResumeRows() {
+        resumeStack.arrangedSubviews.forEach {
+            resumeStack.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
+        emptyTitle.stringValue = visibleDetached.isEmpty
+            ? "このフォルダでTerminalを開始"
+            : "前回の作業がこのフォルダで継続しています"
+        for (index, record) in visibleDetached.enumerated() {
+            let label = NSTextField(
+                labelWithString: "⏸ \(record.kind.displayName) セッションがtmuxで保持中"
+            )
+            label.font = .systemFont(ofSize: 11, weight: .regular)
+            label.textColor = IntegratedPanelTheme.secondaryText
+
+            let resume = NSButton(
+                title: "再開",
+                target: self,
+                action: #selector(resumeDetached(_:))
+            )
+            resume.bezelStyle = .rounded
+            resume.controlSize = .small
+            resume.tag = index
+
+            let discard = NSButton(
+                title: "破棄",
+                target: self,
+                action: #selector(discardDetached(_:))
+            )
+            discard.bezelStyle = .rounded
+            discard.controlSize = .small
+            discard.tag = index
+
+            let row = NSStackView(views: [label, resume, discard])
+            row.orientation = .horizontal
+            row.alignment = .centerY
+            row.spacing = 6
+            resumeStack.addArrangedSubview(row)
+        }
+        resumeStack.isHidden = visibleDetached.isEmpty
+    }
+
+    @objc private func resumeDetached(_ sender: NSButton) {
+        guard visibleDetached.indices.contains(sender.tag) else { return }
+        startSession(kind: visibleDetached[sender.tag].kind)
+    }
+
+    @objc private func discardDetached(_ sender: NSButton) {
+        guard visibleDetached.indices.contains(sender.tag) else { return }
+        let record = visibleDetached[sender.tag]
+        let alert = NSAlert()
+        alert.messageText = "\(record.kind.displayName)セッションを破棄しますか？"
+        alert.informativeText = "tmuxセッションを終了します。中で動いている作業も終了します。"
+        alert.addButton(withTitle: "破棄")
+        alert.addButton(withTitle: "キャンセル")
+        let discard = { [weak self] in
+            self?.sessionManager.discardDetached(record)
+        }
+        guard let window = view.window else {
+            if alert.runModal() == .alertFirstButtonReturn { discard() }
+            return
+        }
+        alert.beginSheetModal(for: window) { response in
+            guard response == .alertFirstButtonReturn else { return }
+            discard()
+        }
+    }
+
     private func startSession(kind: TerminalSessionKind) {
         guard let directoryURL else { return }
         do {
@@ -449,7 +529,9 @@ final class DrawerContentViewController: NSViewController {
         }
         let alert = NSAlert()
         alert.messageText = "実行中の\(session.kind.displayName)を終了しますか？"
-        alert.informativeText = "FinderAIが開始したこのPTYプロセスだけを終了します。"
+        alert.informativeText = session.tmuxSessionName != nil
+            ? "tmuxセッションごと終了し、作業は保持されません。保持したい場合はキャンセルし、アプリ終了時に「保持して終了」を選んでください。"
+            : "FinderAIが開始したこのPTYプロセスだけを終了します。"
         alert.addButton(withTitle: "終了")
         alert.addButton(withTitle: "キャンセル")
         guard let window = view.window else {
