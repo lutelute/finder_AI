@@ -90,14 +90,22 @@ final class TerminalSession: NSObject, @preconcurrency LocalProcessTerminalViewD
         lifecycle = .exited(code: exitCode)
     }
 
-    private static func childEnvironment(directoryURL: URL) -> [String] {
-        var environment = ProcessInfo.processInfo.environment
+    static func childEnvironment(
+        directoryURL: URL,
+        base: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [String] {
+        var environment = base
         environment["PATH"] = ExecutableLocator.augmentedPath(environment: environment)
         environment["TERM"] = "xterm-256color"
         environment["COLORTERM"] = "truecolor"
         environment["TERM_PROGRAM"] = "FinderAI"
         environment["SHELL"] = "/bin/zsh"
         environment["PWD"] = directoryURL.path
+        if environment["LANG"] == nil, environment["LC_ALL"] == nil, environment["LC_CTYPE"] == nil {
+            // Finder/Dockから起動したGUIアプリはロケールを持たない。素のままだと
+            // tmuxが非UTF-8モードで立ち上がり、日本語のパスや出力が化ける。
+            environment["LANG"] = "en_US.UTF-8"
+        }
         return environment.keys.sorted().compactMap { key in
             environment[key].map { "\(key)=\($0)" }
         }

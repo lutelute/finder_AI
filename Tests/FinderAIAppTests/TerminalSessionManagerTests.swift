@@ -332,3 +332,39 @@ struct TerminalSessionPersistenceTests {
         #expect(registry.records.isEmpty)
     }
 }
+
+@Suite("child environment")
+@MainActor
+struct ChildEnvironmentTests {
+    private let folder = URL(fileURLWithPath: "/mock/env", isDirectory: true)
+
+    private func value(_ key: String, in environment: [String]) -> String? {
+        environment.first { $0.hasPrefix("\(key)=") }
+            .map { String($0.dropFirst(key.count + 1)) }
+    }
+
+    @Test("a locale-less GUI launch gets a UTF-8 locale so tmux and CLIs handle Japanese")
+    func missingLocaleGetsUTF8() {
+        let environment = TerminalSession.childEnvironment(
+            directoryURL: folder,
+            base: ["PATH": "/usr/bin"]
+        )
+        #expect(value("LANG", in: environment) == "en_US.UTF-8")
+    }
+
+    @Test("an explicit locale is never overridden")
+    func explicitLocaleWins() {
+        let withLang = TerminalSession.childEnvironment(
+            directoryURL: folder,
+            base: ["LANG": "ja_JP.UTF-8"]
+        )
+        #expect(value("LANG", in: withLang) == "ja_JP.UTF-8")
+
+        // LC_CTYPEだけ設定されている環境にLANGを足すと優先順位を壊しかねない。
+        let withCtype = TerminalSession.childEnvironment(
+            directoryURL: folder,
+            base: ["LC_CTYPE": "UTF-8"]
+        )
+        #expect(value("LANG", in: withCtype) == nil)
+    }
+}
