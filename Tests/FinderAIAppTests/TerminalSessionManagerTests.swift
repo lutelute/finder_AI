@@ -69,19 +69,19 @@ private struct MockCommandLocator: CommandLocating {
 }
 
 private actor RecordingTmuxController: TmuxControlling {
-    private var sessionNames: [String] = []
+    private var sessions: [TmuxSessionInfo] = []
     private var killedNames: [String] = []
 
-    func setSessions(_ names: [String]) {
-        sessionNames = names
+    func setSessions(_ infos: [TmuxSessionInfo]) {
+        sessions = infos
     }
 
     func killed() -> [String] {
         killedNames
     }
 
-    func listSessionNames(tmuxExecutableURL: URL) async -> [String] {
-        sessionNames
+    func listSessions(tmuxExecutableURL: URL) async -> [TmuxSessionInfo] {
+        sessions
     }
 
     func killSession(named name: String, tmuxExecutableURL: URL) async {
@@ -265,7 +265,10 @@ struct TerminalSessionManagerTests {
         let name = TmuxSessionNaming.sessionName(
             for: TerminalSessionKey(directoryURL: folder, kind: .shell)
         )
-        await controller.setSessions([name, "unrelated-session"])
+        await controller.setSessions([
+            TmuxSessionInfo(name: name, workingDirectoryPath: folder.path, isAttached: false),
+            TmuxSessionInfo(name: "unrelated-session", workingDirectoryPath: "/", isAttached: true)
+        ])
         manager.refreshDetachedSessions()
 
         try await eventually {
@@ -277,5 +280,44 @@ struct TerminalSessionManagerTests {
         // 設定を切れば「再接続」表示の根拠も消える。
         manager.persistenceEnabled = false
         #expect(!manager.hasDetachedPersistentSession(kind: .shell, directoryURL: folder))
+    }
+
+    @Test("management sees leftovers even with persistence off, and bulk kill filters foreign sessions")
+    func persistentSessionManagement() async throws {
+        let tmuxURL = URL(fileURLWithPath: "/mock/bin/tmux")
+        let controller = RecordingTmuxController()
+        let preferences = isolatedPreferences("persistent-management")
+        // トグルはオフのまま：切った後に残ったセッションを掃除できることが要件。
+        preferences.persistentSessions = false
+        let manager = TerminalSessionManager(
+            builder: MockSessionBuilder(),
+            commandLocator: MockCommandLocator(commands: ["tmux": tmuxURL]),
+            preferences: preferences,
+            tmuxController: controller
+        )
+
+        let mineA = TmuxSessionInfo(
+            name: "finderai-shell-aaaaaaaaaaaa",
+            workingDirectoryPath: "/tmp/a",
+            isAttached: false
+        )
+        let mineB = TmuxSessionInfo(
+            name: "finderai-claude-bbbbbbbbbbbb",
+            workingDirectoryPath: "/tmp/b",
+            isAttached: true
+        )
+        await controller.setSessions([
+            mineA,
+            mineB,
+            TmuxSessionInfo(name: "users-own-session", workingDirectoryPath: "/", isAttached: true)
+        ])
+        manager.refreshDetachedSessions()
+        try await eventually { manager.persistentSessions == [mineA, mineB] }
+
+        // 他人のtmuxセッションは、頼まれても殺さない。
+        await manager.killPersistentSessions(
+            named: [mineA.name, mineB.name, "users-own-session"]
+        )
+        #expect(await controller.killed() == [mineA.name, mineB.name])
     }
 }

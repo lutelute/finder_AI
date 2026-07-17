@@ -11,6 +11,7 @@ final class WorkspaceAppCoordinator {
     private var lastCapturedSnapshot: WorkspaceRestorationSnapshot?
     private var persistentSessionsMenuItem: NSMenuItem?
     private var sessionLoggingMenuItem: NSMenuItem?
+    private var persistentSessionsPanel: PersistentSessionsPanelController?
     // Read back only in `deinit`, which cannot hop to the main actor.
     private nonisolated(unsafe) var sessionsObserver: (any NSObjectProtocol)?
 
@@ -209,6 +210,39 @@ final class WorkspaceAppCoordinator {
         persistentSessionsMenuItem?.state = sessionManager.persistenceEnabled ? .on : .off
     }
 
+    /// トグルの状態に関係なく開ける。永続化を切った後にtmuxへ残ったセッションを
+    /// 掃除するのが、このパネルの主目的の一つだから。tmux自体が無ければ管理する
+    /// ものも無いので、案内だけ出す。
+    @objc func showPersistentSessionsPanel() {
+        guard sessionManager.persistenceAvailable else {
+            let alert = NSAlert()
+            alert.messageText = "tmuxが見つかりません"
+            alert.informativeText = "永続セッションはtmuxを使います。tmuxが無いこの環境に、管理対象のセッションはありません。"
+            if let window = NSApp.keyWindow {
+                alert.beginSheetModal(for: window)
+            } else {
+                alert.runModal()
+            }
+            return
+        }
+        if persistentSessionsPanel == nil {
+            let panel = PersistentSessionsPanelController(sessionManager: sessionManager)
+            panel.onOpenFolder = { [weak self] url in
+                guard let self else { return }
+                let target = self.frontmostWindow ?? self.windows.first
+                if let target {
+                    target.browser.navigate(to: url)
+                    target.show()
+                } else {
+                    let controller = self.makeWindow(directory: url)
+                    controller.show()
+                }
+            }
+            persistentSessionsPanel = panel
+        }
+        persistentSessionsPanel?.show()
+    }
+
     /// Terminal内容を保存しないのが既定のプライバシー方針なので、これはオプトイン。
     /// 効くのは切り替え後に開始したセッションからで、動いているPTYの途中からは
     /// 録り始めない。
@@ -398,6 +432,13 @@ final class WorkspaceAppCoordinator {
         persistent.state = sessionManager.persistenceEnabled ? .on : .off
         persistentSessionsMenuItem = persistent
         viewMenu.addItem(persistent)
+        let managePersistent = NSMenuItem(
+            title: "永続セッションを管理…",
+            action: #selector(showPersistentSessionsPanel),
+            keyEquivalent: ""
+        )
+        managePersistent.target = self
+        viewMenu.addItem(managePersistent)
         let logging = NSMenuItem(
             title: "Terminal出力をログに保存",
             action: #selector(toggleSessionLogging),

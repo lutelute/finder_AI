@@ -43,7 +43,7 @@ protocol CommandLocating {
 
 /// tmuxサーバーへの問い合わせと操作。Processの起動はブロックするので必ず非同期。
 protocol TmuxControlling: Sendable {
-    func listSessionNames(tmuxExecutableURL: URL) async -> [String]
+    func listSessions(tmuxExecutableURL: URL) async -> [TmuxSessionInfo]
     func killSession(named name: String, tmuxExecutableURL: URL) async
 }
 
@@ -62,12 +62,16 @@ protocol TerminalSessionManaging: AnyObject {
     func canStart(_ kind: TerminalSessionKind) -> Bool
     func sessions(for directoryURL: URL) -> [any ManagedTerminalSession]
     /// このフォルダ×種類に、アプリ外のtmuxサーバーが保持しているセッションが
-    /// あるか。あるなら`create`は新規起動ではなく再アタッチになる。
+    /// あるか。あるなら`create`は新規起動ではなくアタッチになる。
     func hasDetachedPersistentSession(
         kind: TerminalSessionKind,
         directoryURL: URL
     ) -> Bool
+    /// tmuxサーバー上のFinderAI名義のセッション（最新refresh結果）。永続化トグルが
+    /// オフでも返す：管理パネルの仕事は、忘れられたセッションの掃除だから。
+    var persistentSessions: [TmuxSessionInfo] { get }
     func refreshDetachedSessions()
+    func killPersistentSessions(named names: [String]) async
     func create(
         kind: TerminalSessionKind,
         directoryURL: URL
@@ -105,16 +109,19 @@ struct SystemCommandLocator: CommandLocating {
 }
 
 struct ProcessTmuxController: TmuxControlling {
-    func listSessionNames(tmuxExecutableURL: URL) async -> [String] {
+    func listSessions(tmuxExecutableURL: URL) async -> [TmuxSessionInfo] {
         let output = await Self.run(
             tmuxExecutableURL,
-            arguments: ["list-sessions", "-F", "#{session_name}"]
+            arguments: [
+                "list-sessions", "-F",
+                "#{session_name}\t#{session_path}\t#{session_attached}"
+            ]
         )
         // サーバー未起動はexit 1で返る。それは「セッション0件」であって異常ではない。
         guard let output else { return [] }
         return output
             .split(separator: "\n", omittingEmptySubsequences: true)
-            .map(String.init)
+            .compactMap { TmuxSessionInfo.parse(line: String($0)) }
     }
 
     func killSession(named name: String, tmuxExecutableURL: URL) async {

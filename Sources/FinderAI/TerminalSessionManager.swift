@@ -13,9 +13,14 @@ final class TerminalSessionManager: TerminalSessionManaging {
     private var sessionsByKey: [TerminalSessionKey: any ManagedTerminalSession] = [:]
     private var insertionOrder: [TerminalSessionKey] = []
 
-    /// アプリ外のtmuxサーバーが保持しているFinderAI名義のセッション名。
-    /// 「再接続」表示の根拠で、起動時・アクティブ化・作成/削除後に非同期更新する。
-    private var detachedSessionNames: Set<String> = []
+    /// tmuxサーバーが保持しているFinderAI名義のセッション（最新refresh結果）。
+    /// 「再接続」表示と管理パネルの根拠で、起動時・アクティブ化・作成/削除後に
+    /// 非同期更新する。
+    private var persistentSessionInfos: [TmuxSessionInfo] = []
+
+    private var detachedSessionNames: Set<String> {
+        Set(persistentSessionInfos.map(\.name))
+    }
 
     /// Locating a command scans every PATH entry with synchronous `stat` calls.
     /// `canStart` runs on every folder change, so the result is cached and dropped
@@ -46,10 +51,17 @@ final class TerminalSessionManager: TerminalSessionManaging {
                     self.executableCache.removeAll()
                     self.notifyChange()
                 }
-                self.refreshDetachedSessions()
+                // 「再接続」表示が要るのは永続化が有効なときだけ。無効時にまで
+                // tmuxを探しに行くと、PATH走査ゼロで済むはずの起動経路にstatが乗る。
+                // 管理パネルは開くときに自分でrefreshを呼ぶので困らない。
+                if self.persistenceEnabled {
+                    self.refreshDetachedSessions()
+                }
             }
         }
-        refreshDetachedSessions()
+        if persistenceEnabled {
+            refreshDetachedSessions()
+        }
     }
 
     deinit {
@@ -94,24 +106,38 @@ final class TerminalSessionManager: TerminalSessionManaging {
         return detachedSessionNames.contains(TmuxSessionNaming.sessionName(for: key))
     }
 
+    var persistentSessions: [TmuxSessionInfo] {
+        persistentSessionInfos
+    }
+
+    /// 永続化トグルではなくtmuxの有無だけで判断する。トグルを切った後に残った
+    /// セッションこそ、管理パネルが掃除すべきものだから。
     func refreshDetachedSessions() {
-        guard persistenceEnabled, let tmuxURL = locate("tmux") else {
-            if !detachedSessionNames.isEmpty {
-                detachedSessionNames = []
+        guard let tmuxURL = locate("tmux") else {
+            if !persistentSessionInfos.isEmpty {
+                persistentSessionInfos = []
                 notifyChange()
             }
             return
         }
         let controller = tmuxController
         Task { [weak self] in
-            let names = await controller.listSessionNames(tmuxExecutableURL: tmuxURL)
+            let sessions = await controller.listSessions(tmuxExecutableURL: tmuxURL)
             guard let self else { return }
-            let mine = Set(names.filter { $0.hasPrefix(TmuxSessionNaming.namePrefix) })
-            if mine != self.detachedSessionNames {
-                self.detachedSessionNames = mine
+            let mine = sessions.filter { $0.name.hasPrefix(TmuxSessionNaming.namePrefix) }
+            if mine != self.persistentSessionInfos {
+                self.persistentSessionInfos = mine
                 self.notifyChange()
             }
         }
+    }
+
+    func killPersistentSessions(named names: [String]) async {
+        guard let tmuxURL = locate("tmux") else { return }
+        for name in names where name.hasPrefix(TmuxSessionNaming.namePrefix) {
+            await tmuxController.killSession(named: name, tmuxExecutableURL: tmuxURL)
+        }
+        refreshDetachedSessions()
     }
 
     // MARK: - Sessions
