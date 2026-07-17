@@ -34,19 +34,24 @@ public enum WorkspaceSidebarModel {
         public var volumes: [URL]
         public var frequent: [URL]
         public var recent: [URL]
+        /// 組み立て済みで受け取る: 状態(実行中/保持中)はフォルダのURLからは
+        /// 導けないので、URLの列に潰さずItemのまま持ち込む。
+        public var sessions: [Item]
 
         public init(
             pins: [URL] = [],
             favorites: [URL] = [],
             volumes: [URL] = [],
             frequent: [URL] = [],
-            recent: [URL] = []
+            recent: [URL] = [],
+            sessions: [Item] = []
         ) {
             self.pins = pins
             self.favorites = favorites
             self.volumes = volumes
             self.frequent = frequent
             self.recent = recent
+            self.sessions = sessions
         }
     }
 
@@ -88,12 +93,37 @@ public enum WorkspaceSidebarModel {
         let recent = take(input.recent) { _ in "clock" }
 
         return [
+            // セッションはフォルダの別名ではなく状態表示なので、重複排除に
+            // 参加しない: セッションのあるフォルダはピン留めにも残る。
+            Section(title: "セッション", items: input.sessions),
             Section(title: "ピン留め", items: pins),
             Section(title: "よく使う項目", items: favorites),
             Section(title: "場所", items: volumes),
             Section(title: "よく使うフォルダ", items: frequent),
             Section(title: "最近", items: recent)
         ].filter { !$0.items.isEmpty }
+    }
+
+    /// 実行中を先頭に、あとはフォルダ→種類で安定に並べる。クリックの飛び先は
+    /// Itemの`url`そのもので、既存のサイドバー選択の仕組みに乗る。
+    public static func sessionItems(
+        _ entries: [SessionOverviewEntry],
+        home: URL
+    ) -> [Item] {
+        entries.sorted { a, b in
+            if a.state != b.state { return a.state == .running }
+            if a.directoryURL.path != b.directoryURL.path {
+                return a.directoryURL.path < b.directoryURL.path
+            }
+            return a.kind.rawValue < b.kind.rawValue
+        }.map { entry in
+            let marker = entry.state == .running ? "●" : "⏸"
+            return Item(
+                title: "\(marker) \(entry.kind.displayName) · \(displayName(for: entry.directoryURL, home: home))",
+                url: entry.directoryURL,
+                symbol: entry.state == .running ? "terminal.fill" : "pause.circle"
+            )
+        }
     }
 
     /// Finder labels the home folder with the account's short name and "/" as the

@@ -184,6 +184,15 @@ final class WorkspaceBrowserViewController: NSViewController {
     var onToggleTerminal: (() -> Void)?
     /// Fires when this pane takes focus, so the window can follow it.
     var onBecameActive: (() -> Void)?
+    /// サイドバーの「セッション」欄の元データ。ペインはセッションマネージャを
+    /// 直接知らないので、ウインドウ側から供給される。
+    var sessionOverview: (() -> [SessionOverviewEntry])?
+
+    /// セッションの開始・終了・保持状態の変化でウインドウ側から呼ばれる。
+    func refreshSessionsSection() {
+        guard isViewLoaded else { return }
+        rebuildSidebar()
+    }
 
     /// A flattened section list: `NSTableView` has no sections, so headers and
     /// items share one row space and `isGroupRow` tells them apart.
@@ -913,7 +922,11 @@ final class WorkspaceBrowserViewController: NSViewController {
                     : finderFavorites,
                 volumes: volumes,
                 frequent: log.frequent(limit: 5, excluding: claimed),
-                recent: log.recent(limit: 5, excluding: claimed)
+                recent: log.recent(limit: 5, excluding: claimed),
+                sessions: WorkspaceSidebarModel.sessionItems(
+                    sessionOverview?() ?? [],
+                    home: Self.homeDirectory
+                )
             ),
             home: Self.homeDirectory
         )

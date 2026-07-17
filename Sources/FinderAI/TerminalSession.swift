@@ -17,15 +17,36 @@ final class TerminalSession: NSObject, @preconcurrency LocalProcessTerminalViewD
     }
     private(set) var terminalTitle: String?
 
+    /// tmux経由のときのセッション名。PTYクライアントが死んでもこの名前の
+    /// セッションはtmux側で生きている、というのが永続化の仕組み。
+    let tmuxSessionName: String?
+
     var isRunning: Bool {
         terminalView.process.running
     }
 
-    init(directoryURL: URL, kind: TerminalSessionKind, executableURL: URL?) throws {
+    init(
+        directoryURL: URL,
+        kind: TerminalSessionKind,
+        executableURL: URL?,
+        tmuxURL: URL?
+    ) throws {
         self.directoryURL = directoryURL.standardizedFileURL
         self.kind = kind
-        self.key = TerminalSessionKey(directoryURL: directoryURL, kind: kind)
+        let key = TerminalSessionKey(directoryURL: directoryURL, kind: kind)
+        self.key = key
         self.terminalView = LocalProcessTerminalView(frame: .zero)
+
+        if kind.commandName != nil, executableURL == nil {
+            throw SessionCreationError.executableNotFound(kind.displayName)
+        }
+        let launch = TmuxLaunchPlan.plan(
+            kind: kind,
+            directoryKey: key.directoryKey,
+            commandPath: executableURL?.path,
+            tmuxPath: tmuxURL?.path
+        )
+        self.tmuxSessionName = launch.tmuxSessionName
         super.init()
 
         terminalView.processDelegate = self
@@ -34,17 +55,6 @@ final class TerminalSession: NSObject, @preconcurrency LocalProcessTerminalViewD
         terminalView.nativeForegroundColor = IntegratedPanelTheme.text
         terminalView.caretColor = IntegratedPanelTheme.accent
         terminalView.setHostLogging(directory: nil)
-
-        let launch: (executable: String, arguments: [String])
-        switch kind {
-        case .shell:
-            launch = ("/bin/zsh", ["-l"])
-        case .codex, .claude:
-            guard let executableURL else {
-                throw SessionCreationError.executableNotFound(kind.displayName)
-            }
-            launch = (executableURL.path, [])
-        }
 
         terminalView.startProcess(
             executable: launch.executable,
