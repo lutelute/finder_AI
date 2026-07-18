@@ -1,22 +1,90 @@
 import AppKit
 import FinderAICore
 
-/// tmuxサーバーに残っているFinderAI名義のセッションの管理窓口。
-///
-/// 永続セッションは「フォルダを開けば再接続できる」が、どのフォルダだったかを
-/// 忘れるとtmux内に居座り続ける。ここは覚えていなくても一覧・終了できる場所で、
-/// 永続化トグルを切った後の残骸も掃除できるよう、トグルの状態に依存しない。
+/// パネル1行分の表示モデル。UIとは独立に組み立てられるようにして、
+/// 重複排除（アプリ内で接続中の永続セッションはtmux一覧にも出る）を検証可能にする。
+struct TerminalSessionRowModel: Equatable {
+    enum Target: Equatable {
+        case inApp(UUID)
+        case detachedTmux(String)
+    }
+
+    let target: Target
+    let kindLabel: String
+    let folderPath: String
+    let stateLabel: String
+}
+
+enum TerminalSessionsOverview {
+    struct InAppSummary {
+        let id: UUID
+        let kindLabel: String
+        let folderPath: String
+        let isRunning: Bool
+        let persistentName: String?
+
+        init(
+            id: UUID,
+            kindLabel: String,
+            folderPath: String,
+            isRunning: Bool,
+            persistentName: String?
+        ) {
+            self.id = id
+            self.kindLabel = kindLabel
+            self.folderPath = folderPath
+            self.isRunning = isRunning
+            self.persistentName = persistentName
+        }
+    }
+
+    /// アプリ内セッションを先（開いた順）、その後にtmuxへ残っているものをパス順。
+    /// アプリ内で接続中の永続セッションは`tmux ls`にも載るので、名前で除いて
+    /// 二重表示しない。
+    static func rows(
+        inApp: [InAppSummary],
+        detached: [TmuxSessionInfo]
+    ) -> [TerminalSessionRowModel] {
+        var rows = inApp.map { summary in
+            TerminalSessionRowModel(
+                target: .inApp(summary.id),
+                kindLabel: summary.kindLabel,
+                folderPath: summary.folderPath,
+                stateLabel: summary.isRunning
+                    ? (summary.persistentName != nil ? "実行中（永続）" : "実行中")
+                    : "終了"
+            )
+        }
+        let attachedNames = Set(inApp.compactMap(\.persistentName))
+        rows += detached
+            .filter { !attachedNames.contains($0.name) }
+            .sorted { $0.workingDirectoryPath < $1.workingDirectoryPath }
+            .map { info in
+                TerminalSessionRowModel(
+                    target: .detachedTmux(info.name),
+                    kindLabel: info.kind?.displayName ?? "？",
+                    folderPath: info.workingDirectoryPath,
+                    // 外部=ユーザーが自分のターミナルからattachしている場合。
+                    stateLabel: info.isAttached ? "接続中（外部）" : "待機中（未接続）"
+                )
+            }
+        return rows
+    }
+}
+
+/// すべてのTerminalセッションの俯瞰。ドロワーは「今見ているフォルダ」しか
+/// 見せないので、ウインドウを何枚も開いて方々でシェルを起こしたときに全体像を
+/// 見る場所はここになる。アプリ内の実行中セッションと、tmuxに残っている
+/// 未接続セッション（掃除対象）を1つの表に出す。
 @MainActor
-final class PersistentSessionsPanelController: NSWindowController {
+final class TerminalSessionsPanelController: NSWindowController {
     private let sessionManager: any TerminalSessionManaging
-    /// 選択したセッションのフォルダをブラウザで開く（開けば再接続ボタンが出る）。
+    /// 選択したセッションのフォルダをブラウザで開く（開けばドロワーに出る）。
     var onOpenFolder: ((URL) -> Void)?
 
-    private var sessions: [TmuxSessionInfo] = []
+    private var rows: [TerminalSessionRowModel] = []
     private let tableView = NSTableView()
-    private let emptyLabel = NSTextField(
-        labelWithString: "tmuxに残っているFinderAIのセッションはありません"
-    )
+    private let emptyLabel = NSTextField(labelWithString: "Terminalセッションはありません")
     private let openButton = NSButton()
     private let killButton = NSButton()
     private let killAllButton = NSButton()
@@ -26,14 +94,14 @@ final class PersistentSessionsPanelController: NSWindowController {
     init(sessionManager: any TerminalSessionManaging) {
         self.sessionManager = sessionManager
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 320),
+            contentRect: NSRect(x: 0, y: 0, width: 580, height: 340),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "永続セッション（tmux）"
+        window.title = "Terminalセッション"
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 460, height: 220)
+        window.minSize = NSSize(width: 480, height: 220)
         super.init(window: window)
 
         buildContent(in: window)
@@ -60,6 +128,7 @@ final class PersistentSessionsPanelController: NSWindowController {
     func show() {
         // 開くたびにtmuxへ問い直す。前回の残像で終了ボタンを押させない。
         sessionManager.refreshDetachedSessions()
+        reload()
         window?.center()
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
@@ -75,10 +144,10 @@ final class PersistentSessionsPanelController: NSWindowController {
         kindColumn.width = 70
         let stateColumn = NSTableColumn(identifier: .init("state"))
         stateColumn.title = "状態"
-        stateColumn.width = 70
+        stateColumn.width = 110
         let folderColumn = NSTableColumn(identifier: .init("folder"))
         folderColumn.title = "フォルダ"
-        folderColumn.width = 340
+        folderColumn.width = 320
         [kindColumn, stateColumn, folderColumn].forEach(tableView.addTableColumn)
         tableView.allowsMultipleSelection = true
         tableView.usesAlternatingRowBackgroundColors = true
@@ -135,65 +204,101 @@ final class PersistentSessionsPanelController: NSWindowController {
     }
 
     private func reload() {
-        let selectedNames = Set(tableView.selectedRowIndexes.compactMap {
-            sessions.indices.contains($0) ? sessions[$0].name : nil
-        })
-        sessions = sessionManager.persistentSessions
+        let selectedTargets = Set(tableView.selectedRowIndexes.compactMap {
+            rows.indices.contains($0) ? rows[$0].target : nil
+        }.map(Self.targetKey))
+
+        let inApp = sessionManager.allSessions.map {
+            TerminalSessionsOverview.InAppSummary(
+                id: $0.id,
+                kindLabel: $0.kind.displayName,
+                folderPath: $0.directoryURL.path,
+                isRunning: $0.isRunning,
+                persistentName: $0.persistence?.sessionName
+            )
+        }
+        rows = TerminalSessionsOverview.rows(
+            inApp: inApp,
+            detached: sessionManager.persistentSessions
+        )
         tableView.reloadData()
         // 更新しても選択は生かす。終了ボタンを押す直前に行がズレるのが最悪なので。
-        let indexes = IndexSet(sessions.enumerated()
-            .filter { selectedNames.contains($0.element.name) }
+        let indexes = IndexSet(rows.enumerated()
+            .filter { selectedTargets.contains(Self.targetKey($0.element.target)) }
             .map(\.offset))
         tableView.selectRowIndexes(indexes, byExtendingSelection: false)
-        emptyLabel.isHidden = !sessions.isEmpty
+        emptyLabel.isHidden = !rows.isEmpty
         updateButtons()
+    }
+
+    private static func targetKey(_ target: TerminalSessionRowModel.Target) -> String {
+        switch target {
+        case .inApp(let id): "app:\(id.uuidString)"
+        case .detachedTmux(let name): "tmux:\(name)"
+        }
     }
 
     private func updateButtons() {
         let selection = tableView.selectedRowIndexes
         openButton.isEnabled = selection.count == 1
         killButton.isEnabled = !selection.isEmpty
-        killAllButton.isEnabled = !sessions.isEmpty
+        killAllButton.isEnabled = !rows.isEmpty
     }
 
-    private func selectedSessions() -> [TmuxSessionInfo] {
+    private func selectedRows() -> [TerminalSessionRowModel] {
         tableView.selectedRowIndexes.compactMap {
-            sessions.indices.contains($0) ? sessions[$0] : nil
+            rows.indices.contains($0) ? rows[$0] : nil
         }
     }
 
     @objc private func openFolder() {
-        guard let info = selectedSessions().first else { return }
-        let url = URL(fileURLWithPath: info.workingDirectoryPath, isDirectory: true)
+        guard let row = selectedRows().first else { return }
+        let url = URL(fileURLWithPath: row.folderPath, isDirectory: true)
         onOpenFolder?(url)
     }
 
     @objc private func killSelected() {
-        confirmAndKill(selectedSessions())
+        confirmAndKill(selectedRows())
     }
 
     @objc private func killAll() {
-        confirmAndKill(sessions)
+        confirmAndKill(rows)
     }
 
-    private func confirmAndKill(_ targets: [TmuxSessionInfo]) {
+    private func confirmAndKill(_ targets: [TerminalSessionRowModel]) {
         guard !targets.isEmpty, let window else { return }
         let alert = NSAlert()
-        alert.messageText = "永続セッション\(targets.count)件を終了しますか？"
-        alert.informativeText = "tmux側のセッションごと終了します。中で実行中のプロセスも終了し、再接続はできなくなります。"
+        alert.messageText = "セッション\(targets.count)件を終了しますか？"
+        alert.informativeText = "実行中のプロセスは終了します。永続セッションはtmux側ごと終了し、再接続できなくなります。"
         alert.addButton(withTitle: "終了")
         alert.addButton(withTitle: "キャンセル")
         alert.beginSheetModal(for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn, let self else { return }
-            let names = targets.map(\.name)
-            Task { await self.sessionManager.killPersistentSessions(named: names) }
+            self.kill(targets)
         }
+    }
+
+    private func kill(_ targets: [TerminalSessionRowModel]) {
+        var tmuxNames: [String] = []
+        for row in targets {
+            switch row.target {
+            case .inApp(let id):
+                if let session = sessionManager.allSessions.first(where: { $0.id == id }) {
+                    sessionManager.remove(session)
+                }
+            case .detachedTmux(let name):
+                tmuxNames.append(name)
+            }
+        }
+        guard !tmuxNames.isEmpty else { return }
+        let manager = sessionManager
+        Task { await manager.killPersistentSessions(named: tmuxNames) }
     }
 }
 
-extension PersistentSessionsPanelController: NSTableViewDataSource, NSTableViewDelegate {
+extension TerminalSessionsPanelController: NSTableViewDataSource, NSTableViewDelegate {
     func numberOfRows(in tableView: NSTableView) -> Int {
-        sessions.count
+        rows.count
     }
 
     func tableView(
@@ -201,23 +306,23 @@ extension PersistentSessionsPanelController: NSTableViewDataSource, NSTableViewD
         viewFor tableColumn: NSTableColumn?,
         row: Int
     ) -> NSView? {
-        guard sessions.indices.contains(row), let tableColumn else { return nil }
-        let info = sessions[row]
+        guard rows.indices.contains(row), let tableColumn else { return nil }
+        let model = rows[row]
         let text: String
         switch tableColumn.identifier.rawValue {
         case "kind":
-            text = info.kind?.displayName ?? "？"
+            text = model.kindLabel
         case "state":
-            text = info.isAttached ? "接続中" : "待機中"
+            text = model.stateLabel
         default:
-            text = Self.abbreviatePath(info.workingDirectoryPath)
+            text = Self.abbreviatePath(model.folderPath)
         }
         let label = NSTextField(labelWithString: text)
         label.font = tableColumn.identifier.rawValue == "folder"
             ? .monospacedSystemFont(ofSize: 11, weight: .regular)
             : .systemFont(ofSize: 11)
         label.lineBreakMode = .byTruncatingMiddle
-        label.toolTip = info.workingDirectoryPath
+        label.toolTip = model.folderPath
         return label
     }
 

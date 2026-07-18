@@ -9,9 +9,8 @@ final class WorkspaceAppCoordinator {
     private let updater = WorkspaceUpdater()
     private var windows: [WorkspaceWindowController] = []
     private var lastCapturedSnapshot: WorkspaceRestorationSnapshot?
-    private var persistentSessionsMenuItem: NSMenuItem?
-    private var sessionLoggingMenuItem: NSMenuItem?
-    private var persistentSessionsPanel: PersistentSessionsPanelController?
+    private var sessionsPanel: TerminalSessionsPanelController?
+    private var settingsWindow: SettingsWindowController?
     // Read back only in `deinit`, which cannot hop to the main actor.
     private nonisolated(unsafe) var sessionsObserver: (any NSObjectProtocol)?
 
@@ -192,41 +191,21 @@ final class WorkspaceAppCoordinator {
         controller.show()
     }
 
-    /// tmuxが無い環境ではトグルせず導入方法を案内する。無効化したメニューは
-    /// 「なぜ押せないか」を説明できないので、押せて理由が返る方を選ぶ。
-    @objc func togglePersistentSessions() {
-        guard sessionManager.persistenceAvailable else {
-            let alert = NSAlert()
-            alert.messageText = "tmuxが見つかりません"
-            alert.informativeText = "永続セッションはtmuxを使います。Homebrewなら `brew install tmux` で導入すると、FinderAIが落ちたり終了してもTerminalのセッションが生き残り、再接続できるようになります。"
-            if let window = NSApp.keyWindow {
-                alert.beginSheetModal(for: window)
-            } else {
-                alert.runModal()
-            }
-            return
+    @objc func showSettings() {
+        if settingsWindow == nil {
+            settingsWindow = SettingsWindowController(
+                sessionManager: sessionManager,
+                preferences: preferences
+            )
         }
-        sessionManager.persistenceEnabled.toggle()
-        persistentSessionsMenuItem?.state = sessionManager.persistenceEnabled ? .on : .off
+        settingsWindow?.show()
     }
 
-    /// トグルの状態に関係なく開ける。永続化を切った後にtmuxへ残ったセッションを
-    /// 掃除するのが、このパネルの主目的の一つだから。tmux自体が無ければ管理する
-    /// ものも無いので、案内だけ出す。
-    @objc func showPersistentSessionsPanel() {
-        guard sessionManager.persistenceAvailable else {
-            let alert = NSAlert()
-            alert.messageText = "tmuxが見つかりません"
-            alert.informativeText = "永続セッションはtmuxを使います。tmuxが無いこの環境に、管理対象のセッションはありません。"
-            if let window = NSApp.keyWindow {
-                alert.beginSheetModal(for: window)
-            } else {
-                alert.runModal()
-            }
-            return
-        }
-        if persistentSessionsPanel == nil {
-            let panel = PersistentSessionsPanelController(sessionManager: sessionManager)
+    /// アプリ内の全セッションとtmux残存の俯瞰。tmuxが無くてもアプリ内セッションの
+    /// 管理はできるので、ゲートは掛けない。
+    @objc func showTerminalSessionsPanel() {
+        if sessionsPanel == nil {
+            let panel = TerminalSessionsPanelController(sessionManager: sessionManager)
             panel.onOpenFolder = { [weak self] url in
                 guard let self else { return }
                 let target = self.frontmostWindow ?? self.windows.first
@@ -238,26 +217,9 @@ final class WorkspaceAppCoordinator {
                     controller.show()
                 }
             }
-            persistentSessionsPanel = panel
+            sessionsPanel = panel
         }
-        persistentSessionsPanel?.show()
-    }
-
-    /// Terminal内容を保存しないのが既定のプライバシー方針なので、これはオプトイン。
-    /// 効くのは切り替え後に開始したセッションからで、動いているPTYの途中からは
-    /// 録り始めない。
-    @objc func toggleSessionLogging() {
-        preferences.sessionLogging.toggle()
-        sessionLoggingMenuItem?.state = preferences.sessionLogging ? .on : .off
-        guard preferences.sessionLogging else { return }
-        let alert = NSAlert()
-        alert.messageText = "Terminal出力のログ保存を有効にしました"
-        alert.informativeText = "これ以降に開始するセッションの出力（コマンドや表示内容を含む）を \(SessionLogStore.directory.path(percentEncoded: false)) へ保存します。ログは14日で自動削除されます。"
-        if let window = NSApp.keyWindow {
-            alert.beginSheetModal(for: window)
-        } else {
-            alert.runModal()
-        }
+        sessionsPanel?.show()
     }
 
     private var cascadePoint: NSPoint = .zero
@@ -361,6 +323,14 @@ final class WorkspaceAppCoordinator {
         update.target = updater
         appMenu.addItem(update)
         appMenu.addItem(.separator())
+        let settings = NSMenuItem(
+            title: "設定…",
+            action: #selector(showSettings),
+            keyEquivalent: ","
+        )
+        settings.target = self
+        appMenu.addItem(settings)
+        appMenu.addItem(.separator())
         let quit = NSMenuItem(title: "FinderAIを終了", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.target = NSApp
         appMenu.addItem(quit)
@@ -421,33 +391,16 @@ final class WorkspaceAppCoordinator {
         viewMenu.addItem(item("リスト表示／カラム表示", action: #selector(WorkspaceBrowserViewController.toggleColumnView), key: "2"))
         viewMenu.addItem(.separator())
         viewMenu.addItem(item("Terminalを開く／隠す", action: #selector(WorkspaceWindowController.toggleTerminal), key: "j"))
-        // 座席は表示メニューのTerminal項目の隣。設定ウインドウを持たないアプリなので
-        // トグルはメニューに住む。
-        let persistent = NSMenuItem(
-            title: "Terminalセッションを永続化（tmux）",
-            action: #selector(togglePersistentSessions),
-            keyEquivalent: ""
+        // 永続化と出力ログのトグルは設定ウインドウ（⌘,）にある。メニューに残すのは
+        // 動作だけで、状態の置き場にはしない。
+        let manageSessions = NSMenuItem(
+            title: "Terminalセッションを管理…",
+            action: #selector(showTerminalSessionsPanel),
+            keyEquivalent: "t"
         )
-        persistent.target = self
-        persistent.state = sessionManager.persistenceEnabled ? .on : .off
-        persistentSessionsMenuItem = persistent
-        viewMenu.addItem(persistent)
-        let managePersistent = NSMenuItem(
-            title: "永続セッションを管理…",
-            action: #selector(showPersistentSessionsPanel),
-            keyEquivalent: ""
-        )
-        managePersistent.target = self
-        viewMenu.addItem(managePersistent)
-        let logging = NSMenuItem(
-            title: "Terminal出力をログに保存",
-            action: #selector(toggleSessionLogging),
-            keyEquivalent: ""
-        )
-        logging.target = self
-        logging.state = preferences.sessionLogging ? .on : .off
-        sessionLoggingMenuItem = logging
-        viewMenu.addItem(logging)
+        manageSessions.keyEquivalentModifierMask = [.command, .option]
+        manageSessions.target = self
+        viewMenu.addItem(manageSessions)
         let split = item("2画面に分割／解除", action: #selector(WorkspaceWindowController.toggleSplit), key: "s")
         split.keyEquivalentModifierMask = [.command, .option]
         viewMenu.addItem(split)
