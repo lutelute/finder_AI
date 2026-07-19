@@ -80,6 +80,9 @@ final class WorkspaceAppCoordinator {
         controller.onDirectoryChanged = { [weak self] in
             self?.captureSnapshot()
         }
+        controller.onManageTerminalSessions = { [weak self] in
+            self?.showTerminalSessionsPanel()
+        }
         windows.append(controller)
         captureSnapshot()
         return controller
@@ -214,6 +217,19 @@ final class WorkspaceAppCoordinator {
                     target.show()
                 } else {
                     let controller = self.makeWindow(directory: url)
+                    controller.show()
+                }
+            }
+            panel.onRevealFolder = { [weak self] url in
+                guard let self else { return }
+                let target = self.frontmostWindow ?? self.windows.first
+                if let target {
+                    target.browser.navigate(to: url)
+                    target.showTerminal()
+                    target.show()
+                } else {
+                    let controller = self.makeWindow(directory: url)
+                    controller.showTerminal()
                     controller.show()
                 }
             }

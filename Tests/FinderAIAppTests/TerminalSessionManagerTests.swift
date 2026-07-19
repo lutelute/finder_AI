@@ -26,6 +26,10 @@ private final class MockManagedSession: ManagedTerminalSession {
         terminateCount += 1
         isRunning = false
     }
+
+    func transcriptData() -> Data? {
+        Data("mock transcript".utf8)
+    }
 }
 
 @MainActor
@@ -140,6 +144,20 @@ struct TerminalSessionManagerTests {
         #expect(manager.sessions(for: folderB).map(\.id) == [shellB.id])
         #expect(manager.runningCount == 3)
 
+        let mockShellA = try #require(shellA as? MockManagedSession)
+        let mockCodexA = try #require(codexA as? MockManagedSession)
+        manager.hideFromTabs(codexA)
+        #expect(!manager.isPresented(codexA))
+        #expect(manager.sessions(for: folderA).map(\.kind) == [.shell])
+        #expect(manager.allSessions.map(\.id).contains(codexA.id))
+        #expect(mockCodexA.terminateCount == 0)
+
+        // 同じ開始ボタンは隠れた実体を再利用し、タブへ戻す。重複PTYは作らない。
+        let revealedCodexA = try manager.create(kind: .codex, directoryURL: folderA)
+        #expect(revealedCodexA.id == codexA.id)
+        #expect(manager.isPresented(codexA))
+        #expect(builder.requests.count == 3)
+
         do {
             _ = try manager.create(kind: .claude, directoryURL: folderA)
             Issue.record("Missing Claude executable must not reach the builder")
@@ -148,8 +166,6 @@ struct TerminalSessionManagerTests {
         }
         #expect(builder.requests.count == 3)
 
-        let mockShellA = try #require(shellA as? MockManagedSession)
-        let mockCodexA = try #require(codexA as? MockManagedSession)
         manager.remove(shellA)
         #expect(mockShellA.terminateCount == 1)
         #expect(mockShellA.onChange == nil)
@@ -159,6 +175,42 @@ struct TerminalSessionManagerTests {
         manager.shutdownOwnedProcesses()
         #expect(mockCodexA.terminateCount == 0)
         #expect(try #require(shellB as? MockManagedSession).terminateCount == 1)
+    }
+
+    @Test("a detached persistent session remains reattachable after persistence is disabled")
+    func reattachesExistingPersistentWhenSettingIsOff() async throws {
+        let builder = MockSessionBuilder()
+        let tmuxURL = URL(fileURLWithPath: "/mock/bin/tmux")
+        let codexURL = URL(fileURLWithPath: "/mock/bin/codex")
+        let controller = RecordingTmuxController()
+        let preferences = isolatedPreferences("persistent-reattach-disabled")
+        preferences.persistentSessions = false
+        let manager = TerminalSessionManager(
+            builder: builder,
+            commandLocator: MockCommandLocator(commands: [
+                "tmux": tmuxURL,
+                "codex": codexURL
+            ]),
+            preferences: preferences,
+            tmuxController: controller
+        )
+        let folder = URL(fileURLWithPath: "/tmp/reattach-disabled", isDirectory: true)
+        let key = TerminalSessionKey(directoryURL: folder, kind: .codex)
+        let name = TmuxSessionNaming.sessionName(for: key)
+        await controller.setSessions([
+            TmuxSessionInfo(name: name, workingDirectoryPath: folder.path, isAttached: false)
+        ])
+        manager.refreshDetachedSessions()
+        try await eventually {
+            manager.hasDetachedPersistentSession(kind: .codex, directoryURL: folder)
+        }
+
+        _ = try manager.create(kind: .codex, directoryURL: folder)
+        let request = try #require(builder.requests.first)
+        #expect(request.persistence == TerminalSessionPersistence(
+            tmuxExecutableURL: tmuxURL,
+            sessionName: name
+        ))
     }
 
     @Test("owned session changes are forwarded while registered")
@@ -277,9 +329,9 @@ struct TerminalSessionManagerTests {
         #expect(!manager.hasDetachedPersistentSession(kind: .claude, directoryURL: folder))
         #expect(!manager.hasDetachedPersistentSession(kind: .shell, directoryURL: other))
 
-        // 設定を切れば「再接続」表示の根拠も消える。
+        // 設定を切っても、既存tmuxを見失わず再接続できる。
         manager.persistenceEnabled = false
-        #expect(!manager.hasDetachedPersistentSession(kind: .shell, directoryURL: folder))
+        #expect(manager.hasDetachedPersistentSession(kind: .shell, directoryURL: folder))
     }
 
     @Test("management sees leftovers even with persistence off, and bulk kill filters foreign sessions")

@@ -51,7 +51,8 @@ let package = Package(
             dependencies: [
                 "FinderAIApp",
                 "FinderAICore",
-                .product(name: "Testing", package: "swift-testing")
+                .product(name: "Testing", package: "swift-testing"),
+                .product(name: "SwiftTerm", package: "SwiftTerm")
             ]
         )
     ],
