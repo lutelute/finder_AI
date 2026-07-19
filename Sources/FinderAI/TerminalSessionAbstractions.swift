@@ -24,6 +24,9 @@ protocol ManagedTerminalSession: AnyObject {
     var onChange: (() -> Void)? { get set }
 
     func terminate()
+    /// 現在の表示バッファを、ユーザーが明示的に保存するためのUTF-8テキストへする。
+    /// 実行中セッションを自動で記録する機能とは別で、nilなら取得できない。
+    func transcriptData() -> Data?
 }
 
 @MainActor
@@ -60,7 +63,12 @@ protocol TerminalSessionManaging: AnyObject {
     var persistenceEnabled: Bool { get set }
 
     func canStart(_ kind: TerminalSessionKind) -> Bool
+    /// タブに表示中のセッションだけを返す。バックグラウンドへ隠したセッションも
+    /// `allSessions`には残り、プロセスとTerminalバッファを保持し続ける。
     func sessions(for directoryURL: URL) -> [any ManagedTerminalSession]
+    func isPresented(_ session: any ManagedTerminalSession) -> Bool
+    func hideFromTabs(_ session: any ManagedTerminalSession)
+    func revealInTabs(_ session: any ManagedTerminalSession)
     /// このフォルダ×種類に、アプリ外のtmuxサーバーが保持しているセッションが
     /// あるか。あるなら`create`は新規起動ではなくアタッチになる。
     func hasDetachedPersistentSession(

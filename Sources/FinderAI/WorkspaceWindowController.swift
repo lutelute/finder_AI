@@ -23,6 +23,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     private var rootController: NSViewController!
 
     var onClose: (() -> Void)?
+    var onManageTerminalSessions: (() -> Void)? {
+        didSet { terminal.onManageSessions = onManageTerminalSessions }
+    }
     /// どのペインであれフォルダが変わったら呼ばれる。コーディネータが復元用
     /// スナップショットを撮り直すためのフックで、UIの追従とは独立。
     var onDirectoryChanged: (() -> Void)?
@@ -267,6 +270,11 @@ extension WorkspaceWindowController: NSSplitViewDelegate {
 
     var terminalPanelHeight: CGFloat { terminalHeightConstraint.constant }
     var isTerminalExpanded: Bool { terminalExpanded }
+
+    func showTerminal() {
+        guard !terminalExpanded else { return }
+        toggleTerminal()
+    }
 
     /// ⌘⌥S. The second pane opens on the same folder, which is what "split this"
     /// almost always means — you then navigate one side away.

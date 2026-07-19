@@ -21,6 +21,7 @@ private final class SessionTabButton: NSButton {
 final class DrawerContentViewController: NSViewController {
     var onToggle: (() -> Void)?
     var onResizeDelta: ((CGFloat) -> Void)?
+    var onManageSessions: (() -> Void)?
 
     private let sessionManager: any TerminalSessionManaging
     private var directoryURL: URL?
@@ -48,6 +49,7 @@ final class DrawerContentViewController: NSViewController {
     private let directoryImage = NSImageView()
     private let pathLabel = NSTextField(labelWithString: "Finder")
     private let sessionTabs = NSStackView()
+    private let manageSessionsButton = NSButton()
     private let newSessionButton = NSButton()
     private let closeButton = NSButton()
 
@@ -185,6 +187,14 @@ final class DrawerContentViewController: NSViewController {
         sessionTabs.setContentHuggingPriority(.defaultHigh, for: .horizontal)
 
         configureIconButton(
+            manageSessionsButton,
+            symbol: "rectangle.stack",
+            accessibilityLabel: "すべてのTerminalセッションを管理"
+        )
+        manageSessionsButton.target = self
+        manageSessionsButton.action = #selector(manageSessions)
+
+        configureIconButton(
             newSessionButton,
             symbol: "plus",
             accessibilityLabel: "新しいTerminalセッション"
@@ -209,6 +219,7 @@ final class DrawerContentViewController: NSViewController {
             pathLabel,
             spacer,
             sessionTabs,
+            manageSessionsButton,
             newSessionButton,
             closeButton
         ])
@@ -228,6 +239,8 @@ final class DrawerContentViewController: NSViewController {
             directoryImage.widthAnchor.constraint(equalToConstant: 14),
             directoryImage.heightAnchor.constraint(equalToConstant: 14),
             pathLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 260),
+            manageSessionsButton.widthAnchor.constraint(equalToConstant: 26),
+            manageSessionsButton.heightAnchor.constraint(equalToConstant: 26),
             newSessionButton.widthAnchor.constraint(equalToConstant: 26),
             newSessionButton.heightAnchor.constraint(equalToConstant: 26),
             closeButton.widthAnchor.constraint(equalToConstant: 26),
@@ -361,6 +374,7 @@ final class DrawerContentViewController: NSViewController {
                 button.tag = index
                 button.target = self
                 button.action = #selector(selectSession(_:))
+                button.menu = sessionContextMenu(for: session)
                 button.isActiveTab = session.id == activeSession?.id
                 button.toolTip = "\(session.kind.displayName) — \(session.directoryURL.path(percentEncoded: false))"
                 button.translatesAutoresizingMaskIntoConstraints = false
@@ -372,6 +386,10 @@ final class DrawerContentViewController: NSViewController {
         }
         sessionTabs.isHidden = visibleSessions.isEmpty
         closeButton.isEnabled = activeSession != nil
+        let runningCount = sessionManager.runningCount
+        manageSessionsButton.toolTip = runningCount == 0
+            ? "すべてのTerminalセッションを管理（⌘⌥T）"
+            : "Terminalセッションを管理 — 実行中\(runningCount)件（⌘⌥T）"
         newSessionButton.isEnabled = directoryURL != nil
         codexButton.isEnabled = sessionManager.canStart(.codex)
         codexButton.toolTip = codexButton.isEnabled ? nil : "codexコマンドが見つかりません"
@@ -477,8 +495,73 @@ final class DrawerContentViewController: NSViewController {
         }
     }
 
+    private func sessionContextMenu(
+        for session: any ManagedTerminalSession
+    ) -> NSMenu {
+        let menu = NSMenu(title: session.kind.displayName)
+        let id = session.id.uuidString
+        func item(_ title: String, action: Selector) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.representedObject = id
+            return item
+        }
+        menu.addItem(item(
+            "タブを隠す（実行は継続）",
+            action: #selector(hideSessionFromMenu(_:))
+        ))
+        menu.addItem(item(
+            "現在の表示を記録として保存…",
+            action: #selector(saveTranscriptFromMenu(_:))
+        ))
+        menu.addItem(.separator())
+        menu.addItem(item(
+            "すべてのセッションを管理…",
+            action: #selector(manageSessionsFromMenu(_:))
+        ))
+        menu.addItem(.separator())
+        menu.addItem(item(
+            "セッションを終了…",
+            action: #selector(terminateSessionFromMenu(_:))
+        ))
+        return menu
+    }
+
+    private func session(from menuItem: NSMenuItem) -> (any ManagedTerminalSession)? {
+        guard let text = menuItem.representedObject as? String,
+              let id = UUID(uuidString: text) else { return nil }
+        return sessionManager.allSessions.first { $0.id == id }
+    }
+
+    @objc private func hideSessionFromMenu(_ sender: NSMenuItem) {
+        guard let session = session(from: sender) else { return }
+        sessionManager.hideFromTabs(session)
+    }
+
+    @objc private func saveTranscriptFromMenu(_ sender: NSMenuItem) {
+        guard let session = session(from: sender) else { return }
+        SessionTranscriptExporter.present(for: session, attachedTo: view.window)
+    }
+
+    @objc private func manageSessions() {
+        onManageSessions?()
+    }
+
+    @objc private func manageSessionsFromMenu(_ sender: NSMenuItem) {
+        onManageSessions?()
+    }
+
+    @objc private func terminateSessionFromMenu(_ sender: NSMenuItem) {
+        guard let session = session(from: sender) else { return }
+        confirmTermination(of: session)
+    }
+
     @objc private func closeSession() {
         guard let session = activeSession else { return }
+        confirmTermination(of: session)
+    }
+
+    private func confirmTermination(of session: any ManagedTerminalSession) {
         guard session.isRunning else {
             removeSession(session)
             return

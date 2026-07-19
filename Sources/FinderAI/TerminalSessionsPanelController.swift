@@ -10,6 +10,7 @@ struct TerminalSessionRowModel: Equatable {
     }
 
     let target: Target
+    let kind: TerminalSessionKind?
     let kindLabel: String
     let folderPath: String
     let stateLabel: String
@@ -21,6 +22,7 @@ enum TerminalSessionsOverview {
         let kindLabel: String
         let folderPath: String
         let isRunning: Bool
+        let isPresented: Bool
         let persistentName: String?
 
         init(
@@ -28,12 +30,14 @@ enum TerminalSessionsOverview {
             kindLabel: String,
             folderPath: String,
             isRunning: Bool,
+            isPresented: Bool,
             persistentName: String?
         ) {
             self.id = id
             self.kindLabel = kindLabel
             self.folderPath = folderPath
             self.isRunning = isRunning
+            self.isPresented = isPresented
             self.persistentName = persistentName
         }
     }
@@ -48,10 +52,14 @@ enum TerminalSessionsOverview {
         var rows = inApp.map { summary in
             TerminalSessionRowModel(
                 target: .inApp(summary.id),
+                kind: nil,
                 kindLabel: summary.kindLabel,
                 folderPath: summary.folderPath,
                 stateLabel: summary.isRunning
-                    ? (summary.persistentName != nil ? "実行中（永続）" : "実行中")
+                    ? stateLabel(
+                        isPresented: summary.isPresented,
+                        isPersistent: summary.persistentName != nil
+                    )
                     : "終了"
             )
         }
@@ -62,6 +70,7 @@ enum TerminalSessionsOverview {
             .map { info in
                 TerminalSessionRowModel(
                     target: .detachedTmux(info.name),
+                    kind: info.kind,
                     kindLabel: info.kind?.displayName ?? "？",
                     folderPath: info.workingDirectoryPath,
                     // 外部=ユーザーが自分のターミナルからattachしている場合。
@@ -69,6 +78,18 @@ enum TerminalSessionsOverview {
                 )
             }
         return rows
+    }
+
+    private static func stateLabel(
+        isPresented: Bool,
+        isPersistent: Bool
+    ) -> String {
+        switch (isPresented, isPersistent) {
+        case (true, true): "表示中（永続）"
+        case (true, false): "表示中"
+        case (false, true): "バックグラウンド（永続）"
+        case (false, false): "バックグラウンド"
+        }
     }
 }
 
@@ -81,11 +102,15 @@ final class TerminalSessionsPanelController: NSWindowController {
     private let sessionManager: any TerminalSessionManaging
     /// 選択したセッションのフォルダをブラウザで開く（開けばドロワーに出る）。
     var onOpenFolder: ((URL) -> Void)?
+    /// セッションをタブへ戻す操作では、フォルダ移動に加えてTerminalも展開する。
+    var onRevealFolder: ((URL) -> Void)?
 
     private var rows: [TerminalSessionRowModel] = []
     private let tableView = NSTableView()
     private let emptyLabel = NSTextField(labelWithString: "Terminalセッションはありません")
     private let openButton = NSButton()
+    private let revealButton = NSButton()
+    private let saveButton = NSButton()
     private let killButton = NSButton()
     private let killAllButton = NSButton()
     // deinitでしか触らないため、他と同じ扱い。
@@ -94,14 +119,14 @@ final class TerminalSessionsPanelController: NSWindowController {
     init(sessionManager: any TerminalSessionManaging) {
         self.sessionManager = sessionManager
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 580, height: 340),
+            contentRect: NSRect(x: 0, y: 0, width: 700, height: 360),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Terminalセッション"
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 480, height: 220)
+        window.minSize = NSSize(width: 620, height: 240)
         super.init(window: window)
 
         buildContent(in: window)
@@ -154,7 +179,7 @@ final class TerminalSessionsPanelController: NSWindowController {
         tableView.dataSource = self
         tableView.delegate = self
         tableView.target = self
-        tableView.doubleAction = #selector(openFolder)
+        tableView.doubleAction = #selector(revealSelected)
 
         let scroll = NSScrollView()
         scroll.documentView = tableView
@@ -169,6 +194,16 @@ final class TerminalSessionsPanelController: NSWindowController {
         openButton.target = self
         openButton.action = #selector(openFolder)
 
+        revealButton.title = "タブに表示"
+        revealButton.bezelStyle = .rounded
+        revealButton.target = self
+        revealButton.action = #selector(revealSelected)
+
+        saveButton.title = "記録を保存…"
+        saveButton.bezelStyle = .rounded
+        saveButton.target = self
+        saveButton.action = #selector(saveSelectedTranscript)
+
         killButton.title = "選択を終了"
         killButton.bezelStyle = .rounded
         killButton.target = self
@@ -181,7 +216,14 @@ final class TerminalSessionsPanelController: NSWindowController {
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let buttons = NSStackView(views: [openButton, spacer, killButton, killAllButton])
+        let buttons = NSStackView(views: [
+            openButton,
+            spacer,
+            revealButton,
+            saveButton,
+            killButton,
+            killAllButton
+        ])
         buttons.orientation = .horizontal
         buttons.spacing = 8
 
@@ -214,6 +256,7 @@ final class TerminalSessionsPanelController: NSWindowController {
                 kindLabel: $0.kind.displayName,
                 folderPath: $0.directoryURL.path,
                 isRunning: $0.isRunning,
+                isPresented: sessionManager.isPresented($0),
                 persistentName: $0.persistence?.sessionName
             )
         }
@@ -241,6 +284,10 @@ final class TerminalSessionsPanelController: NSWindowController {
     private func updateButtons() {
         let selection = tableView.selectedRowIndexes
         openButton.isEnabled = selection.count == 1
+        revealButton.isEnabled = selection.count == 1
+            && selectedRows().first.map(canReveal) == true
+        saveButton.isEnabled = selection.count == 1
+            && selectedRows().first.map(canSaveTranscript) == true
         killButton.isEnabled = !selection.isEmpty
         killAllButton.isEnabled = !rows.isEmpty
     }
@@ -255,6 +302,50 @@ final class TerminalSessionsPanelController: NSWindowController {
         guard let row = selectedRows().first else { return }
         let url = URL(fileURLWithPath: row.folderPath, isDirectory: true)
         onOpenFolder?(url)
+    }
+
+    private func canReveal(_ row: TerminalSessionRowModel) -> Bool {
+        switch row.target {
+        case .inApp:
+            true
+        case .detachedTmux:
+            row.kind != nil
+        }
+    }
+
+    private func canSaveTranscript(_ row: TerminalSessionRowModel) -> Bool {
+        guard case .inApp(let id) = row.target else { return false }
+        return sessionManager.allSessions.contains { $0.id == id }
+    }
+
+    @objc private func revealSelected() {
+        guard let row = selectedRows().first, canReveal(row) else { return }
+        let url = URL(fileURLWithPath: row.folderPath, isDirectory: true)
+        do {
+            switch row.target {
+            case .inApp(let id):
+                guard let session = sessionManager.allSessions.first(where: { $0.id == id })
+                else { return }
+                sessionManager.revealInTabs(session)
+            case .detachedTmux:
+                guard let kind = row.kind else { return }
+                _ = try sessionManager.create(kind: kind, directoryURL: url)
+            }
+            onRevealFolder?(url)
+        } catch {
+            presentError(
+                title: "セッションを表示できません",
+                message: error.localizedDescription
+            )
+        }
+    }
+
+    @objc private func saveSelectedTranscript() {
+        guard let row = selectedRows().first,
+              case .inApp(let id) = row.target,
+              let session = sessionManager.allSessions.first(where: { $0.id == id })
+        else { return }
+        SessionTranscriptExporter.present(for: session, attachedTo: window)
     }
 
     @objc private func killSelected() {
@@ -293,6 +384,18 @@ final class TerminalSessionsPanelController: NSWindowController {
         guard !tmuxNames.isEmpty else { return }
         let manager = sessionManager
         Task { await manager.killPersistentSessions(named: tmuxNames) }
+    }
+
+    private func presentError(title: String, message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = title
+        alert.informativeText = message
+        if let window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
     }
 }
 

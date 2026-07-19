@@ -12,6 +12,9 @@ final class TerminalSessionManager: TerminalSessionManaging {
     private let tmuxController: any TmuxControlling
     private var sessionsByKey: [TerminalSessionKey: any ManagedTerminalSession] = [:]
     private var insertionOrder: [TerminalSessionKey] = []
+    /// 表示と実行を分離する。ここにあるセッションはタブから消えるだけで、managerの
+    /// 強参照、PTY、出力バッファはそのまま生きる。
+    private var hiddenSessionIDs: Set<UUID> = []
 
     /// tmuxサーバーが保持しているFinderAI名義のセッション（最新refresh結果）。
     /// 「再接続」表示と管理パネルの根拠で、起動時・アクティブ化・作成/削除後に
@@ -101,7 +104,6 @@ final class TerminalSessionManager: TerminalSessionManaging {
         kind: TerminalSessionKind,
         directoryURL: URL
     ) -> Bool {
-        guard persistenceEnabled else { return false }
         let key = TerminalSessionKey(directoryURL: directoryURL, kind: kind)
         return detachedSessionNames.contains(TmuxSessionNaming.sessionName(for: key))
     }
@@ -157,9 +159,28 @@ final class TerminalSessionManager: TerminalSessionManaging {
     func sessions(for directoryURL: URL) -> [any ManagedTerminalSession] {
         let directoryKey = FinderDocumentURLParser.canonicalKey(for: directoryURL)
         return insertionOrder.compactMap { key in
-            guard key.directoryKey == directoryKey else { return nil }
-            return sessionsByKey[key]
+            guard key.directoryKey == directoryKey,
+                  let session = sessionsByKey[key],
+                  !hiddenSessionIDs.contains(session.id) else { return nil }
+            return session
         }
+    }
+
+    func isPresented(_ session: any ManagedTerminalSession) -> Bool {
+        sessionsByKey[session.key]?.id == session.id
+            && !hiddenSessionIDs.contains(session.id)
+    }
+
+    func hideFromTabs(_ session: any ManagedTerminalSession) {
+        guard sessionsByKey[session.key]?.id == session.id,
+              hiddenSessionIDs.insert(session.id).inserted else { return }
+        notifyChange()
+    }
+
+    func revealInTabs(_ session: any ManagedTerminalSession) {
+        guard sessionsByKey[session.key]?.id == session.id,
+              hiddenSessionIDs.remove(session.id) != nil else { return }
+        notifyChange()
     }
 
     @discardableResult
@@ -169,6 +190,7 @@ final class TerminalSessionManager: TerminalSessionManaging {
     ) throws -> any ManagedTerminalSession {
         let key = TerminalSessionKey(directoryURL: directoryURL, kind: kind)
         if let existing = sessionsByKey[key] {
+            revealInTabs(existing)
             return existing
         }
 
@@ -187,10 +209,15 @@ final class TerminalSessionManager: TerminalSessionManaging {
         // 設定が有効でもtmuxが消えていれば黙って通常セッションに落とす。
         // 「起動できない」よりは「永続でないが動く」の方が正しい失敗の仕方。
         let persistence: TerminalSessionPersistence?
-        if persistenceEnabled, let tmuxURL = locate("tmux") {
+        let persistentName = TmuxSessionNaming.sessionName(for: key)
+        // 設定は「これから新しく作るセッション」にだけ効く。設定を切った後でも、
+        // tmuxに実体が残っているなら同じセッションへ再接続し、通常PTYを重複起動
+        // しない。
+        if let tmuxURL = locate("tmux"),
+           persistenceEnabled || detachedSessionNames.contains(persistentName) {
             persistence = TerminalSessionPersistence(
                 tmuxExecutableURL: tmuxURL,
-                sessionName: TmuxSessionNaming.sessionName(for: key)
+                sessionName: persistentName
             )
         } else {
             persistence = nil
@@ -216,6 +243,7 @@ final class TerminalSessionManager: TerminalSessionManaging {
         session.onChange = nil
         sessionsByKey.removeValue(forKey: session.key)
         insertionOrder.removeAll { $0 == session.key }
+        hiddenSessionIDs.remove(session.id)
         // クライアントの終了はデタッチにしかならないので、UIから閉じたときは
         // tmux側のセッションも道連れにする。それが「終了」の意味。
         if let persistence {

@@ -1,7 +1,47 @@
 import AppKit
+import Darwin
 import FinderAICore
 import Foundation
 @preconcurrency import SwiftTerm
+
+/// SwiftTerm 1.14の`LocalProcess.terminate()`はprocess monitorを先にcancelするため、
+/// SIGTERMを無視するinteractive shellが後から終了すると`waitpid`されずzombieになる。
+/// FinderAI所有のPTY process groupへHUPを送り、猶予後はKILLして必ず回収する。
+@MainActor
+enum OwnedProcessTerminator {
+    private static let reaperQueue = DispatchQueue(
+        label: "com.shigenoburyuto.finderai.terminal-reaper",
+        qos: .utility
+    )
+
+    static func terminate(_ process: LocalProcess) {
+        let pid = process.shellPid
+        process.terminate()
+        guard pid > 1 else { return }
+
+        reaperQueue.async {
+            signalProcessGroupAndLeader(pid: pid, signal: SIGHUP)
+            var status: Int32 = 0
+            for _ in 0..<50 {
+                let result = waitpid(pid, &status, WNOHANG)
+                if result == pid || (result == -1 && errno == ECHILD) { return }
+                if result == -1 && errno != EINTR { return }
+                usleep(10_000)
+            }
+
+            signalProcessGroupAndLeader(pid: pid, signal: SIGKILL)
+            while waitpid(pid, &status, 0) == -1 && errno == EINTR {}
+        }
+    }
+
+    private nonisolated static func signalProcessGroupAndLeader(
+        pid: pid_t,
+        signal: Int32
+    ) {
+        _ = Darwin.kill(-pid, signal)
+        _ = Darwin.kill(pid, signal)
+    }
+}
 
 /// ホストからの生バイトをターミナルへ流す前にログへ複製する。SwiftTerm組み込みの
 /// `setHostLogging`は読み取りチャンクごとに別ファイルを作るデバッグ機構で、
@@ -101,7 +141,12 @@ final class TerminalSession: NSObject, @preconcurrency LocalProcessTerminalViewD
 
     func terminate() {
         guard isRunning else { return }
-        terminalView.terminate()
+        OwnedProcessTerminator.terminate(terminalView.process)
+    }
+
+    func transcriptData() -> Data? {
+        guard terminalView.terminal != nil else { return nil }
+        return terminalView.terminal.getBufferAsData(kind: .active)
     }
 
     func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
