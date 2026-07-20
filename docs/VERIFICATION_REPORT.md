@@ -13,6 +13,15 @@
 - 1180×792pt、2画面分割の左右ペインで、移動・パス・表示モードの上段と検索範囲・検索欄の下段が重ならないことを確認。
 - 検証終了後はリスト・分割なしへ戻して通常終了し、FinderAIプロセスを残していない。
 
+## 正式配布パイプライン（2026-07-20）
+
+- Developer ID専用モード、Hardened Runtime、secure timestamp、TeamIdentifier、`get-task-allow`不在の検査を追加。
+- Sparkle 2.9公式手順に合わせ、Installer XPC、Downloader XPC（entitlement維持）、Autoupdate、Updater、framework、appの順で個別署名する。
+- Apple `notarytool --wait`、結果監査ログ、Accepted確認、appへのstaple、staple後ZIP再作成、Gatekeeper検査を実装。
+- Sparkle秘密鍵と埋め込み公開鍵の一致検査、ZIPとappcastのEdDSA署名、SHA-256一覧、GitHub draft asset検査を実装。
+- 全169テスト／27 suites、リリーススクリプトのRFC 8032鍵導出・自己署名拒否テスト、ShellCheck、actionlint、通常ローカルビルドとZIP再展開検証が成功。
+- Developer ID証明書がない現環境では自己署名を本番用として拒否する失敗系まで確認。Apple notarizationと1.2.2→Developer ID版の実更新は未実施であり、公開ガードを解除していない。
+
 以下は0.2.0時点の基礎検証記録です。
 
 ## 環境

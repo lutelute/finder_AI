@@ -23,7 +23,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>1.7.0</string>
 	<key>CFBundleVersion</key>
-	<string>22</string>
+	<string>23</string>
 	<key>FinderAIGitCommit</key>
 	<string>source</string>
 	<key>LSApplicationCategoryType</key>
@@ -50,6 +50,8 @@
 	<true/>
 	<key>SUFeedURL</key>
 	<string>https://github.com/lutelute/finder_AI/releases/latest/download/appcast.xml</string>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
 	<key>SUPublicEDKey</key>
 	<string>4kGI371BiHpXUHG4O9UEc+E/1dIrdG4a/H5P8TIUJy4=</string>
 	<key>SUScheduledCheckInterval</key>

@@ -2,14 +2,14 @@
 
 ## 保存・送信しない情報
 
-FinderAI Workspaceにはテレメトリ、分析SDK、クラッシュ送信、独自アップデート通信がありません。次をアプリ独自に保存・送信しません（保存については後述のオプトイン機能とローカル状態を除く）。
+FinderAI Workspaceにはテレメトリ、分析SDK、クラッシュ送信、FinderAI独自サーバーへの通信がありません。自動更新を確認するときだけ、SparkleがGitHub Releases上のappcastと更新ZIPへHTTPS接続します。GitHubには通常のHTTPS接続情報が届きますが、Terminal内容、ファイル内容、検索語を更新要求へ加えません。次をアプリ独自に保存・送信しません（保存については後述のオプトイン機能とローカル状態を除く）。
 
 - Terminalの入力・出力、コマンド履歴
 - Codex／Claudeとの会話
 - ファイル内容
 - 検索語
 
-SwiftTermのhost loggingは無効です。FinderAI Workspace自体はネットワーク機能を実装していません。ユーザーがCodex／ClaudeなどのCLIを開始した場合、そのCLIの通信・認証は各CLIの設定に従います。
+SwiftTermのhost loggingは無効です。更新確認以外のネットワーク機能をFinderAI自身は実装していません。ユーザーがCodex／ClaudeなどのCLIを開始した場合、そのCLIの通信・認証は各CLIの設定に従います。
 
 ## ローカルに保存する状態
 
