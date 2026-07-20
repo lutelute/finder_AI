@@ -4,7 +4,9 @@
 
 ## 起動とレイアウト
 
-- [ ] `/Applications/FinderAI Workspace.app`が一つの通常ウインドウで開く
+- [ ] `/Applications/FinderAI.app`が一つの通常ウインドウで開く
+- [ ] 設定下部のversion・build・commitがビルドしたInfo.plistと一致する
+- [ ] `dist/FinderAI.app`から開いた場合は「開発用コピー」と表示される
 - [ ] 起動直後からサイドバー、一覧、検索、下部`TERMINAL`を操作できる
 - [ ] Accessibility設定を要求しない
 - [ ] ウインドウresizeで一覧とTerminalの左右端が常に一致する

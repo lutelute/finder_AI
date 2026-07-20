@@ -5,10 +5,10 @@
 最新版は起動時にホームを表示し、Documents／File Providerの同期応答を待ちません。古いbuildが残っていないか確認します。
 
 ```bash
-open "/Applications/FinderAI Workspace.app"
+open "/Applications/FinderAI.app"
 ```
 
-Dockで起動中なら一度通常終了してから、`./scripts/build-workspace-app.sh`で再生成したZIPを展開してください。Finderを再起動する必要はありません。
+Dockで起動中なら一度通常終了してから、`./scripts/build-workspace-app.sh`と`./scripts/install-workspace-app.sh`を実行してください。設定（`⌘,`）の下部でversion・build・commit・実行場所を確認できます。Finderを再起動する必要はありません。
 
 ## フォルダを開けない
 
