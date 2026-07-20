@@ -5,6 +5,52 @@ import Testing
 
 @Suite("Terminal sessions overview rows")
 struct TerminalSessionsOverviewTests {
+    @Test("pinned records lead and search combines text with state filters")
+    func pinSearchAndFilter() {
+        let now = Date()
+        let records = [
+            TerminalSessionRecord(
+                directoryPath: "/tmp/archive",
+                kind: .shell,
+                backend: .ephemeral,
+                lastActivityAt: now,
+                isPresented: false,
+                endedAt: now
+            ),
+            TerminalSessionRecord(
+                directoryPath: "/tmp/client-alpha",
+                kind: .codex,
+                backend: .ephemeral,
+                lastActivityAt: now.addingTimeInterval(-100),
+                isPresented: false,
+                endedAt: now,
+                customName: "Alpha review",
+                isPinned: true
+            )
+        ]
+
+        let rows = TerminalSessionsOverview.rows(
+            inApp: [],
+            detached: [],
+            history: records
+        )
+        #expect(rows.first?.kindLabel == "Alpha review")
+        #expect(rows.first?.isPinned == true)
+
+        let matches = TerminalSessionsOverview.filteredRows(
+            rows,
+            query: "alpha",
+            filter: .history
+        )
+        #expect(matches.count == 1)
+        #expect(matches.first?.folderPath == "/tmp/client-alpha")
+        #expect(TerminalSessionsOverview.filteredRows(
+            rows,
+            query: "alpha",
+            filter: .active
+        ).isEmpty)
+    }
+
     @Test("confirmed missing tmux records are distinct from ended sessions")
     func missingState() {
         let record = TerminalSessionRecord(

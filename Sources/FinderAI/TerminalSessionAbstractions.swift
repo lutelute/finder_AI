@@ -94,6 +94,8 @@ protocol TerminalSessionManaging: AnyObject {
         directoryURL: URL
     ) throws -> any ManagedTerminalSession
     func remove(_ session: any ManagedTerminalSession)
+    func renameSessionRecord(id: UUID, name: String?)
+    func setSessionRecordPinned(id: UUID, isPinned: Bool)
     func forgetSessionRecord(id: UUID)
     func shutdownOwnedProcesses()
 }

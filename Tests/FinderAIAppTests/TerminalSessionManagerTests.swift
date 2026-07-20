@@ -129,6 +129,32 @@ private func isolatedPreferences(_ name: String) -> WorkspacePreferences {
 @Suite("Terminal session ownership without launching a process")
 @MainActor
 struct TerminalSessionManagerTests {
+    @Test("session center metadata is normalized and persisted")
+    func sessionCenterMetadata() throws {
+        let registry = InMemorySessionRegistryStore(records: [
+            TerminalSessionRecord(
+                directoryPath: "/tmp/named",
+                kind: .codex,
+                backend: .ephemeral,
+                isPresented: false
+            )
+        ])
+        let manager = TerminalSessionManager(
+            builder: MockSessionBuilder(),
+            commandLocator: MockCommandLocator(commands: [:]),
+            registry: registry
+        )
+        let id = try #require(manager.sessionRecords.first?.id)
+
+        manager.renameSessionRecord(id: id, name: "  Important work  ")
+        manager.setSessionRecordPinned(id: id, isPinned: true)
+
+        #expect(manager.sessionRecords.first?.customName == "Important work")
+        #expect(manager.sessionRecords.first?.isPinned == true)
+        manager.renameSessionRecord(id: id, name: "  ")
+        #expect(manager.sessionRecords.first?.customName == nil)
+    }
+
     @Test("authoritative tmux snapshots adopt survivors and mark only confirmed losses")
     func reconcilesPersistentRegistry() async throws {
         let tmuxURL = URL(fileURLWithPath: "/mock/bin/tmux")
