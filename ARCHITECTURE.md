@@ -26,6 +26,21 @@ FinderAICore（UI非依存）
 
 旧オーバーレイ版（FinderのAccessibility属性を読んで`NSPanel`を重ねる比較実装）は1.1.0で廃止し、リポジトリからも削除しました。本製品はAccessibilityを一切使用しません。
 
+## 更新と配布の信頼境界
+
+実行中アプリの更新確認はSparkle 2が`SUFeedURL`のGitHub appcastを1日1回取得して行います。アーカイブは既存インストールに埋め込まれた`SUPublicEDKey`と対応するEd25519秘密鍵で検証し、通常終了時だけ置換します。公開ビルドでは`SURequireSignedFeed`と`SUVerifyUpdateBeforeExtraction`も有効にします。
+
+公開工程は次の順序を固定します。途中失敗ではGitHub Releaseを公開しません。
+
+1. Developer ID Application証明書、notary資格情報、Sparkle秘密鍵と埋め込み公開鍵の一致を事前検査
+2. 全テスト後、SparkleのInstaller XPC、Downloader XPC、Autoupdate、Updater、framework、FinderAI本体を内側から個別署名
+3. Hardened Runtime、secure timestamp、TeamIdentifier、`get-task-allow`不在を検査
+4. `notarytool --wait`でAppleへ提出し、Acceptedだけをstaple
+5. ticketを付けた`.app`からsymlinkを保つZIPを再作成し、Gatekeeperと再展開後の署名を検査
+6. ZIPとappcastをSparkle EdDSA署名し、GitHub draftのasset集合を検査してからLatestへ公開
+
+通常ビルドの`FinderAI Local Signing`はTCC許可を開発中に安定させるだけで、上記工程では明示的に拒否します。現在はDeveloper ID証明書がないため、パイプラインと失敗系は検証できますがApple notarizationの実行と一般公開はできません。
+
 ## WorkspaceBrowserViewController
 
 - 起動時は同期ファイルI/Oを行わず、既知のhome URLから即座にウインドウを表示します。

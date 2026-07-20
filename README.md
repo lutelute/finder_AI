@@ -22,9 +22,9 @@ open "/Applications/FinderAI.app"
 
 現在実行中のversion・build・commit・実行場所は設定（`⌘,`）の下部で確認できます。`dist`の開発用コピーや、ディスク上だけが新版になって再起動を待っている状態もここで区別します。
 
-更新はEdDSA署名を検証してからでないと適用しません。このアプリのコード署名は自己署名なので、ダウンロードした側から見れば何の保証にもなりません。改竄された更新を弾いているのはこちらの署名です。署名用の秘密鍵は開発機のKeychainにあり、リポジトリには入っていません。
+更新はEdDSA署名を検証してからでないと適用しません。本番成果物はさらにDeveloper ID署名、Hardened Runtime、Apple notarization、staple、署名済みappcastを必須にします。ローカル開発版だけはフォルダアクセス許可を維持するための自己署名です。どちらの秘密鍵もリポジトリには入りません。
 
-リリースは`./scripts/release.sh <version> [notes.md]`で行います。ビルド・更新の署名・appcast生成・GitHubへの公開までを通します。appcastは`releases/latest/download/appcast.xml`を指すため、毎回のリリースへ添付する必要があります。
+リリースは`./scripts/release.sh <version> [notes.md]`で行います。テスト、Developer ID署名、notarization、staple、ZIP再検証、Sparkle署名、署名済みappcast、GitHubのdraft検査と公開を一続きで行います。ローカル証明書や認証情報不足では公開前に停止します。詳しい準備とGitHub Actionsの秘密情報は[リリース手順](docs/RELEASING.md)にあります。
 
 開発成果物を直接使う場合:
 
@@ -148,7 +148,7 @@ cd finder_AI
 
 **ビルドしただけでは`/Applications`のアプリは変わりません。** 普段使うものへ反映するには`install-workspace-app.sh`を実行してください。このスクリプトは`cp -R`ではなく`ditto`を使います。`cp -R`は拡張属性をbundleへ持ち込み、`codesign --verify`が`resource fork, Finder information, or similar detritus not allowed`で失敗するためです。
 
-ビルドスクリプトはReleaseビルド、SwiftTermリソース同梱、Info.plist検査、署名、`codesign --verify --deep --strict`、ZIP再展開後の再検証まで行います。
+通常のビルドスクリプトはReleaseビルド、SwiftTermリソース同梱、Info.plist検査、ローカル署名、`codesign --verify --deep --strict`、symlinkを維持したZIP再展開後の再検証まで行います。`FINDERAI_RELEASE=1`ではDeveloper IDとsecure timestampを必須にし、自己署名へフォールバックしません。
 
 ### 毎回フォルダアクセスを訊かれる場合
 
@@ -171,7 +171,7 @@ cdhashはビルドごとに変わるため、macOSは各ビルドを別のアプ
 
 これはローカル用の証明書をコード署名について信頼する設定であり、あなたのコード署名の信頼設定を実際に変更します。秘密鍵はこのMacから出ず、リポジトリにも入りません。`./scripts/remove-signing-identity.sh`で元に戻せます。
 
-この証明書はDeveloper IDの代わりにはなりません。他のMacへ配布するにはApple Developer Programの証明書による署名とnotarizationが別途必要です。
+この証明書はDeveloper IDの代わりにはなりません。現在はDeveloper ID証明書を所有していないため、正式公開は意図的に停止します。証明書取得後は[リリース手順](docs/RELEASING.md)に従って認証情報を登録すれば、実装済みパイプラインで署名・公証・公開できます。
 
 現在のテスト範囲と未実施項目は[検証レポート](docs/VERIFICATION_REPORT.md)、実際に触る確認手順は[実機チェックリスト](docs/MANUAL_TEST_CHECKLIST.md)を参照してください。
 
