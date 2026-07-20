@@ -37,6 +37,8 @@ esac
 mkdir -p "$MACOS" "$RESOURCES"
 install -m 755 "$BIN_DIR/FinderAIWorkspace" "$MACOS/FinderAIWorkspace"
 install -m 644 "$ROOT/Resources/Workspace-Info.plist" "$CONTENTS/Info.plist"
+GIT_COMMIT=$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
+/usr/libexec/PlistBuddy -c "Set :FinderAIGitCommit $GIT_COMMIT" "$CONTENTS/Info.plist"
 install -m 644 "$ROOT/Resources/SwiftTerm-LICENSE.txt" "$RESOURCES/SwiftTerm-LICENSE.txt"
 # Info.plist names AppIcon; a missing file here means a blank Dock icon rather
 # than a build error, so fail loudly instead.

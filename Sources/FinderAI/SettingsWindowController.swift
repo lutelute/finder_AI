@@ -13,6 +13,9 @@ final class SettingsWindowController: NSWindowController {
     private let persistCaption = NSTextField(wrappingLabelWithString: "")
     private let loggingCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let loggingCaption = NSTextField(wrappingLabelWithString: "")
+    private let versionLabel = NSTextField(labelWithString: "")
+    private let commitLabel = NSTextField(labelWithString: "")
+    private let installationLabel = NSTextField(wrappingLabelWithString: "")
 
     init(
         sessionManager: any TerminalSessionManaging,
@@ -54,6 +57,13 @@ final class SettingsWindowController: NSWindowController {
             ? "FinderAIが落ちたり終了しても、以降に開始したセッションはtmux内で生き続け、同じフォルダから再接続できます。"
             : "tmuxが見つかりません。Homebrewなら `brew install tmux` で導入すると有効にできます。"
         loggingCheckbox.state = preferences.sessionLogging ? .on : .off
+        let buildInfo = WorkspaceBuildInfo.current
+        versionLabel.stringValue = buildInfo.versionText
+        commitLabel.stringValue = buildInfo.commitText
+        installationLabel.stringValue = buildInfo.installationText
+        installationLabel.textColor = buildInfo.installationState == .restartRequired
+            ? .systemOrange
+            : .secondaryLabelColor
     }
 
     private func buildContent(in window: NSWindow) {
@@ -62,6 +72,9 @@ final class SettingsWindowController: NSWindowController {
 
         let title = NSTextField(labelWithString: "Terminal")
         title.font = .boldSystemFont(ofSize: 13)
+
+        let appTitle = NSTextField(labelWithString: "FinderAI")
+        appTitle.font = .boldSystemFont(ofSize: 13)
 
         persistCheckbox.title = "セッションを永続化（tmux）"
         persistCheckbox.target = self
@@ -72,11 +85,12 @@ final class SettingsWindowController: NSWindowController {
         loggingCheckbox.action = #selector(toggleLogging)
         loggingCaption.stringValue = "これ以降に開始するセッションの出力（コマンドと表示内容を含む）をローカルに保存し、14日で自動削除します。クラッシュ直前の状況を後から読むための保険です。"
 
-        [persistCaption, loggingCaption].forEach {
+        [persistCaption, loggingCaption, commitLabel, installationLabel].forEach {
             $0.font = .systemFont(ofSize: 11)
             $0.textColor = .secondaryLabelColor
             $0.preferredMaxLayoutWidth = 400
         }
+        versionLabel.font = .systemFont(ofSize: 12, weight: .medium)
 
         let openLogs = NSButton(
             title: "ログフォルダを開く",
@@ -86,16 +100,22 @@ final class SettingsWindowController: NSWindowController {
         openLogs.bezelStyle = .rounded
         openLogs.controlSize = .small
 
+        let separator = NSBox()
+        separator.boxType = .separator
+
         let stack = NSStackView(views: [
             title,
             persistCheckbox, indented(persistCaption),
-            loggingCheckbox, indented(loggingCaption), indented(openLogs)
+            loggingCheckbox, indented(loggingCaption), indented(openLogs),
+            separator,
+            appTitle, versionLabel, commitLabel, installationLabel
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
         stack.setCustomSpacing(14, after: title)
         stack.setCustomSpacing(16, after: indentedViews[persistCaption] ?? persistCaption)
+        stack.setCustomSpacing(16, after: indentedViews[openLogs] ?? openLogs)
         stack.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(stack)
         NSLayoutConstraint.activate([
