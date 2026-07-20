@@ -109,6 +109,9 @@ enum TerminalSessionsOverview {
     }
 
     private static func historyStateLabel(_ record: TerminalSessionRecord) -> String {
+        if record.endReason == .missing {
+            return "消失"
+        }
         if record.endedAt != nil {
             return record.backend == .ephemeral ? "前回終了" : "終了"
         }

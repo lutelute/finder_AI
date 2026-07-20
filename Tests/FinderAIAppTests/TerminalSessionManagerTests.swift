@@ -75,17 +75,31 @@ private struct MockCommandLocator: CommandLocating {
 private actor RecordingTmuxController: TmuxControlling {
     private var sessions: [TmuxSessionInfo] = []
     private var killedNames: [String] = []
+    private var authoritative = true
+    private var snapshotCalls = 0
 
     func setSessions(_ infos: [TmuxSessionInfo]) {
         sessions = infos
+    }
+
+    func setAuthoritative(_ value: Bool) {
+        authoritative = value
+    }
+
+    func callCount() -> Int {
+        snapshotCalls
     }
 
     func killed() -> [String] {
         killedNames
     }
 
-    func listSessions(tmuxExecutableURL: URL) async -> [TmuxSessionInfo] {
-        sessions
+    func sessionSnapshot(tmuxExecutableURL: URL) async -> TmuxSessionSnapshot {
+        snapshotCalls += 1
+        return TmuxSessionSnapshot(
+            sessions: sessions,
+            isAuthoritative: authoritative
+        )
     }
 
     func killSession(named name: String, tmuxExecutableURL: URL) async {
@@ -115,6 +129,77 @@ private func isolatedPreferences(_ name: String) -> WorkspacePreferences {
 @Suite("Terminal session ownership without launching a process")
 @MainActor
 struct TerminalSessionManagerTests {
+    @Test("authoritative tmux snapshots adopt survivors and mark only confirmed losses")
+    func reconcilesPersistentRegistry() async throws {
+        let tmuxURL = URL(fileURLWithPath: "/mock/bin/tmux")
+        let controller = RecordingTmuxController()
+        let survivingFolder = "/tmp/surviving"
+        let survivingName = TmuxSessionNaming.sessionName(
+            for: TerminalSessionKey(
+                directoryURL: URL(fileURLWithPath: survivingFolder, isDirectory: true),
+                kind: .codex
+            )
+        )
+        let lostRecord = TerminalSessionRecord(
+            directoryPath: "/tmp/lost",
+            kind: .shell,
+            backend: .tmux,
+            persistentName: "finderai-shell-111111111111",
+            isPresented: false
+        )
+        let registry = InMemorySessionRegistryStore(records: [lostRecord])
+        await controller.setSessions([
+            TmuxSessionInfo(
+                name: survivingName,
+                workingDirectoryPath: survivingFolder,
+                isAttached: false
+            )
+        ])
+        let manager = TerminalSessionManager(
+            builder: MockSessionBuilder(),
+            commandLocator: MockCommandLocator(commands: ["tmux": tmuxURL]),
+            tmuxController: controller,
+            registry: registry
+        )
+
+        try await eventually { manager.sessionRecords.count == 2 }
+        let adopted = try #require(manager.sessionRecords.first {
+            $0.persistentName == survivingName
+        })
+        #expect(adopted.kind == .codex)
+        #expect(adopted.endedAt == nil)
+        let lost = try #require(manager.sessionRecords.first { $0.id == lostRecord.id })
+        #expect(lost.endReason == .missing)
+        #expect(lost.endedAt != nil)
+    }
+
+    @Test("an unavailable tmux query never converts a registry entry to missing")
+    func unavailableSnapshotPreservesRegistry() async throws {
+        let tmuxURL = URL(fileURLWithPath: "/mock/bin/tmux")
+        let controller = RecordingTmuxController()
+        await controller.setAuthoritative(false)
+        let record = TerminalSessionRecord(
+            directoryPath: "/tmp/unverified",
+            kind: .shell,
+            backend: .tmux,
+            persistentName: "finderai-shell-222222222222",
+            isPresented: false
+        )
+        let registry = InMemorySessionRegistryStore(records: [record])
+        let manager = TerminalSessionManager(
+            builder: MockSessionBuilder(),
+            commandLocator: MockCommandLocator(commands: ["tmux": tmuxURL]),
+            tmuxController: controller,
+            registry: registry
+        )
+
+        for _ in 0..<400 where await controller.callCount() == 0 {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(await controller.callCount() > 0)
+        #expect(manager.sessionRecords == [record])
+    }
+
     @Test("registry keeps stable identity and presentation lifecycle")
     func registryLifecycle() throws {
         let registry = InMemorySessionRegistryStore()
