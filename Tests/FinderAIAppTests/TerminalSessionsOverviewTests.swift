@@ -5,6 +5,54 @@ import Testing
 
 @Suite("Terminal sessions overview rows")
 struct TerminalSessionsOverviewTests {
+    @Test("history follows live rows and does not duplicate a matching live session")
+    func historyComposition() {
+        let liveID = UUID()
+        let oldID = UUID()
+        let folder = "/tmp/live"
+        let inApp: [TerminalSessionsOverview.InAppSummary] = [
+            .init(
+                id: liveID,
+                kind: .shell,
+                kindLabel: "Shell",
+                folderPath: folder,
+                isRunning: true,
+                isPresented: true,
+                persistentName: nil
+            )
+        ]
+        let now = Date()
+        let history = [
+            TerminalSessionRecord(
+                id: UUID(),
+                directoryPath: folder,
+                kind: .shell,
+                backend: .ephemeral,
+                lastActivityAt: now
+            ),
+            TerminalSessionRecord(
+                id: oldID,
+                directoryPath: "/tmp/old",
+                kind: .codex,
+                backend: .ephemeral,
+                lastActivityAt: now.addingTimeInterval(-10),
+                isPresented: false,
+                endedAt: now
+            )
+        ]
+
+        let rows = TerminalSessionsOverview.rows(
+            inApp: inApp,
+            detached: [],
+            history: history
+        )
+
+        #expect(rows.count == 2)
+        #expect(rows[0].target == .inApp(liveID))
+        #expect(rows[1].target == .record(oldID))
+        #expect(rows[1].stateLabel == "前回終了")
+    }
+
     @Test("in-app sessions lead, attached persistents are deduped, leftovers sort by path")
     func rowComposition() {
         let attachedName = "finderai-shell-aaaaaaaaaaaa"

@@ -7,6 +7,7 @@ struct TerminalSessionRowModel: Equatable {
     enum Target: Equatable {
         case inApp(UUID)
         case detachedTmux(String)
+        case record(UUID)
     }
 
     let target: Target
@@ -19,6 +20,7 @@ struct TerminalSessionRowModel: Equatable {
 enum TerminalSessionsOverview {
     struct InAppSummary {
         let id: UUID
+        let kind: TerminalSessionKind?
         let kindLabel: String
         let folderPath: String
         let isRunning: Bool
@@ -27,6 +29,7 @@ enum TerminalSessionsOverview {
 
         init(
             id: UUID,
+            kind: TerminalSessionKind? = nil,
             kindLabel: String,
             folderPath: String,
             isRunning: Bool,
@@ -34,6 +37,7 @@ enum TerminalSessionsOverview {
             persistentName: String?
         ) {
             self.id = id
+            self.kind = kind
             self.kindLabel = kindLabel
             self.folderPath = folderPath
             self.isRunning = isRunning
@@ -47,12 +51,13 @@ enum TerminalSessionsOverview {
     /// 二重表示しない。
     static func rows(
         inApp: [InAppSummary],
-        detached: [TmuxSessionInfo]
+        detached: [TmuxSessionInfo],
+        history: [TerminalSessionRecord] = []
     ) -> [TerminalSessionRowModel] {
         var rows = inApp.map { summary in
             TerminalSessionRowModel(
                 target: .inApp(summary.id),
-                kind: nil,
+                kind: summary.kind,
                 kindLabel: summary.kindLabel,
                 folderPath: summary.folderPath,
                 stateLabel: summary.isRunning
@@ -77,7 +82,37 @@ enum TerminalSessionsOverview {
                     stateLabel: info.isAttached ? "接続中（外部）" : "待機中（未接続）"
                 )
             }
+        let liveKeys = Set(inApp.compactMap { summary -> TerminalSessionKey? in
+            guard let kind = summary.kind else { return nil }
+            return TerminalSessionKey(
+                directoryURL: URL(fileURLWithPath: summary.folderPath, isDirectory: true),
+                kind: kind
+            )
+        })
+        let tmuxNames = Set(detached.map(\.name))
+        rows += history
+            .filter { record in
+                !liveKeys.contains(record.key)
+                    && !(record.persistentName.map(tmuxNames.contains) ?? false)
+            }
+            .sorted { $0.lastActivityAt > $1.lastActivityAt }
+            .map { record in
+                TerminalSessionRowModel(
+                    target: .record(record.id),
+                    kind: record.kind,
+                    kindLabel: record.customName ?? record.kind.displayName,
+                    folderPath: record.directoryPath,
+                    stateLabel: historyStateLabel(record)
+                )
+            }
         return rows
+    }
+
+    private static func historyStateLabel(_ record: TerminalSessionRecord) -> String {
+        if record.endedAt != nil {
+            return record.backend == .ephemeral ? "前回終了" : "終了"
+        }
+        return record.backend == .tmux ? "記録済み（未照合）" : "前回中断"
     }
 
     private static func stateLabel(
@@ -253,6 +288,7 @@ final class TerminalSessionsPanelController: NSWindowController {
         let inApp = sessionManager.allSessions.map {
             TerminalSessionsOverview.InAppSummary(
                 id: $0.id,
+                kind: $0.kind,
                 kindLabel: $0.kind.displayName,
                 folderPath: $0.directoryURL.path,
                 isRunning: $0.isRunning,
@@ -262,7 +298,8 @@ final class TerminalSessionsPanelController: NSWindowController {
         }
         rows = TerminalSessionsOverview.rows(
             inApp: inApp,
-            detached: sessionManager.persistentSessions
+            detached: sessionManager.persistentSessions,
+            history: sessionManager.sessionRecords
         )
         tableView.reloadData()
         // 更新しても選択は生かす。終了ボタンを押す直前に行がズレるのが最悪なので。
@@ -278,6 +315,7 @@ final class TerminalSessionsPanelController: NSWindowController {
         switch target {
         case .inApp(let id): "app:\(id.uuidString)"
         case .detachedTmux(let name): "tmux:\(name)"
+        case .record(let id): "record:\(id.uuidString)"
         }
     }
 
@@ -289,6 +327,10 @@ final class TerminalSessionsPanelController: NSWindowController {
         saveButton.isEnabled = selection.count == 1
             && selectedRows().first.map(canSaveTranscript) == true
         killButton.isEnabled = !selection.isEmpty
+        killButton.title = selectedRows().allSatisfy {
+            if case .record = $0.target { return true }
+            return false
+        } ? "記録を削除" : "選択を終了"
         killAllButton.isEnabled = !rows.isEmpty
     }
 
@@ -310,6 +352,8 @@ final class TerminalSessionsPanelController: NSWindowController {
             true
         case .detachedTmux:
             row.kind != nil
+        case .record:
+            false
         }
     }
 
@@ -330,6 +374,8 @@ final class TerminalSessionsPanelController: NSWindowController {
             case .detachedTmux:
                 guard let kind = row.kind else { return }
                 _ = try sessionManager.create(kind: kind, directoryURL: url)
+            case .record:
+                return
             }
             onRevealFolder?(url)
         } catch {
@@ -358,10 +404,18 @@ final class TerminalSessionsPanelController: NSWindowController {
 
     private func confirmAndKill(_ targets: [TerminalSessionRowModel]) {
         guard !targets.isEmpty, let window else { return }
+        let recordsOnly = targets.allSatisfy {
+            if case .record = $0.target { return true }
+            return false
+        }
         let alert = NSAlert()
-        alert.messageText = "セッション\(targets.count)件を終了しますか？"
-        alert.informativeText = "実行中のプロセスは終了します。永続セッションはtmux側ごと終了し、再接続できなくなります。"
-        alert.addButton(withTitle: "終了")
+        alert.messageText = recordsOnly
+            ? "セッション記録\(targets.count)件を削除しますか？"
+            : "セッション\(targets.count)件を終了しますか？"
+        alert.informativeText = recordsOnly
+            ? "履歴だけを削除します。フォルダや保存済みログは削除しません。"
+            : "実行中のプロセスは終了します。永続セッションはtmux側ごと終了し、再接続できなくなります。"
+        alert.addButton(withTitle: recordsOnly ? "記録を削除" : "終了")
         alert.addButton(withTitle: "キャンセル")
         alert.beginSheetModal(for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn, let self else { return }
@@ -379,6 +433,8 @@ final class TerminalSessionsPanelController: NSWindowController {
                 }
             case .detachedTmux(let name):
                 tmuxNames.append(name)
+            case .record(let id):
+                sessionManager.forgetSessionRecord(id: id)
             }
         }
         guard !tmuxNames.isEmpty else { return }

@@ -115,6 +115,39 @@ private func isolatedPreferences(_ name: String) -> WorkspacePreferences {
 @Suite("Terminal session ownership without launching a process")
 @MainActor
 struct TerminalSessionManagerTests {
+    @Test("registry keeps stable identity and presentation lifecycle")
+    func registryLifecycle() throws {
+        let registry = InMemorySessionRegistryStore()
+        let folder = URL(fileURLWithPath: "/tmp/remembered", isDirectory: true)
+        let firstManager = TerminalSessionManager(
+            builder: MockSessionBuilder(),
+            commandLocator: MockCommandLocator(commands: [:]),
+            registry: registry
+        )
+
+        let firstSession = try firstManager.create(kind: .shell, directoryURL: folder)
+        let recordID = try #require(firstManager.sessionRecords.first?.id)
+        #expect(firstManager.sessionRecords.first?.isPresented == true)
+        #expect(firstManager.sessionRecords.first?.endedAt == nil)
+
+        firstManager.hideFromTabs(firstSession)
+        #expect(firstManager.sessionRecords.first?.isPresented == false)
+        firstManager.revealInTabs(firstSession)
+        #expect(firstManager.sessionRecords.first?.isPresented == true)
+        firstManager.remove(firstSession)
+        #expect(firstManager.sessionRecords.first?.endedAt != nil)
+
+        let secondManager = TerminalSessionManager(
+            builder: MockSessionBuilder(),
+            commandLocator: MockCommandLocator(commands: [:]),
+            registry: registry
+        )
+        _ = try secondManager.create(kind: .shell, directoryURL: folder)
+        #expect(secondManager.sessionRecords.count == 1)
+        #expect(secondManager.sessionRecords.first?.id == recordID)
+        #expect(secondManager.sessionRecords.first?.endedAt == nil)
+    }
+
     @Test("browsing is inert and sessions are keyed by canonical folder and kind")
     func inertBrowsingAndSessionIdentity() throws {
         let builder = MockSessionBuilder()

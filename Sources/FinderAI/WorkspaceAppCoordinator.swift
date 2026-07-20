@@ -3,7 +3,9 @@ import FinderAICore
 
 @MainActor
 final class WorkspaceAppCoordinator {
-    private let sessionManager: any TerminalSessionManaging = TerminalSessionManager()
+    private let sessionManager: any TerminalSessionManaging = TerminalSessionManager(
+        registry: SessionRegistryStore()
+    )
     private let preferences = WorkspacePreferences()
     private let restorationStore = WorkspaceRestorationStore()
     private let updater = WorkspaceUpdater()

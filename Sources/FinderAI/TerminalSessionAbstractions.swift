@@ -57,6 +57,7 @@ protocol TerminalSessionManaging: AnyObject {
     /// 実行中のうち、アプリが死んだら消えるもの（persistence無し）の数。
     var runningEphemeralCount: Int { get }
     var allSessions: [any ManagedTerminalSession] { get }
+    var sessionRecords: [TerminalSessionRecord] { get }
 
     /// tmuxが見つかるかどうか。永続セッションのメニューはこれで案内を変える。
     var persistenceAvailable: Bool { get }
@@ -85,6 +86,7 @@ protocol TerminalSessionManaging: AnyObject {
         directoryURL: URL
     ) throws -> any ManagedTerminalSession
     func remove(_ session: any ManagedTerminalSession)
+    func forgetSessionRecord(id: UUID)
     func shutdownOwnedProcesses()
 }
 
