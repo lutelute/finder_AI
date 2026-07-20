@@ -58,15 +58,12 @@ final class TerminalSessionManager: TerminalSessionManaging {
                     self.executableCache.removeAll()
                     self.notifyChange()
                 }
-                // 「再接続」表示が要るのは永続化が有効なときだけ。無効時にまで
-                // tmuxを探しに行くと、PATH走査ゼロで済むはずの起動経路にstatが乗る。
-                // 管理パネルは開くときに自分でrefreshを呼ぶので困らない。
-                if self.persistenceEnabled {
+                if self.needsPersistentReconciliation {
                     self.refreshDetachedSessions()
                 }
             }
         }
-        if persistenceEnabled {
+        if needsPersistentReconciliation {
             refreshDetachedSessions()
         }
     }
@@ -91,6 +88,12 @@ final class TerminalSessionManager: TerminalSessionManaging {
 
     var sessionRecords: [TerminalSessionRecord] {
         registry.records
+    }
+
+    private var needsPersistentReconciliation: Bool {
+        persistenceEnabled || registry.records.contains {
+            $0.backend == .tmux && $0.endedAt == nil
+        }
     }
 
     // MARK: - Persistence (tmux)
@@ -132,10 +135,14 @@ final class TerminalSessionManager: TerminalSessionManaging {
         }
         let controller = tmuxController
         Task { [weak self] in
-            let sessions = await controller.listSessions(tmuxExecutableURL: tmuxURL)
+            let snapshot = await controller.sessionSnapshot(tmuxExecutableURL: tmuxURL)
             guard let self else { return }
-            let mine = sessions.filter { $0.name.hasPrefix(TmuxSessionNaming.namePrefix) }
-            if mine != self.persistentSessionInfos {
+            guard snapshot.isAuthoritative else { return }
+            let mine = snapshot.sessions.filter {
+                $0.name.hasPrefix(TmuxSessionNaming.namePrefix)
+            }
+            let recordsChanged = self.reconcilePersistentRecords(with: mine)
+            if mine != self.persistentSessionInfos || recordsChanged {
                 self.persistentSessionInfos = mine
                 self.notifyChange()
             }
@@ -144,10 +151,83 @@ final class TerminalSessionManager: TerminalSessionManaging {
 
     func killPersistentSessions(named names: [String]) async {
         guard let tmuxURL = locate("tmux") else { return }
-        for name in names where name.hasPrefix(TmuxSessionNaming.namePrefix) {
+        let ownedNames = names.filter { $0.hasPrefix(TmuxSessionNaming.namePrefix) }
+        for name in ownedNames {
             await tmuxController.killSession(named: name, tmuxExecutableURL: tmuxURL)
         }
+        markPersistentRecordsEnded(named: Set(ownedNames), reason: .userEnded)
         refreshDetachedSessions()
+    }
+
+    /// authoritativeなtmux snapshotだけで台帳を照合する。問い合わせ不能時には呼ばず、
+    /// 一時障害を「消失」と誤記録しない。
+    private func reconcilePersistentRecords(with infos: [TmuxSessionInfo]) -> Bool {
+        let before = registry.records
+        let now = Date()
+        let liveNames = Set(sessionsByKey.values.compactMap { $0.persistence?.sessionName })
+        let observedNames = Set(infos.map(\.name))
+
+        for info in infos {
+            guard let kind = info.kind else { continue }
+            let key = TerminalSessionKey(
+                directoryURL: URL(
+                    fileURLWithPath: info.workingDirectoryPath,
+                    isDirectory: true
+                ),
+                kind: kind
+            )
+            var record = registry.records.first(where: {
+                $0.persistentName == info.name
+            }) ?? registry.record(matching: key) ?? TerminalSessionRecord(
+                directoryPath: info.workingDirectoryPath,
+                kind: kind,
+                backend: .tmux,
+                persistentName: info.name,
+                createdAt: now,
+                lastActivityAt: now,
+                isPresented: false
+            )
+            let wasUnavailable = record.endedAt != nil || record.endReason == .missing
+            record.directoryPath = info.workingDirectoryPath
+            record.kind = kind
+            record.backend = .tmux
+            record.persistentName = info.name
+            record.endedAt = nil
+            record.endReason = nil
+            if !liveNames.contains(info.name) {
+                record.isPresented = false
+            }
+            if wasUnavailable {
+                record.lastActivityAt = now
+            }
+            registry.upsert(record)
+        }
+
+        for var record in registry.records where record.backend == .tmux
+            && record.endedAt == nil
+            && record.persistentName.map({ !observedNames.contains($0) }) == true
+            && record.persistentName.map({ !liveNames.contains($0) }) == true {
+            record.isPresented = false
+            record.endedAt = now
+            record.endReason = .missing
+            registry.upsert(record)
+        }
+        return registry.records != before
+    }
+
+    private func markPersistentRecordsEnded(
+        named names: Set<String>,
+        reason: TerminalSessionEndReason
+    ) {
+        let now = Date()
+        for var record in registry.records where
+            record.persistentName.map(names.contains) == true {
+            record.isPresented = false
+            record.lastActivityAt = now
+            record.endedAt = now
+            record.endReason = reason
+            registry.upsert(record)
+        }
     }
 
     // MARK: - Sessions
@@ -263,6 +343,7 @@ final class TerminalSessionManager: TerminalSessionManaging {
         record.lastPresentedAt = now
         record.isPresented = true
         record.endedAt = nil
+        record.endReason = nil
         registry.upsert(record)
         recordIDsBySessionID[session.id] = record.id
 
@@ -291,6 +372,7 @@ final class TerminalSessionManager: TerminalSessionManaging {
             $0.isPresented = false
             $0.lastActivityAt = now
             $0.endedAt = now
+            $0.endReason = .userEnded
         }
         recordIDsBySessionID.removeValue(forKey: session.id)
         // クライアントの終了はデタッチにしかならないので、UIから閉じたときは
@@ -326,6 +408,7 @@ final class TerminalSessionManager: TerminalSessionManaging {
                 $0.lastActivityAt = now
                 // tmux実体はFinderAI終了後も生きる。通常PTYだけを終了扱いにする。
                 $0.endedAt = session.persistence == nil ? now : nil
+                $0.endReason = session.persistence == nil ? .appShutdown : nil
             }
         }
     }
@@ -338,6 +421,7 @@ final class TerminalSessionManager: TerminalSessionManaging {
             if !session.isRunning {
                 $0.isPresented = false
                 $0.endedAt = now
+                $0.endReason = .processExited
             }
         }
         notifyChange()

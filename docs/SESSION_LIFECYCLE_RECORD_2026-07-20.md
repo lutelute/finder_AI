@@ -53,3 +53,9 @@ Accessibility経由でReleaseビルドを操作し、次の一連の動作を確
 ライブPTYを所有する`TerminalSessionManager`とは別に、安定IDとフォルダ・種類・backend・時刻・表示／終了状態だけを持つ`TerminalSessionRecord`を導入した。実アプリはApplication SupportのJSONへ原子的に保存し、再起動後の管理画面にも履歴を表示する。Terminal内容は台帳に含めず、明示的な記録保存と区別する。decode不能な台帳は削除せず隔離し、FinderAIの起動を止めない。ライブPTYまたは実在tmuxと一致する履歴は一覧で重複排除する。
 
 `./scripts/run-tests.sh`は157テスト成功。Releaseビルド、署名、zip再展開後の署名検証も成功した。
+
+## v1.5追記 — authoritative照合と復旧
+
+tmuxの一覧取得を「セッション配列」から「結果がauthoritativeかを含むsnapshot」へ変更した。サーバーが存在しないexit 1は確認済み0件、Process起動失敗などは確認不能として扱う。確認済み一覧だけが台帳を更新でき、FinderAI名義tmuxを新たに発見すれば台帳へ採用、以前のtmuxが消えていれば終了理由`missing`を記録する。問い合わせ不能時は既存台帳を一切消失扱いにしない。復旧は既存のattach-or-create経路を使い、フォルダと種類が同じライブPTYを重複起動しない。
+
+全161テスト成功。実tmux 3.5aをユーザー環境と分離した専用socketで起動し、サーバーなしの判定、1件の検出、完全一致終了、終了後0件を検証した。

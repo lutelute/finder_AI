@@ -5,6 +5,27 @@ import Testing
 
 @Suite("Terminal sessions overview rows")
 struct TerminalSessionsOverviewTests {
+    @Test("confirmed missing tmux records are distinct from ended sessions")
+    func missingState() {
+        let record = TerminalSessionRecord(
+            directoryPath: "/tmp/missing",
+            kind: .claude,
+            backend: .tmux,
+            persistentName: "finderai-claude-aaaaaaaaaaaa",
+            isPresented: false,
+            endedAt: Date(),
+            endReason: .missing
+        )
+
+        let rows = TerminalSessionsOverview.rows(
+            inApp: [],
+            detached: [],
+            history: [record]
+        )
+
+        #expect(rows.first?.stateLabel == "消失")
+    }
+
     @Test("history follows live rows and does not duplicate a matching live session")
     func historyComposition() {
         let liveID = UUID()

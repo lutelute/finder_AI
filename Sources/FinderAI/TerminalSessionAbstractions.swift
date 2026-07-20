@@ -45,8 +45,16 @@ protocol CommandLocating {
 }
 
 /// tmuxサーバーへの問い合わせと操作。Processの起動はブロックするので必ず非同期。
+struct TmuxSessionSnapshot: Equatable, Sendable {
+    let sessions: [TmuxSessionInfo]
+    /// falseなら「0件」ではなく「確認不能」。台帳を消失扱いにしてはいけない。
+    let isAuthoritative: Bool
+
+    static let unavailable = TmuxSessionSnapshot(sessions: [], isAuthoritative: false)
+}
+
 protocol TmuxControlling: Sendable {
-    func listSessions(tmuxExecutableURL: URL) async -> [TmuxSessionInfo]
+    func sessionSnapshot(tmuxExecutableURL: URL) async -> TmuxSessionSnapshot
     func killSession(named name: String, tmuxExecutableURL: URL) async
 }
 
@@ -119,49 +127,76 @@ struct SystemCommandLocator: CommandLocating {
 }
 
 struct ProcessTmuxController: TmuxControlling {
-    func listSessions(tmuxExecutableURL: URL) async -> [TmuxSessionInfo] {
-        let output = await Self.run(
+    private let argumentsPrefix: [String]
+
+    init(argumentsPrefix: [String] = []) {
+        self.argumentsPrefix = argumentsPrefix
+    }
+
+    func sessionSnapshot(tmuxExecutableURL: URL) async -> TmuxSessionSnapshot {
+        guard let result = await Self.run(
             tmuxExecutableURL,
-            arguments: [
+            arguments: argumentsPrefix + [
                 "list-sessions", "-F",
                 "#{session_name}\t#{session_path}\t#{session_attached}"
             ]
-        )
-        // サーバー未起動はexit 1で返る。それは「セッション0件」であって異常ではない。
-        guard let output else { return [] }
-        return output
+        ) else { return .unavailable }
+        // サーバー未起動はexit 1。それは確認済み0件であり、起動失敗とは区別する。
+        guard result.status == 0 else {
+            let noServer = result.status == 1 && (
+                result.errorOutput.contains("no server running on")
+                    || result.errorOutput.contains("(No such file or directory)")
+            )
+            return TmuxSessionSnapshot(
+                sessions: [],
+                isAuthoritative: noServer
+            )
+        }
+        let sessions = result.output
             .split(separator: "\n", omittingEmptySubsequences: true)
             .compactMap { TmuxSessionInfo.parse(line: String($0)) }
+        return TmuxSessionSnapshot(sessions: sessions, isAuthoritative: true)
     }
 
     func killSession(named name: String, tmuxExecutableURL: URL) async {
         // `=`で完全一致に固定する。素の`-t`は前方一致で、似た名前を巻き添えにする。
         _ = await Self.run(
             tmuxExecutableURL,
-            arguments: ["kill-session", "-t", "=\(name)"]
+            arguments: argumentsPrefix + ["kill-session", "-t", "=\(name)"]
         )
     }
 
     private static func run(
         _ executableURL: URL,
         arguments: [String]
-    ) async -> String? {
-        await Task.detached(priority: .utility) { () -> String? in
+    ) async -> CommandResult? {
+        await Task.detached(priority: .utility) { () -> CommandResult? in
             let process = Process()
             process.executableURL = executableURL
             process.arguments = arguments
             let stdout = Pipe()
+            let stderr = Pipe()
             process.standardOutput = stdout
-            process.standardError = Pipe()
+            process.standardError = stderr
             do {
                 try process.run()
             } catch {
                 return nil
             }
             let data = stdout.fileHandleForReading.readDataToEndOfFile()
+            let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
-            guard process.terminationStatus == 0 else { return nil }
-            return String(data: data, encoding: .utf8)
+            return CommandResult(
+                status: process.terminationStatus,
+                output: String(data: data, encoding: .utf8) ?? "",
+                errorOutput: String(data: errorData, encoding: .utf8) ?? ""
+            )
         }.value
+    }
+
+    private struct CommandResult: Sendable {
+        let status: Int32
+        let output: String
+        let errorOutput: String
     }
 }

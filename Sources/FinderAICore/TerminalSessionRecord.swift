@@ -5,6 +5,13 @@ public enum TerminalSessionBackend: String, Codable, Sendable {
     case tmux
 }
 
+public enum TerminalSessionEndReason: String, Codable, Sendable {
+    case userEnded
+    case processExited
+    case appShutdown
+    case missing
+}
+
 /// PTYの寿命とは独立して残る、セッションの小さな永続台帳。
 /// Terminal出力そのものはプライバシー上ここへ保存しない。
 public struct TerminalSessionRecord: Codable, Equatable, Identifiable, Sendable {
@@ -18,6 +25,7 @@ public struct TerminalSessionRecord: Codable, Equatable, Identifiable, Sendable 
     public var lastPresentedAt: Date?
     public var isPresented: Bool
     public var endedAt: Date?
+    public var endReason: TerminalSessionEndReason?
     public var customName: String?
     public var isPinned: Bool
     public var lastTranscriptPath: String?
@@ -33,6 +41,7 @@ public struct TerminalSessionRecord: Codable, Equatable, Identifiable, Sendable 
         lastPresentedAt: Date? = nil,
         isPresented: Bool = true,
         endedAt: Date? = nil,
+        endReason: TerminalSessionEndReason? = nil,
         customName: String? = nil,
         isPinned: Bool = false,
         lastTranscriptPath: String? = nil
@@ -47,6 +56,7 @@ public struct TerminalSessionRecord: Codable, Equatable, Identifiable, Sendable 
         self.lastPresentedAt = lastPresentedAt
         self.isPresented = isPresented
         self.endedAt = endedAt
+        self.endReason = endReason
         self.customName = customName
         self.isPinned = isPinned
         self.lastTranscriptPath = lastTranscriptPath
