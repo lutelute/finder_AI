@@ -14,6 +14,47 @@ struct WorkspaceWindowLayoutTests {
         return WorkspacePreferences(defaults: suite ?? .standard)
     }
 
+    @Test("view mode cycles through list, column, and gallery")
+    func viewModeCycleIncludesGallery() {
+        _ = NSApplication.shared
+        let preferences = Self.isolatedPreferences()
+        preferences.viewMode = .list
+        let controller = WorkspaceBrowserViewController(
+            initialDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            preferences: preferences
+        )
+        controller.loadViewIfNeeded()
+
+        #expect(controller.viewModeForTesting == .list)
+        #expect(!controller.galleryIsVisibleForTesting)
+
+        controller.toggleColumnView()
+        #expect(controller.viewModeForTesting == .column)
+        #expect(!controller.galleryIsVisibleForTesting)
+
+        controller.toggleColumnView()
+        #expect(controller.viewModeForTesting == .gallery)
+        #expect(controller.galleryIsVisibleForTesting)
+    }
+
+    @Test("window forwards view-mode commands to the active pane")
+    func windowForwardsViewModeCommand() {
+        _ = NSApplication.shared
+        let preferences = Self.isolatedPreferences()
+        preferences.viewMode = .column
+        let controller = WorkspaceWindowController(
+            sessionManager: TerminalSessionManager(),
+            initialDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            preferences: preferences
+        )
+
+        controller.toggleColumnView()
+
+        #expect(controller.browser.viewModeForTesting == .gallery)
+        #expect(controller.browser.galleryIsVisibleForTesting)
+        controller.close()
+    }
+
     @Test("workspace opens at a useful desktop size with one embedded terminal")
     func initialSizeAndTerminal() {
         _ = NSApplication.shared

@@ -1,6 +1,12 @@
 import FinderAICore
 import Foundation
 
+enum WorkspaceViewMode: String, CaseIterable {
+    case list
+    case column
+    case gallery
+}
+
 /// Durable UI state. Everything here is a convenience the user re-establishes by
 /// hand otherwise, so a missing or corrupt value must fall back to the shipped
 /// default rather than surface an error.
@@ -23,6 +29,7 @@ struct WorkspacePreferences {
         static let pins = "workspace.pins"
         static let visits = "workspace.visits"
         static let columnView = "workspace.columnView"
+        static let viewMode = "workspace.viewMode"
         static let splitEnabled = "workspace.splitEnabled"
         static let splitRatio = "workspace.splitRatio"
         static let secondDirectory = "workspace.secondDirectory"
@@ -49,9 +56,24 @@ struct WorkspacePreferences {
 
     // MARK: - View mode
 
+    var viewMode: WorkspaceViewMode {
+        get {
+            if let raw = defaults.string(forKey: Key.viewMode),
+               let mode = WorkspaceViewMode(rawValue: raw) {
+                return mode
+            }
+            // v1.6以前のbooleanを一度だけ読み替える。
+            return defaults.bool(forKey: Key.columnView) ? .column : .list
+        }
+        nonmutating set {
+            defaults.set(newValue.rawValue, forKey: Key.viewMode)
+            defaults.set(newValue == .column, forKey: Key.columnView)
+        }
+    }
+
     var usesColumnView: Bool {
-        get { defaults.bool(forKey: Key.columnView) }
-        nonmutating set { defaults.set(newValue, forKey: Key.columnView) }
+        get { viewMode == .column }
+        nonmutating set { viewMode = newValue ? .column : .list }
     }
 
     // MARK: - Split view

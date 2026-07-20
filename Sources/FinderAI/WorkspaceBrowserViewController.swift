@@ -179,6 +179,96 @@ private final class WorkspaceFileTableView: NSTableView {
 }
 
 @MainActor
+private final class WorkspaceGalleryCollectionView: NSCollectionView {
+    var onOpen: (() -> Void)?
+    var onQuickLook: (() -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        switch event.charactersIgnoringModifiers {
+        case "\r", "\u{3}": onOpen?()
+        case " ": onQuickLook?()
+        default: super.keyDown(with: event)
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        super.mouseDown(with: event)
+        if event.clickCount == 2 { onOpen?() }
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let point = convert(event.locationInWindow, from: nil)
+        if let indexPath = indexPathForItem(at: point),
+           !selectionIndexPaths.contains(indexPath) {
+            selectionIndexPaths = [indexPath]
+        }
+        return super.menu(for: event)
+    }
+}
+
+@MainActor
+private final class WorkspaceGalleryItem: NSCollectionViewItem {
+    static let identifier = NSUserInterfaceItemIdentifier("WorkspaceGalleryItem")
+    private let icon = NSImageView()
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let detail = NSTextField(labelWithString: "")
+    var representedURL: URL?
+
+    override func loadView() {
+        view = NSView()
+        view.wantsLayer = true
+        view.layer?.cornerRadius = 8
+        icon.imageScaling = .scaleProportionallyDown
+        titleLabel.alignment = .center
+        titleLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
+        titleLabel.lineBreakMode = .byTruncatingMiddle
+        detail.alignment = .center
+        detail.font = .systemFont(ofSize: 9.5)
+        detail.textColor = IntegratedPanelTheme.secondaryText
+        detail.lineBreakMode = .byTruncatingMiddle
+        [icon, titleLabel, detail].forEach {
+            $0.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview($0)
+        }
+        NSLayoutConstraint.activate([
+            icon.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
+            icon.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 60),
+            icon.heightAnchor.constraint(equalToConstant: 60),
+            titleLabel.topAnchor.constraint(equalTo: icon.bottomAnchor, constant: 5),
+            titleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 5),
+            titleLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -5),
+            detail.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 2),
+            detail.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 5),
+            detail.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -5)
+        ])
+    }
+
+    override var isSelected: Bool {
+        didSet {
+            view.layer?.backgroundColor = isSelected
+                ? NSColor.selectedContentBackgroundColor.withAlphaComponent(0.45).cgColor
+                : NSColor.clear.cgColor
+        }
+    }
+
+    func configure(with item: WorkspaceItem) {
+        representedURL = item.url
+        titleLabel.stringValue = item.name
+        titleLabel.toolTip = item.relativePath ?? item.name
+        detail.stringValue = item.relativePath.map {
+            ($0 as NSString).deletingLastPathComponent
+        }.flatMap { $0.isEmpty ? nil : $0 } ?? item.typeDescription ?? ""
+        detail.toolTip = item.relativePath
+        icon.image = WorkspaceIconProvider.shared.quickIcon(for: item)
+        WorkspaceIconProvider.shared.resolveIcon(for: item) { [weak self] image in
+            guard let self, self.representedURL == item.url else { return }
+            self.icon.image = image
+        }
+    }
+}
+
+@MainActor
 final class WorkspaceBrowserViewController: NSViewController {
     var onDirectoryChange: ((URL) -> Void)?
     var onToggleTerminal: (() -> Void)?
@@ -208,6 +298,10 @@ final class WorkspaceBrowserViewController: NSViewController {
     private var listingTask: Task<Void, Never>?
     private var loadingIndicatorTask: Task<Void, Never>?
     private var filterTask: Task<Void, Never>?
+    private var recursiveSearchTask: Task<Void, Never>?
+    private var recursiveSearchGeneration: UInt = 0
+    private var recursiveSearchIsTruncated = false
+    private var recursiveSearchErrorShown = false
     private var pendingSelectionURL: URL?
     private var sortIdentifier = Column.name
     private var sortAscending = true
@@ -228,15 +322,19 @@ final class WorkspaceBrowserViewController: NSViewController {
     private var paneIsActive = true
     private let sidebarTable = NSTableView()
     private let fileTable = WorkspaceFileTableView()
+    private let galleryView = WorkspaceGalleryCollectionView()
     private let pathField = NSTextField()
     private let fileArea = NSView()
     private let columnView = WorkspaceColumnView()
     private var listScrollView: NSScrollView?
+    private var galleryScrollView: NSScrollView?
     private let ribbonPath = NSPathControl()
     private let listingErrorLabel = NSTextField(wrappingLabelWithString: "")
     private let openSettingsButton = NSButton()
     private let showHiddenButton = NSButton()
     private let searchField = NSSearchField()
+    private let searchScopeControl = NSSegmentedControl()
+    private let viewModeControl = NSSegmentedControl()
     private let backButton = NSButton()
     private let forwardButton = NSButton()
     private let upButton = NSButton()
@@ -277,6 +375,8 @@ final class WorkspaceBrowserViewController: NSViewController {
     }
 
     var currentDirectory: URL { navigator.currentDirectory }
+    var viewModeForTesting: WorkspaceViewMode { effectiveViewMode }
+    var galleryIsVisibleForTesting: Bool { galleryScrollView?.isHidden == false }
 
     override func loadView() {
         let root = NSView()
@@ -323,7 +423,9 @@ final class WorkspaceBrowserViewController: NSViewController {
 
     override func viewDidAppear() {
         super.viewDidAppear()
-        view.window?.makeFirstResponder(fileTable)
+        view.window?.makeFirstResponder(
+            effectiveViewMode == .gallery ? galleryView : fileTable
+        )
         observeVolumeChanges()
         observeFocusChanges()
     }
@@ -448,13 +550,15 @@ final class WorkspaceBrowserViewController: NSViewController {
         root.layer?.backgroundColor = IntegratedPanelTheme.background.cgColor
         let navigationBar = makeNavigationBar()
         let listScroll = makeFileTable()
+        let galleryScroll = makeGalleryView()
         let statusBar = makeStatusBar()
         configureColumnView()
 
         // Both views occupy the same slot; only one is unhidden at a time.
         fileArea.addSubview(listScroll)
         fileArea.addSubview(columnView)
-        [listScroll, columnView].forEach {
+        fileArea.addSubview(galleryScroll)
+        [listScroll, columnView, galleryScroll].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([
                 $0.leadingAnchor.constraint(equalTo: fileArea.leadingAnchor),
@@ -464,6 +568,7 @@ final class WorkspaceBrowserViewController: NSViewController {
             ])
         }
         listScrollView = listScroll
+        galleryScrollView = galleryScroll
         configureListingErrorState()
 
         let ribbon = makeRibbon()
@@ -475,7 +580,7 @@ final class WorkspaceBrowserViewController: NSViewController {
             navigationBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             navigationBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             navigationBar.topAnchor.constraint(equalTo: root.topAnchor),
-            navigationBar.heightAnchor.constraint(equalToConstant: 46),
+            navigationBar.heightAnchor.constraint(equalToConstant: 76),
             fileArea.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             fileArea.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             fileArea.topAnchor.constraint(equalTo: navigationBar.bottomAnchor),
@@ -491,6 +596,35 @@ final class WorkspaceBrowserViewController: NSViewController {
         ])
         applyViewMode()
         return root
+    }
+
+    private func makeGalleryView() -> NSScrollView {
+        let layout = NSCollectionViewFlowLayout()
+        layout.itemSize = NSSize(width: 132, height: 112)
+        layout.minimumInteritemSpacing = 8
+        layout.minimumLineSpacing = 10
+        layout.sectionInset = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        galleryView.collectionViewLayout = layout
+        galleryView.backgroundColors = [IntegratedPanelTheme.background]
+        galleryView.isSelectable = true
+        galleryView.allowsMultipleSelection = true
+        galleryView.registerForDraggedTypes([.fileURL])
+        galleryView.dataSource = self
+        galleryView.delegate = self
+        galleryView.register(
+            WorkspaceGalleryItem.self,
+            forItemWithIdentifier: WorkspaceGalleryItem.identifier
+        )
+        galleryView.onOpen = { [weak self] in self?.openSelection() }
+        galleryView.onQuickLook = { [weak self] in self?.toggleQuickLook() }
+
+        let scroll = NSScrollView()
+        scroll.drawsBackground = true
+        scroll.backgroundColor = IntegratedPanelTheme.background
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.documentView = galleryView
+        return scroll
     }
 
     /// Finder's パスバー: a slim strip above the status bar showing where you are,
@@ -541,23 +675,53 @@ final class WorkspaceBrowserViewController: NSViewController {
         updateStatus()
     }
 
-    /// ⌘2 / ⌘1. Column view is the only one that shows where a folder sits in the
-    /// tree; the list is better for sorting and comparing.
+    /// ⌘2でlist→column→galleryを循環する。toolbarからは直接選べる。
     @objc func toggleColumnView() {
-        preferences.usesColumnView.toggle()
+        let selection = selectedItems.map(\.url)
+        let modes = WorkspaceViewMode.allCases
+        let index = modes.firstIndex(of: preferences.viewMode) ?? 0
+        preferences.viewMode = modes[(index + 1) % modes.count]
         applyViewMode()
+        restoreFlatSelection(selection)
+    }
+
+    @objc private func viewModeChanged() {
+        guard WorkspaceViewMode.allCases.indices.contains(viewModeControl.selectedSegment) else {
+            return
+        }
+        let selection = selectedItems.map(\.url)
+        preferences.viewMode = WorkspaceViewMode.allCases[viewModeControl.selectedSegment]
+        applyViewMode()
+        restoreFlatSelection(selection)
+    }
+
+    private var searchHasText: Bool {
+        !searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var usesRecursiveSearch: Bool {
+        searchHasText && searchScopeControl.selectedSegment == 1
+    }
+
+    /// Column viewは検索結果のflat listを表現できないため、検索中だけlistへ退避し、
+    /// 検索を消せば保存済みcolumn modeへ自動で戻す。
+    private var effectiveViewMode: WorkspaceViewMode {
+        searchHasText && preferences.viewMode == .column ? .list : preferences.viewMode
     }
 
     private func applyViewMode() {
-        let column = preferences.usesColumnView
-        columnView.isHidden = !column
-        listScrollView?.isHidden = column
-        if column {
+        let mode = effectiveViewMode
+        columnView.isHidden = mode != .column
+        listScrollView?.isHidden = mode != .list
+        galleryScrollView?.isHidden = mode != .gallery
+        viewModeControl.selectedSegment = WorkspaceViewMode.allCases.firstIndex(of: mode) ?? 0
+        if mode == .column {
             columnView.show(
                 directory: navigator.currentDirectory,
                 showHiddenFiles: preferences.showHiddenFiles
             )
         }
+        galleryView.reloadData()
         updateStatus()
     }
 
@@ -570,6 +734,30 @@ final class WorkspaceBrowserViewController: NSViewController {
         configureNavigationButton(upButton, symbol: "arrow.up", action: #selector(goUp), label: "親フォルダ")
         configureNavigationButton(refreshButton, symbol: "arrow.clockwise", action: #selector(refresh), label: "再読み込み")
         configureNavigationButton(newFolderButton, symbol: "folder.badge.plus", action: #selector(createFolder), label: "新規フォルダ")
+
+        viewModeControl.segmentCount = 3
+        for (index, symbol) in ["list.bullet", "rectangle.split.3x1", "square.grid.2x2"].enumerated() {
+            viewModeControl.setImage(
+                NSImage(systemSymbolName: symbol, accessibilityDescription: "表示モード"),
+                forSegment: index
+            )
+            viewModeControl.setWidth(25, forSegment: index)
+        }
+        viewModeControl.trackingMode = .selectOne
+        viewModeControl.target = self
+        viewModeControl.action = #selector(viewModeChanged)
+        viewModeControl.toolTip = "リスト／カラム／ギャラリー"
+
+        searchScopeControl.segmentCount = 2
+        searchScopeControl.setLabel("直下", forSegment: 0)
+        searchScopeControl.setLabel("配下", forSegment: 1)
+        searchScopeControl.setWidth(42, forSegment: 0)
+        searchScopeControl.setWidth(42, forSegment: 1)
+        searchScopeControl.selectedSegment = 0
+        searchScopeControl.trackingMode = .selectOne
+        searchScopeControl.target = self
+        searchScopeControl.action = #selector(searchScopeChanged)
+        searchScopeControl.toolTip = "検索範囲"
 
         // The top bar's path is a plain text address bar: always the current
         // path, selectable and copyable, and typing a new one navigates. Clicking
@@ -594,34 +782,49 @@ final class WorkspaceBrowserViewController: NSViewController {
         ])
         pathSlot.heightAnchor.constraint(equalToConstant: 24).isActive = true
 
-        searchField.placeholderString = "このフォルダを検索"
+        searchField.placeholderString = "検索"
         searchField.sendsSearchStringImmediately = true
         searchField.delegate = self
-        searchField.widthAnchor.constraint(equalToConstant: 190).isActive = true
+        searchField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        searchField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        // Finder's order: navigation, path, action buttons, and search hugging the
-        // right edge.
-        let stack = NSStackView(views: [
+        // A split pane is only about half of the window. Keeping path, three view
+        // modes, two search scopes, and the search field on one row forces Auto
+        // Layout to crush the address field at exactly the size where it matters
+        // most. Navigation stays on top and search gets a dedicated compact row.
+        let navigationStack = NSStackView(views: [
             backButton, forwardButton, upButton, pathSlot,
-            refreshButton, newFolderButton, searchField
+            refreshButton, newFolderButton, viewModeControl
         ])
-        stack.orientation = .horizontal
-        stack.alignment = .centerY
-        stack.spacing = 7
-        // The default gravity distribution keeps every view at its natural width
-        // and clusters them leading, which parked the search field mid-bar with
-        // dead space to its right. `.fill` stretches the lowest-hugging view —
-        // the path slot — so the search field lands on the right edge and the
-        // path's clickable empty area grows to everything in between.
-        stack.distribution = .fill
+        navigationStack.orientation = .horizontal
+        navigationStack.alignment = .centerY
+        navigationStack.spacing = 7
+        navigationStack.distribution = .fill
         pathSlot.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        bar.addSubview(stack)
+
+        let searchSpacer = NSView()
+        searchSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let searchStack = NSStackView(views: [searchSpacer, searchScopeControl, searchField])
+        searchStack.orientation = .horizontal
+        searchStack.alignment = .centerY
+        searchStack.spacing = 7
+        searchStack.distribution = .fill
+
+        navigationStack.translatesAutoresizingMaskIntoConstraints = false
+        searchStack.translatesAutoresizingMaskIntoConstraints = false
+        bar.addSubview(navigationStack)
+        bar.addSubview(searchStack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
-            stack.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
-            stack.topAnchor.constraint(equalTo: bar.topAnchor, constant: 7),
-            stack.bottomAnchor.constraint(equalTo: bar.bottomAnchor, constant: -7)
+            navigationStack.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
+            navigationStack.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
+            navigationStack.topAnchor.constraint(equalTo: bar.topAnchor, constant: 6),
+            navigationStack.heightAnchor.constraint(equalToConstant: 27),
+            searchStack.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
+            searchStack.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
+            searchStack.topAnchor.constraint(equalTo: navigationStack.bottomAnchor, constant: 5),
+            searchStack.bottomAnchor.constraint(equalTo: bar.bottomAnchor, constant: -6),
+            searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: 140),
+            searchField.widthAnchor.constraint(lessThanOrEqualToConstant: 240)
         ])
         return bar
     }
@@ -770,6 +973,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         add("ゴミ箱に入れる…", #selector(trashSelection))
 
         fileTable.menu = menu
+        galleryView.menu = menu
         configureSidebarContextMenu()
     }
 
@@ -982,6 +1186,12 @@ final class WorkspaceBrowserViewController: NSViewController {
         if addHistory { navigator.navigate(to: url) }
         let directory = navigator.currentDirectory
         searchField.stringValue = ""
+        recursiveSearchTask?.cancel()
+        recursiveSearchTask = nil
+        recursiveSearchGeneration &+= 1
+        recursiveSearchIsTruncated = false
+        recursiveSearchErrorShown = false
+        applyViewMode()
         updateNavigationUI()
         reloadContents()
         // The column view keeps its own columns; this is for navigation that did
@@ -1083,6 +1293,10 @@ final class WorkspaceBrowserViewController: NSViewController {
     /// concurrent enumerations on the same volume.
     private func reloadContents() {
         listingTask?.cancel()
+        recursiveSearchTask?.cancel()
+        recursiveSearchTask = nil
+        recursiveSearchGeneration &+= 1
+        recursiveSearchIsTruncated = false
         let directory = navigator.currentDirectory
         let showHidden = preferences.showHiddenFiles
         beginLoadingIndicator()
@@ -1118,8 +1332,9 @@ final class WorkspaceBrowserViewController: NSViewController {
     ) {
         guard navigator.currentDirectory == directory else { return }
         endLoadingIndicator()
+        recursiveSearchErrorShown = false
         allItems = items
-        applyFilterAndSort()
+        updateSearchResults()
         selectPendingItemIfNeeded()
 
         // 「空に見えるが実は全部隠しファイル」を無言の空リストにしない。
@@ -1141,8 +1356,9 @@ final class WorkspaceBrowserViewController: NSViewController {
     private func applyListingFailure(_ error: any Error, for directory: URL) {
         guard navigator.currentDirectory == directory else { return }
         endLoadingIndicator()
+        recursiveSearchErrorShown = false
         allItems = []
-        applyFilterAndSort()
+        updateSearchResults()
 
         let nsError = error as NSError
         let isPermission = nsError.domain == NSCocoaErrorDomain
@@ -1215,11 +1431,137 @@ final class WorkspaceBrowserViewController: NSViewController {
         progress.stopAnimation(nil)
     }
 
+    @objc private func searchScopeChanged() {
+        updateSearchResults()
+    }
+
+    private func updateSearchResults() {
+        applyViewMode()
+        if usesRecursiveSearch {
+            startRecursiveSearch()
+        } else {
+            if recursiveSearchTask != nil {
+                recursiveSearchTask?.cancel()
+                endLoadingIndicator()
+            }
+            recursiveSearchTask = nil
+            recursiveSearchGeneration &+= 1
+            recursiveSearchIsTruncated = false
+            applyFilterAndSort()
+            if recursiveSearchErrorShown || !allItems.isEmpty {
+                listingErrorLabel.isHidden = true
+                openSettingsButton.isHidden = true
+                showHiddenButton.isHidden = true
+                recursiveSearchErrorShown = false
+            }
+        }
+    }
+
+    private func startRecursiveSearch() {
+        recursiveSearchTask?.cancel()
+        recursiveSearchGeneration &+= 1
+        let generation = recursiveSearchGeneration
+        let root = navigator.currentDirectory
+        let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let showHidden = preferences.showHiddenFiles
+        guard !query.isEmpty else { return }
+        displayedItems = []
+        fileTable.deselectAll(nil)
+        galleryView.selectionIndexPaths = []
+        reloadResultViews()
+        updateStatus()
+        beginLoadingIndicator()
+        recursiveSearchTask = Task.detached(priority: .userInitiated) { [weak self] in
+            do {
+                let result = try WorkspaceDirectoryListing.recursiveSearch(
+                    in: root,
+                    query: query,
+                    showHiddenFiles: showHidden
+                )
+                guard !Task.isCancelled else { return }
+                await self?.applyRecursiveSearch(
+                    result,
+                    root: root,
+                    query: query,
+                    generation: generation
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                await self?.applyRecursiveSearchFailure(
+                    error,
+                    root: root,
+                    query: query,
+                    generation: generation
+                )
+            }
+        }
+    }
+
+    private func applyRecursiveSearch(
+        _ result: WorkspaceSearchResult,
+        root: URL,
+        query: String,
+        generation: UInt
+    ) {
+        guard recursiveSearchGeneration == generation,
+              navigator.currentDirectory == root,
+              usesRecursiveSearch,
+              searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) == query
+        else { return }
+        endLoadingIndicator()
+        recursiveSearchTask = nil
+        recursiveSearchIsTruncated = result.isTruncated
+        recursiveSearchErrorShown = false
+        displayedItems = sortedItems(result.items)
+        fileTable.deselectAll(nil)
+        galleryView.selectionIndexPaths = []
+        reloadResultViews()
+        listingErrorLabel.isHidden = true
+        openSettingsButton.isHidden = true
+        showHiddenButton.isHidden = true
+        updateStatus()
+    }
+
+    private func applyRecursiveSearchFailure(
+        _ error: any Error,
+        root: URL,
+        query: String,
+        generation: UInt
+    ) {
+        guard recursiveSearchGeneration == generation,
+              navigator.currentDirectory == root,
+              usesRecursiveSearch,
+              searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) == query
+        else { return }
+        endLoadingIndicator()
+        recursiveSearchTask = nil
+        recursiveSearchIsTruncated = false
+        recursiveSearchErrorShown = true
+        displayedItems = []
+        fileTable.deselectAll(nil)
+        galleryView.selectionIndexPaths = []
+        reloadResultViews()
+        listingErrorLabel.stringValue = "配下を検索できません: \(error.localizedDescription)"
+        listingErrorLabel.isHidden = false
+        openSettingsButton.isHidden = true
+        showHiddenButton.isHidden = true
+        updateStatus()
+    }
+
     private func applyFilterAndSort() {
         let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        var items = query.isEmpty
+        let items = query.isEmpty
             ? allItems
             : allItems.filter { $0.name.localizedCaseInsensitiveContains(query) }
+        displayedItems = sortedItems(items)
+        reloadResultViews()
+        updateStatus()
+    }
+
+    private func sortedItems(_ source: [WorkspaceItem]) -> [WorkspaceItem] {
+        var items = source
         items.sort { lhs, rhs in
             if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
             let comparison: ComparisonResult
@@ -1240,23 +1582,53 @@ final class WorkspaceBrowserViewController: NSViewController {
             }
             return sortAscending ? comparison == .orderedAscending : comparison == .orderedDescending
         }
-        displayedItems = items
+        return items
+    }
+
+    private func reloadResultViews() {
         fileTable.reloadData()
-        updateStatus()
+        galleryView.reloadData()
     }
 
     private func updateStatus() {
-        let selectedCount = fileTable.selectedRowIndexes.count
+        let selectedCount = selectedItems.count
+        let prefix = usesRecursiveSearch ? "配下検索: " : ""
+        let truncation = recursiveSearchIsTruncated ? "（上限5,000件）" : ""
         statusLabel.stringValue = selectedCount > 0
-            ? "\(displayedItems.count)項目 — \(selectedCount)項目を選択"
-            : "\(displayedItems.count)項目"
+            ? "\(prefix)\(displayedItems.count)項目\(truncation) — \(selectedCount)項目を選択"
+            : "\(prefix)\(displayedItems.count)項目\(truncation)"
     }
 
     private var selectedItems: [WorkspaceItem] {
-        if preferences.usesColumnView { return columnView.selectedItems }
+        switch effectiveViewMode {
+        case .column:
+            return columnView.selectedItems
+        case .gallery:
+            return galleryView.selectionIndexPaths
+                .sorted { $0.item < $1.item }
+                .compactMap { indexPath in
+                displayedItems.indices.contains(indexPath.item)
+                    ? displayedItems[indexPath.item]
+                    : nil
+            }
+        case .list:
+            break
+        }
         return fileTable.selectedRowIndexes.compactMap { index in
             displayedItems.indices.contains(index) ? displayedItems[index] : nil
         }
+    }
+
+    /// Listとgalleryは同じflatな結果集合なので、表示を替えても選択を失わない。
+    /// Columnの深い階層から来た項目は現在の結果に無ければ安全に無視する。
+    private func restoreFlatSelection(_ urls: [URL]) {
+        let wanted = Set(urls)
+        let indexes = IndexSet(displayedItems.indices.filter { wanted.contains(displayedItems[$0].url) })
+        fileTable.selectRowIndexes(indexes, byExtendingSelection: false)
+        galleryView.selectionIndexPaths = Set(
+            indexes.map { IndexPath(item: $0, section: 0) }
+        )
+        updateStatus()
     }
 
     private func selectPendingItemIfNeeded() {
@@ -1267,6 +1639,11 @@ final class WorkspaceBrowserViewController: NSViewController {
         }
         fileTable.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
         fileTable.scrollRowToVisible(index)
+        galleryView.selectionIndexPaths = [IndexPath(item: index, section: 0)]
+        galleryView.scrollToItems(
+            at: [IndexPath(item: index, section: 0)],
+            scrollPosition: .nearestVerticalEdge
+        )
         self.pendingSelectionURL = nil
     }
 
@@ -1623,7 +2000,9 @@ final class WorkspaceBrowserViewController: NSViewController {
     /// focus back to the list.
     private func endPathEditing() {
         pathField.stringValue = navigator.currentDirectory.path(percentEncoded: false)
-        view.window?.makeFirstResponder(fileTable)
+        view.window?.makeFirstResponder(
+            effectiveViewMode == .gallery ? galleryView : fileTable
+        )
     }
 
     /// Accepts what a user actually pastes: `~`, a trailing slash, surrounding
@@ -1702,7 +2081,11 @@ extension WorkspaceBrowserViewController: @preconcurrency QLPreviewPanelDataSour
     /// keep moving through the list while previewing.
     func previewPanel(_ panel: QLPreviewPanel!, handle event: NSEvent!) -> Bool {
         guard event.type == .keyDown else { return false }
-        fileTable.keyDown(with: event)
+        if effectiveViewMode == .gallery {
+            galleryView.keyDown(with: event)
+        } else {
+            fileTable.keyDown(with: event)
+        }
         return true
     }
 }
@@ -1765,7 +2148,7 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
             ) as? WorkspaceNameCellView ?? WorkspaceNameCellView()
             cell.representedURL = item.url
             cell.configure(
-                name: item.name,
+                name: item.relativePath ?? item.name,
                 image: WorkspaceIconProvider.shared.quickIcon(for: item),
                 cloud: item.cloudStatus
             )
@@ -1840,7 +2223,13 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
         sortAscending = descriptor.ascending
         preferences.sortColumn = key
         preferences.sortAscending = descriptor.ascending
-        applyFilterAndSort()
+        if usesRecursiveSearch {
+            displayedItems = sortedItems(displayedItems)
+            reloadResultViews()
+            updateStatus()
+        } else {
+            applyFilterAndSort()
+        }
     }
 
     func tableView(
@@ -1905,6 +2294,55 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
     }()
 }
 
+extension WorkspaceBrowserViewController: NSCollectionViewDataSource, NSCollectionViewDelegate {
+    func numberOfSections(in collectionView: NSCollectionView) -> Int { 1 }
+
+    func collectionView(
+        _ collectionView: NSCollectionView,
+        numberOfItemsInSection section: Int
+    ) -> Int {
+        displayedItems.count
+    }
+
+    func collectionView(
+        _ collectionView: NSCollectionView,
+        itemForRepresentedObjectAt indexPath: IndexPath
+    ) -> NSCollectionViewItem {
+        let item = collectionView.makeItem(
+            withIdentifier: WorkspaceGalleryItem.identifier,
+            for: indexPath
+        )
+        guard let galleryItem = item as? WorkspaceGalleryItem,
+              displayedItems.indices.contains(indexPath.item) else { return item }
+        galleryItem.configure(with: displayedItems[indexPath.item])
+        return galleryItem
+    }
+
+    func collectionView(
+        _ collectionView: NSCollectionView,
+        pasteboardWriterForItemAt indexPath: IndexPath
+    ) -> (any NSPasteboardWriting)? {
+        guard displayedItems.indices.contains(indexPath.item) else { return nil }
+        return displayedItems[indexPath.item].url as NSURL
+    }
+
+    func collectionView(
+        _ collectionView: NSCollectionView,
+        didSelectItemsAt indexPaths: Set<IndexPath>
+    ) {
+        updateStatus()
+        refreshQuickLookIfVisible()
+    }
+
+    func collectionView(
+        _ collectionView: NSCollectionView,
+        didDeselectItemsAt indexPaths: Set<IndexPath>
+    ) {
+        updateStatus()
+        refreshQuickLookIfVisible()
+    }
+}
+
 extension WorkspaceBrowserViewController: NSSearchFieldDelegate {
     /// Return commits the path, Escape abandons it. Both fields share this
     /// delegate, so the path field has to be told apart from the search field.
@@ -1934,7 +2372,7 @@ extension WorkspaceBrowserViewController: NSSearchFieldDelegate {
         filterTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(60))
             guard !Task.isCancelled else { return }
-            self?.applyFilterAndSort()
+            self?.updateSearchResults()
         }
     }
 }

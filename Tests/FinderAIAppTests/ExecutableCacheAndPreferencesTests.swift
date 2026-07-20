@@ -113,6 +113,7 @@ struct WorkspacePreferencesTests {
         preferences.showHiddenFiles = true
         preferences.terminalHeight = 420
         preferences.terminalExpanded = true
+        preferences.viewMode = .gallery
 
         #expect(preferences.sidebarWidth == 300)
         #expect(preferences.sortColumn == "modified")
@@ -120,6 +121,17 @@ struct WorkspacePreferencesTests {
         #expect(preferences.showHiddenFiles)
         #expect(preferences.terminalHeight == 420)
         #expect(preferences.terminalExpanded)
+        #expect(preferences.viewMode == .gallery)
+    }
+
+    @Test("the legacy column-view boolean migrates when no mode exists")
+    func legacyViewModeMigration() throws {
+        let defaults = try makeDefaults()
+        defaults.set(true, forKey: "workspace.columnView")
+        let preferences = WorkspacePreferences(defaults: defaults)
+        #expect(preferences.viewMode == .column)
+        preferences.viewMode = .gallery
+        #expect(!preferences.usesColumnView)
     }
 
     @Test("out-of-range geometry is clamped rather than trusted")

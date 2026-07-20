@@ -254,6 +254,13 @@ extension WorkspaceWindowController: NSSplitViewDelegate {
         false
     }
 
+    /// NSBrowser keeps its own responder chain while column view has focus. The
+    /// window controller exposes the same selector as the browser so the
+    /// target-less View menu and ⌘2 remain enabled in every view mode.
+    @objc func toggleColumnView() {
+        browser.toggleColumnView()
+    }
+
     @objc func toggleTerminal() {
         terminalExpanded.toggle()
         preferences.terminalExpanded = terminalExpanded
