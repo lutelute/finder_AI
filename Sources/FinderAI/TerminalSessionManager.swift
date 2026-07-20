@@ -10,8 +10,10 @@ final class TerminalSessionManager: TerminalSessionManaging {
     private let commandLocator: any CommandLocating
     private let preferences: WorkspacePreferences
     private let tmuxController: any TmuxControlling
+    private let registry: any SessionRegistryStoring
     private var sessionsByKey: [TerminalSessionKey: any ManagedTerminalSession] = [:]
     private var insertionOrder: [TerminalSessionKey] = []
+    private var recordIDsBySessionID: [UUID: UUID] = [:]
     /// 表示と実行を分離する。ここにあるセッションはタブから消えるだけで、managerの
     /// 強参照、PTY、出力バッファはそのまま生きる。
     private var hiddenSessionIDs: Set<UUID> = []
@@ -37,12 +39,14 @@ final class TerminalSessionManager: TerminalSessionManaging {
         builder: any TerminalSessionBuilding = SwiftTermSessionBuilder(),
         commandLocator: any CommandLocating = SystemCommandLocator(),
         preferences: WorkspacePreferences = WorkspacePreferences(),
-        tmuxController: any TmuxControlling = ProcessTmuxController()
+        tmuxController: any TmuxControlling = ProcessTmuxController(),
+        registry: any SessionRegistryStoring = InMemorySessionRegistryStore()
     ) {
         self.builder = builder
         self.commandLocator = commandLocator
         self.preferences = preferences
         self.tmuxController = tmuxController
+        self.registry = registry
         activationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil,
@@ -83,6 +87,10 @@ final class TerminalSessionManager: TerminalSessionManaging {
 
     var allSessions: [any ManagedTerminalSession] {
         insertionOrder.compactMap { sessionsByKey[$0] }
+    }
+
+    var sessionRecords: [TerminalSessionRecord] {
+        registry.records
     }
 
     // MARK: - Persistence (tmux)
@@ -174,12 +182,22 @@ final class TerminalSessionManager: TerminalSessionManaging {
     func hideFromTabs(_ session: any ManagedTerminalSession) {
         guard sessionsByKey[session.key]?.id == session.id,
               hiddenSessionIDs.insert(session.id).inserted else { return }
+        updateRecord(for: session) {
+            $0.isPresented = false
+            $0.lastActivityAt = Date()
+        }
         notifyChange()
     }
 
     func revealInTabs(_ session: any ManagedTerminalSession) {
         guard sessionsByKey[session.key]?.id == session.id,
               hiddenSessionIDs.remove(session.id) != nil else { return }
+        updateRecord(for: session) {
+            let now = Date()
+            $0.isPresented = true
+            $0.lastPresentedAt = now
+            $0.lastActivityAt = now
+        }
         notifyChange()
     }
 
@@ -228,7 +246,31 @@ final class TerminalSessionManager: TerminalSessionManaging {
             executableURL: executableURL,
             persistence: persistence
         )
-        session.onChange = { [weak self] in self?.notifyChange() }
+        let now = Date()
+        var record = registry.record(matching: key) ?? TerminalSessionRecord(
+            directoryPath: directoryURL.standardizedFileURL.path,
+            kind: kind,
+            backend: persistence == nil ? .ephemeral : .tmux,
+            persistentName: persistence?.sessionName,
+            createdAt: now,
+            lastActivityAt: now,
+            lastPresentedAt: now
+        )
+        record.directoryPath = directoryURL.standardizedFileURL.path
+        record.backend = persistence == nil ? .ephemeral : .tmux
+        record.persistentName = persistence?.sessionName
+        record.lastActivityAt = now
+        record.lastPresentedAt = now
+        record.isPresented = true
+        record.endedAt = nil
+        registry.upsert(record)
+        recordIDsBySessionID[session.id] = record.id
+
+        let sessionID = session.id
+        let sessionKey = session.key
+        session.onChange = { [weak self] in
+            self?.sessionDidChange(id: sessionID, key: sessionKey)
+        }
         sessionsByKey[key] = session
         insertionOrder.append(key)
         notifyChange()
@@ -244,6 +286,13 @@ final class TerminalSessionManager: TerminalSessionManaging {
         sessionsByKey.removeValue(forKey: session.key)
         insertionOrder.removeAll { $0 == session.key }
         hiddenSessionIDs.remove(session.id)
+        updateRecord(for: session) {
+            let now = Date()
+            $0.isPresented = false
+            $0.lastActivityAt = now
+            $0.endedAt = now
+        }
+        recordIDsBySessionID.removeValue(forKey: session.id)
         // クライアントの終了はデタッチにしかならないので、UIから閉じたときは
         // tmux側のセッションも道連れにする。それが「終了」の意味。
         if let persistence {
@@ -259,10 +308,50 @@ final class TerminalSessionManager: TerminalSessionManaging {
         notifyChange()
     }
 
+    func forgetSessionRecord(id: UUID) {
+        registry.remove(id: id)
+        notifyChange()
+    }
+
     /// アプリ終了時。永続セッションのクライアントもここで終了するが、それは
     /// デタッチであって、tmuxサーバー側のセッションは生き続ける。
     func shutdownOwnedProcesses() {
-        sessionsByKey.values.filter(\.isRunning).forEach { $0.terminate() }
+        for session in sessionsByKey.values {
+            if session.isRunning {
+                session.terminate()
+            }
+            updateRecord(for: session) {
+                let now = Date()
+                $0.isPresented = false
+                $0.lastActivityAt = now
+                // tmux実体はFinderAI終了後も生きる。通常PTYだけを終了扱いにする。
+                $0.endedAt = session.persistence == nil ? now : nil
+            }
+        }
+    }
+
+    private func sessionDidChange(id: UUID, key: TerminalSessionKey) {
+        guard let session = sessionsByKey[key], session.id == id else { return }
+        updateRecord(for: session) {
+            let now = Date()
+            $0.lastActivityAt = now
+            if !session.isRunning {
+                $0.isPresented = false
+                $0.endedAt = now
+            }
+        }
+        notifyChange()
+    }
+
+    private func updateRecord(
+        for session: any ManagedTerminalSession,
+        _ update: (inout TerminalSessionRecord) -> Void
+    ) {
+        guard let recordID = recordIDsBySessionID[session.id],
+              var record = registry.records.first(where: { $0.id == recordID })
+        else { return }
+        update(&record)
+        registry.upsert(record)
     }
 
     private func notifyChange() {

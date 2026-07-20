@@ -47,3 +47,9 @@ Accessibility経由でReleaseビルドを操作し、次の一連の動作を確
 6. 検証用FinderAIは通常終了し、FinderAIプロセスを残していない。
 
 手動確認項目は`docs/MANUAL_TEST_CHECKLIST.md`へ追記した。
+
+## v1.4追記 — プロセスと独立した台帳
+
+ライブPTYを所有する`TerminalSessionManager`とは別に、安定IDとフォルダ・種類・backend・時刻・表示／終了状態だけを持つ`TerminalSessionRecord`を導入した。実アプリはApplication SupportのJSONへ原子的に保存し、再起動後の管理画面にも履歴を表示する。Terminal内容は台帳に含めず、明示的な記録保存と区別する。decode不能な台帳は削除せず隔離し、FinderAIの起動を止めない。ライブPTYまたは実在tmuxと一致する履歴は一覧で重複排除する。
+
+`./scripts/run-tests.sh`は157テスト成功。Releaseビルド、署名、zip再展開後の署名検証も成功した。
