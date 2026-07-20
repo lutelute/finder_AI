@@ -26,6 +26,8 @@ public struct WorkspaceItem: Equatable, Sendable, Identifiable {
     public let modifiedAt: Date?
     public let typeDescription: String?
     public let cloudStatus: WorkspaceCloudStatus
+    /// 再帰検索時だけ、検索起点からの相対パスを持つ。通常一覧ではnil。
+    public let relativePath: String?
 
     public init(
         url: URL,
@@ -35,7 +37,8 @@ public struct WorkspaceItem: Equatable, Sendable, Identifiable {
         fileSize: Int64?,
         modifiedAt: Date?,
         typeDescription: String?,
-        cloudStatus: WorkspaceCloudStatus = .none
+        cloudStatus: WorkspaceCloudStatus = .none,
+        relativePath: String? = nil
     ) {
         self.url = url.standardizedFileURL
         self.name = name
@@ -45,10 +48,109 @@ public struct WorkspaceItem: Equatable, Sendable, Identifiable {
         self.modifiedAt = modifiedAt
         self.typeDescription = typeDescription
         self.cloudStatus = cloudStatus
+        self.relativePath = relativePath
+    }
+}
+
+public struct WorkspaceSearchResult: Equatable, Sendable {
+    public let items: [WorkspaceItem]
+    public let isTruncated: Bool
+
+    public init(items: [WorkspaceItem], isTruncated: Bool) {
+        self.items = items
+        self.isTruncated = isTruncated
     }
 }
 
 public enum WorkspaceDirectoryListing {
+    /// 配下を深さ優先で検索する。列挙・resource value取得の各段階でcancelを確認し、
+    /// File Providerや大規模treeで古い検索が後からUIを上書きしないようにする。
+    public static func recursiveSearch(
+        in root: URL,
+        query: String,
+        showHiddenFiles: Bool = false,
+        limit: Int = 5_000,
+        fileManager: FileManager = .default
+    ) throws -> WorkspaceSearchResult {
+        try Task.checkCancellation()
+        let root = root.standardizedFileURL
+        guard root.isFileURL else { throw CocoaError(.fileReadUnsupportedScheme) }
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return WorkspaceSearchResult(items: [], isTruncated: false) }
+
+        let keys: [URLResourceKey] = [
+            .isDirectoryKey,
+            .isHiddenKey,
+            .fileSizeKey,
+            .contentModificationDateKey,
+            .isUbiquitousItemKey,
+            .ubiquitousItemDownloadingStatusKey,
+            .ubiquitousItemIsDownloadingKey,
+            .ubiquitousItemIsUploadingKey
+        ]
+        var options: FileManager.DirectoryEnumerationOptions = [.skipsPackageDescendants]
+        if !showHiddenFiles { options.insert(.skipsHiddenFiles) }
+        var rootEnumerationError: (any Error)?
+        guard let enumerator = fileManager.enumerator(
+            at: root,
+            includingPropertiesForKeys: keys,
+            options: options,
+            errorHandler: { url, error in
+                // An unreadable descendant should not erase useful results from
+                // its siblings. Failure at the requested root is different: an
+                // empty success would falsely tell the user that nothing matched.
+                if url.standardizedFileURL == root {
+                    rootEnumerationError = error
+                    return false
+                }
+                return true
+            }
+        ) else {
+            throw CocoaError(.fileReadUnknown)
+        }
+
+        let keySet = Set(keys)
+        let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        var items: [WorkspaceItem] = []
+        items.reserveCapacity(min(max(limit, 0), 512))
+        var truncated = false
+        while let value = enumerator.nextObject() as? URL {
+            try Task.checkCancellation()
+            let path = value.standardizedFileURL.path
+            let relative = path.hasPrefix(rootPrefix)
+                ? String(path.dropFirst(rootPrefix.count))
+                : value.lastPathComponent
+            guard value.lastPathComponent.localizedCaseInsensitiveContains(needle)
+                    || relative.localizedCaseInsensitiveContains(needle)
+            else { continue }
+            if items.count >= max(limit, 0) {
+                truncated = true
+                break
+            }
+            let values = try? value.resourceValues(forKeys: keySet)
+            let isDirectory = values?.isDirectory ?? value.hasDirectoryPath
+            items.append(WorkspaceItem(
+                url: value,
+                name: value.lastPathComponent,
+                isDirectory: isDirectory,
+                isHidden: values?.isHidden ?? value.lastPathComponent.hasPrefix("."),
+                fileSize: values?.fileSize.map(Int64.init),
+                modifiedAt: values?.contentModificationDate,
+                typeDescription: typeDescription(for: value, isDirectory: isDirectory),
+                cloudStatus: cloudStatus(from: values),
+                relativePath: relative
+            ))
+        }
+        try Task.checkCancellation()
+        if let rootEnumerationError { throw rootEnumerationError }
+        items.sort {
+            ($0.relativePath ?? $0.name).localizedStandardCompare(
+                $1.relativePath ?? $1.name
+            ) == .orderedAscending
+        }
+        return WorkspaceSearchResult(items: items, isTruncated: truncated)
+    }
+
     /// Throws `CancellationError` if the enclosing `Task` is cancelled.
     ///
     /// The per-URL `resourceValues` loop is where slow volumes (SMB, File Provider)
