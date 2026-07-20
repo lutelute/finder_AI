@@ -395,6 +395,21 @@ final class TerminalSessionManager: TerminalSessionManaging {
         notifyChange()
     }
 
+    func renameSessionRecord(id: UUID, name: String?) {
+        guard var record = registry.records.first(where: { $0.id == id }) else { return }
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        record.customName = trimmed.flatMap { $0.isEmpty ? nil : String($0.prefix(80)) }
+        registry.upsert(record)
+        notifyChange()
+    }
+
+    func setSessionRecordPinned(id: UUID, isPinned: Bool) {
+        guard var record = registry.records.first(where: { $0.id == id }) else { return }
+        record.isPinned = isPinned
+        registry.upsert(record)
+        notifyChange()
+    }
+
     /// アプリ終了時。永続セッションのクライアントもここで終了するが、それは
     /// デタッチであって、tmuxサーバー側のセッションは生き続ける。
     func shutdownOwnedProcesses() {
