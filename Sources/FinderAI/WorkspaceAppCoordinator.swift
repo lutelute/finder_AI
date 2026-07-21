@@ -389,6 +389,25 @@ final class WorkspaceAppCoordinator {
         redo.keyEquivalentModifierMask = [.command, .shift]
         editMenu.addItem(redo)
         editMenu.addItem(.separator())
+        // Standard selectors deliberately stay on the responder chain. Text
+        // fields and Terminal consume them first; a workspace view falls
+        // through to WorkspaceBrowserViewController's file operations.
+        editMenu.addItem(NSMenuItem(
+            title: "カット",
+            action: #selector(WorkspaceBrowserViewController.cut(_:)),
+            keyEquivalent: "x"
+        ))
+        editMenu.addItem(NSMenuItem(
+            title: "コピー",
+            action: #selector(WorkspaceBrowserViewController.copy(_:)),
+            keyEquivalent: "c"
+        ))
+        editMenu.addItem(NSMenuItem(
+            title: "ペースト",
+            action: #selector(WorkspaceBrowserViewController.paste(_:)),
+            keyEquivalent: "v"
+        ))
+        editMenu.addItem(.separator())
         editMenu.addItem(NSMenuItem(title: "すべてを選択", action: #selector(NSResponder.selectAll(_:)), keyEquivalent: "a"))
         editItem.submenu = editMenu
         main.addItem(editItem)

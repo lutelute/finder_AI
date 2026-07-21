@@ -3,7 +3,20 @@ import Foundation
 
 /// Shared Finder-style drag/drop policy for list, column, gallery, and sidebar.
 enum WorkspaceDragDrop {
-    static let sourceOperations: NSDragOperation = [.copy, .move]
+    /// FinderAI folders can negotiate move or copy with each other. External
+    /// shelves such as Dropover should only ever receive a copy operation; they
+    /// are collecting a reference, not authorizing FinderAI to move the source.
+    static let localSourceOperations: NSDragOperation = [.copy, .move]
+    static let externalSourceOperations: NSDragOperation = [.copy]
+
+    static func pasteboardWriter(for url: URL) -> (any NSPasteboardWriting)? {
+        let item = NSPasteboardItem()
+        guard item.setString(
+            url.standardizedFileURL.absoluteString,
+            forType: .fileURL
+        ) else { return nil }
+        return item
+    }
 
     static func fileURLs(from pasteboard: NSPasteboard) -> [URL] {
         let options: [NSPasteboard.ReadingOptionKey: Any] = [
