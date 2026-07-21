@@ -22,10 +22,13 @@ DEST="/Applications/$APP_NAME"
 }
 
 if pgrep -x FinderAIWorkspace >/dev/null 2>&1; then
-    echo "Quitting the running app..."
-    osascript -e 'tell application id "com.shigenoburyuto.finderai.workspace" to quit' 2>/dev/null || \
-        killall FinderAIWorkspace 2>/dev/null || true
-    sleep 1
+    # Asking the app to quit can open its terminal-session confirmation sheet.
+    # `osascript` then waits forever, while falling back to `killall` destroys
+    # non-tmux shells and AI work. Replacing the on-disk bundle is safe on macOS:
+    # the current process keeps its already-open executable and the new copy is
+    # used after the user closes it normally.
+    echo "FinderAI is running; its windows and terminal sessions will stay open."
+    echo "The new version will be used the next time FinderAI starts."
 fi
 
 # The app used to install as "FinderAI Workspace.app"; leaving that behind
