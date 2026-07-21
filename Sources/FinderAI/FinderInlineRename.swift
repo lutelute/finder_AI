@@ -22,6 +22,35 @@ enum FinderLikeRenameGesture {
     }
 }
 
+/// Finder reserves Return for renaming the current item. Opening stays on a
+/// double-click or Command-Down, while Space keeps Quick Look. Keeping this
+/// policy in one place prevents list, column, and gallery from drifting apart.
+enum FinderLikeBrowserKeyAction: Equatable {
+    case rename
+    case quickLook
+    case forwardToAppKit
+}
+
+enum FinderLikeBrowserKeyboard {
+    static func action(
+        charactersIgnoringModifiers: String?,
+        modifierFlags: NSEvent.ModifierFlags
+    ) -> FinderLikeBrowserKeyAction {
+        let commandModifiers: NSEvent.ModifierFlags = [.shift, .control, .option, .command]
+        guard modifierFlags.intersection(commandModifiers).isEmpty else {
+            return .forwardToAppKit
+        }
+        switch charactersIgnoringModifiers {
+        case "\r", "\u{3}":
+            return .rename
+        case " ":
+            return .quickLook
+        default:
+            return .forwardToAppKit
+        }
+    }
+}
+
 /// Delays a potential rename by the system double-click interval. If another
 /// click arrives, views cancel this work and AppKit gets to perform its normal
 /// double-click action instead.
