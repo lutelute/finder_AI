@@ -204,8 +204,8 @@ final class DrawerContentViewController: NSViewController {
 
         configureIconButton(
             closeButton,
-            symbol: "trash",
-            accessibilityLabel: "選択中のセッションを終了"
+            symbol: "xmark.circle",
+            accessibilityLabel: "選択中のセッションを閉じる／終了"
         )
         closeButton.target = self
         closeButton.action = #selector(closeSession)
@@ -521,7 +521,7 @@ final class DrawerContentViewController: NSViewController {
         ))
         menu.addItem(.separator())
         menu.addItem(item(
-            "セッションを終了…",
+            "セッションを閉じる／終了…",
             action: #selector(terminateSessionFromMenu(_:))
         ))
         return menu
@@ -563,24 +563,70 @@ final class DrawerContentViewController: NSViewController {
 
     private func confirmTermination(of session: any ManagedTerminalSession) {
         guard session.isRunning else {
-            removeSession(session)
+            permanentlyRemoveSession(session, archiveTranscript: true)
             return
         }
         let alert = NSAlert()
-        alert.messageText = "実行中の\(session.kind.displayName)を終了しますか？"
+        alert.messageText = "実行中の\(session.kind.displayName)をどうしますか？"
         alert.informativeText = session.persistence != nil
-            ? "tmuxの永続セッションごと終了します。次回の再接続はできなくなります。"
-            : "FinderAIが開始したこのPTYプロセスだけを終了します。"
-        alert.addButton(withTitle: "終了")
+            ? "タブだけ隠せばtmuxを保持して後から戻せます。完全終了はtmux側も削除します。"
+            : "タブだけ隠せばFinderAI内で実行を続け、セッションセンターから戻せます。"
+        let archiveCheckbox = NSButton(
+            checkboxWithTitle: "完全終了前に現在の表示を回復用ログへ保存",
+            target: nil,
+            action: nil
+        )
+        archiveCheckbox.state = .on
+        alert.accessoryView = archiveCheckbox
+        // Safe continuation is first/default. Pressing Return can never kill a
+        // session; permanent termination requires clicking the second button.
+        alert.addButton(withTitle: "実行を続けてタブを隠す")
+        alert.addButton(withTitle: "完全に終了")
         alert.addButton(withTitle: "キャンセル")
+        let handleResponse: @MainActor (NSApplication.ModalResponse) -> Void = {
+            [weak self] response in
+            guard let self else { return }
+            switch response {
+            case .alertFirstButtonReturn:
+                self.hideSession(session)
+            case .alertSecondButtonReturn:
+                self.permanentlyRemoveSession(
+                    session,
+                    archiveTranscript: archiveCheckbox.state == .on
+                )
+            default:
+                break
+            }
+        }
         guard let window = view.window else {
-            if alert.runModal() == .alertFirstButtonReturn { removeSession(session) }
+            handleResponse(alert.runModal())
             return
         }
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard response == .alertFirstButtonReturn else { return }
-            self?.removeSession(session)
+        alert.beginSheetModal(for: window, completionHandler: handleResponse)
+    }
+
+    private func hideSession(_ session: any ManagedTerminalSession) {
+        sessionManager.hideFromTabs(session)
+        if activeSession?.id == session.id { activeSession = nil }
+        reloadSessions()
+    }
+
+    private func permanentlyRemoveSession(
+        _ session: any ManagedTerminalSession,
+        archiveTranscript: Bool
+    ) {
+        if archiveTranscript {
+            do {
+                _ = try SessionTranscriptExporter.archiveBeforeTermination(session)
+            } catch {
+                presentError(
+                    title: "終了を中止しました",
+                    message: "回復用のTerminal記録を保存できませんでした。\n\(error.localizedDescription)"
+                )
+                return
+            }
         }
+        removeSession(session)
     }
 
     private func removeSession(_ session: any ManagedTerminalSession) {

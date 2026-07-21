@@ -6,7 +6,8 @@ import Foundation
 
 /// SwiftTerm 1.14の`LocalProcess.terminate()`はprocess monitorを先にcancelするため、
 /// SIGTERMを無視するinteractive shellが後から終了すると`waitpid`されずzombieになる。
-/// FinderAI所有のPTY process groupへHUPを送り、猶予後はKILLして必ず回収する。
+/// FinderAI所有のPTY process groupへTERMを送り、十分な終了猶予を置く。それでも
+/// 残った場合だけKILLし、必ず回収する。
 @MainActor
 enum OwnedProcessTerminator {
     private static let reaperQueue = DispatchQueue(
@@ -14,19 +15,24 @@ enum OwnedProcessTerminator {
         qos: .utility
     )
 
-    static func terminate(_ process: LocalProcess) {
+    static func terminate(
+        _ process: LocalProcess,
+        gracePeriod: TimeInterval = 3
+    ) {
         let pid = process.shellPid
         process.terminate()
         guard pid > 1 else { return }
 
         reaperQueue.async {
-            signalProcessGroupAndLeader(pid: pid, signal: SIGHUP)
+            signalProcessGroupAndLeader(pid: pid, signal: SIGTERM)
             var status: Int32 = 0
-            for _ in 0..<50 {
+            let interval: useconds_t = 20_000
+            let attempts = max(1, Int((max(0, gracePeriod) * 1_000_000) / Double(interval)))
+            for _ in 0..<attempts {
                 let result = waitpid(pid, &status, WNOHANG)
                 if result == pid || (result == -1 && errno == ECHILD) { return }
                 if result == -1 && errno != EINTR { return }
-                usleep(10_000)
+                usleep(interval)
             }
 
             signalProcessGroupAndLeader(pid: pid, signal: SIGKILL)
