@@ -405,6 +405,7 @@ final class WorkspaceBrowserViewController: NSViewController {
 
     private var navigator: WorkspaceNavigator
     private let fileService = WorkspaceFileService()
+    private let fileClipboard: WorkspaceFileClipboard
     private let preferences: WorkspacePreferences
     private let watcher = DirectoryWatcher()
     private var allItems: [WorkspaceItem] = []
@@ -468,9 +469,11 @@ final class WorkspaceBrowserViewController: NSViewController {
     init(
         initialDirectory: URL,
         preferences: WorkspacePreferences = WorkspacePreferences(),
+        fileClipboard: WorkspaceFileClipboard = .shared,
         showsSidebar: Bool = true
     ) {
         self.preferences = preferences
+        self.fileClipboard = fileClipboard
         self.showsSidebar = showsSidebar
         navigator = WorkspaceNavigator(initialDirectory: initialDirectory)
         super.init(nibName: nil, bundle: nil)
@@ -724,8 +727,14 @@ final class WorkspaceBrowserViewController: NSViewController {
         galleryView.isSelectable = true
         galleryView.allowsMultipleSelection = true
         galleryView.registerForDraggedTypes([.fileURL])
-        galleryView.setDraggingSourceOperationMask(WorkspaceDragDrop.sourceOperations, forLocal: true)
-        galleryView.setDraggingSourceOperationMask(WorkspaceDragDrop.sourceOperations, forLocal: false)
+        galleryView.setDraggingSourceOperationMask(
+            WorkspaceDragDrop.localSourceOperations,
+            forLocal: true
+        )
+        galleryView.setDraggingSourceOperationMask(
+            WorkspaceDragDrop.externalSourceOperations,
+            forLocal: false
+        )
         galleryView.dataSource = self
         galleryView.delegate = self
         galleryView.register(
@@ -1013,8 +1022,14 @@ final class WorkspaceBrowserViewController: NSViewController {
         fileTable.target = self
         fileTable.doubleAction = #selector(openSelection)
         fileTable.registerForDraggedTypes([.fileURL])
-        fileTable.setDraggingSourceOperationMask(WorkspaceDragDrop.sourceOperations, forLocal: true)
-        fileTable.setDraggingSourceOperationMask(WorkspaceDragDrop.sourceOperations, forLocal: false)
+        fileTable.setDraggingSourceOperationMask(
+            WorkspaceDragDrop.localSourceOperations,
+            forLocal: true
+        )
+        fileTable.setDraggingSourceOperationMask(
+            WorkspaceDragDrop.externalSourceOperations,
+            forLocal: false
+        )
         fileTable.onOpen = { [weak self] in self?.openSelection() }
         fileTable.onQuickLook = { [weak self] in self?.toggleQuickLook() }
         fileTable.onRenameRequested = { [weak self] row in
@@ -1083,6 +1098,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         add("サイドバーにピン留め", #selector(togglePin))
         menu.addItem(.separator())
 
+        add("カット", #selector(cutSelection))
         add("コピー", #selector(copySelection))
         add("ペースト", #selector(pasteIntoCurrentFolder))
         add("複製", #selector(duplicateSelection))
@@ -1111,10 +1127,7 @@ final class WorkspaceBrowserViewController: NSViewController {
     }
 
     private var pasteboardHasFiles: Bool {
-        NSPasteboard.general.canReadObject(
-            forClasses: [NSURL.self],
-            options: [.urlReadingFileURLsOnly: true]
-        )
+        fileClipboard.canPaste(into: navigator.currentDirectory)
     }
 
     /// Rebuilt per open because the candidate apps depend on the file's type, and
@@ -1935,13 +1948,23 @@ final class WorkspaceBrowserViewController: NSViewController {
         }
     }
 
-    private func transferItems(_ sources: [URL], to destination: URL, copy: Bool) {
+    @discardableResult
+    private func transferItems(
+        _ sources: [URL],
+        to destination: URL,
+        copy: Bool
+    ) -> [(source: URL, destination: URL)]? {
         do {
             let results = try fileService.transfer(sources, to: destination, copy: copy)
             registerTransferUndo(results, copy: copy)
             reloadContents()
+            return results
         } catch {
-            presentError(title: "ファイルを移動できません", message: error.localizedDescription)
+            presentError(
+                title: copy ? "ファイルをコピーできません" : "ファイルを移動できません",
+                message: error.localizedDescription
+            )
+            return nil
         }
     }
 
@@ -2069,22 +2092,36 @@ final class WorkspaceBrowserViewController: NSViewController {
     @objc func copySelection() {
         let urls = selectedItems.map(\.url)
         guard !urls.isEmpty else { return }
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.writeObjects(urls.map { $0 as NSURL })
+        fileClipboard.write(urls, operation: .copy)
     }
 
-    /// Reads file URLs off the pasteboard, so a copy made in Finder pastes here.
-    @objc func pasteIntoCurrentFolder() {
-        let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
-        let urls = (NSPasteboard.general.readObjects(
-            forClasses: [NSURL.self],
-            options: options
-        ) as? [NSURL])?.map { $0 as URL } ?? []
+    @objc func cutSelection() {
+        let urls = selectedItems.map(\.url)
         guard !urls.isEmpty else { return }
-        // Pasting copies; the originals are somebody else's.
-        transferItems(urls, to: navigator.currentDirectory, copy: true)
+        fileClipboard.write(urls, operation: .move)
     }
+
+    /// Reads ordinary file URLs, so Finder copies paste here. A cut created by
+    /// this running FinderAI instance moves instead and is consumed after use.
+    @objc func pasteIntoCurrentFolder() {
+        guard let contents = fileClipboard.read(),
+              fileClipboard.canPaste(into: navigator.currentDirectory) else { return }
+        let copy = contents.operation == .copy
+        guard let results = transferItems(
+            contents.urls,
+            to: navigator.currentDirectory,
+            copy: copy
+        ) else { return }
+        if !copy {
+            fileClipboard.finishMove(with: results.map(\.destination))
+        }
+    }
+
+    // Standard edit actions. Keeping these on the responder chain means an
+    // active text editor or Terminal receives ⌘X/⌘C/⌘V before the browser does.
+    @objc func copy(_ sender: Any?) { copySelection() }
+    @objc func cut(_ sender: Any?) { cutSelection() }
+    @objc func paste(_ sender: Any?) { pasteIntoCurrentFolder() }
 
     @objc func duplicateSelection() {
         let urls = selectedItems.map(\.url)
@@ -2417,7 +2454,7 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
         pasteboardWriterForRow row: Int
     ) -> (any NSPasteboardWriting)? {
         guard tableView === fileTable, displayedItems.indices.contains(row) else { return nil }
-        return displayedItems[row].url as NSURL
+        return WorkspaceDragDrop.pasteboardWriter(for: displayedItems[row].url)
     }
 
     func tableView(
@@ -2546,7 +2583,7 @@ extension WorkspaceBrowserViewController: NSCollectionViewDataSource, NSCollecti
         pasteboardWriterForItemAt indexPath: IndexPath
     ) -> (any NSPasteboardWriting)? {
         guard displayedItems.indices.contains(indexPath.item) else { return nil }
-        return displayedItems[indexPath.item].url as NSURL
+        return WorkspaceDragDrop.pasteboardWriter(for: displayedItems[indexPath.item].url)
     }
 
     func collectionView(
@@ -2675,6 +2712,7 @@ extension WorkspaceBrowserViewController: NSMenuDelegate {
         menu.item(withTitle: "クイックルック")?.isEnabled = selectionCount > 0
         menu.item(withTitle: "Finderで表示")?.isEnabled = true
         menu.item(withTitle: "情報を見る")?.isEnabled = true
+        menu.item(withTitle: "カット")?.isEnabled = selectionCount > 0
         menu.item(withTitle: "コピー")?.isEnabled = selectionCount > 0
         menu.item(withTitle: "複製")?.isEnabled = selectionCount > 0
         menu.item(withTitle: "エイリアスを作成")?.isEnabled = selectionCount > 0
@@ -2695,6 +2733,19 @@ extension WorkspaceBrowserViewController: NSMenuDelegate {
         pinItem?.title = preferences.pins.contains(target)
             ? "サイドバーのピン留めを解除"
             : "サイドバーにピン留め"
+    }
+}
+
+extension WorkspaceBrowserViewController: NSMenuItemValidation {
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(copy(_:)), #selector(cut(_:)):
+            return !selectedItems.isEmpty
+        case #selector(paste(_:)):
+            return fileClipboard.canPaste(into: navigator.currentDirectory)
+        default:
+            return true
+        }
     }
 }
 

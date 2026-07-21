@@ -6,6 +6,8 @@ import Testing
 struct WorkspaceDragDropTests {
     @Test("Option chooses copy and a plain drag prefers move")
     func operationFollowsFinderModifiers() {
+        #expect(WorkspaceDragDrop.localSourceOperations == [.copy, .move])
+        #expect(WorkspaceDragDrop.externalSourceOperations == .copy)
         #expect(WorkspaceDragDrop.operation(
             allowedOperations: [.copy, .move],
             optionKeyPressed: false
@@ -53,7 +55,9 @@ struct WorkspaceDragDropTests {
         let first = URL(fileURLWithPath: "/tmp/日本語 file.txt")
         let second = URL(fileURLWithPath: "/tmp/folder", isDirectory: true)
         pasteboard.clearContents()
-        #expect(pasteboard.writeObjects([first as NSURL, second as NSURL]))
+        let writers = [first, second].compactMap(WorkspaceDragDrop.pasteboardWriter(for:))
+        #expect(pasteboard.writeObjects(writers))
+        #expect(pasteboard.types?.contains(.fileURL) == true)
 
         #expect(WorkspaceDragDrop.fileURLs(from: pasteboard) == [
             first.standardizedFileURL,

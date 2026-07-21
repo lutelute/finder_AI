@@ -232,8 +232,14 @@ final class WorkspaceColumnView: NSView {
         table.target = self
         table.doubleAction = #selector(openDoubleClicked(_:))
         table.registerForDraggedTypes([.fileURL])
-        table.setDraggingSourceOperationMask(WorkspaceDragDrop.sourceOperations, forLocal: true)
-        table.setDraggingSourceOperationMask(WorkspaceDragDrop.sourceOperations, forLocal: false)
+        table.setDraggingSourceOperationMask(
+            WorkspaceDragDrop.localSourceOperations,
+            forLocal: true
+        )
+        table.setDraggingSourceOperationMask(
+            WorkspaceDragDrop.externalSourceOperations,
+            forLocal: false
+        )
         table.contextMenuProvider = { [weak self] in self?.contextMenuProvider?() }
         table.onBecameActive = { [weak self, weak column] in
             self?.activeColumn = column
@@ -357,7 +363,7 @@ extension WorkspaceColumnView: NSTableViewDataSource, NSTableViewDelegate {
     ) -> (any NSPasteboardWriting)? {
         guard let column = columns.first(where: { $0.table === tableView }),
               column.items.indices.contains(row) else { return nil }
-        return column.items[row].url as NSURL
+        return WorkspaceDragDrop.pasteboardWriter(for: column.items[row].url)
     }
 
     func tableView(
