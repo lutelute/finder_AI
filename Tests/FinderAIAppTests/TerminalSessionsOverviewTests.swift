@@ -179,4 +179,53 @@ struct TerminalSessionsOverviewTests {
         #expect(rows[4].kindLabel == "Codex")
         #expect(rows[4].kind == .codex)
     }
+
+    @Test("close plans freeze exact IDs instead of mutable row indexes")
+    func closePlan() {
+        let inAppID = UUID()
+        let recordID = UUID()
+        let rows = [
+            TerminalSessionRowModel(
+                target: .inApp(inAppID),
+                recordID: nil,
+                kind: .codex,
+                kindLabel: "Codex",
+                folderPath: "/tmp/a",
+                stateLabel: "表示中",
+                category: .active,
+                lastActivityAt: nil,
+                isPinned: false
+            ),
+            TerminalSessionRowModel(
+                target: .detachedTmux("finderai-shell-aaaaaaaaaaaa"),
+                recordID: nil,
+                kind: .shell,
+                kindLabel: "Shell",
+                folderPath: "/tmp/b",
+                stateLabel: "待機中（未接続）",
+                category: .recoverable,
+                lastActivityAt: nil,
+                isPinned: false
+            ),
+            TerminalSessionRowModel(
+                target: .record(recordID),
+                recordID: recordID,
+                kind: .claude,
+                kindLabel: "Claude",
+                folderPath: "/tmp/c",
+                stateLabel: "前回終了",
+                category: .history,
+                lastActivityAt: nil,
+                isPinned: false
+            )
+        ]
+
+        let plan = TerminalSessionClosePlan(rows: rows)
+
+        #expect(plan.inAppSessionIDs == [inAppID])
+        #expect(plan.detachedTmuxNames == ["finderai-shell-aaaaaaaaaaaa"])
+        #expect(plan.recordIDs == [recordID])
+        #expect(plan.containsInAppSessions)
+        #expect(!plan.containsOnlyRecords)
+    }
 }

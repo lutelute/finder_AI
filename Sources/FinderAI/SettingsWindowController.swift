@@ -83,7 +83,7 @@ final class SettingsWindowController: NSWindowController {
         loggingCheckbox.title = "出力をログに保存"
         loggingCheckbox.target = self
         loggingCheckbox.action = #selector(toggleLogging)
-        loggingCaption.stringValue = "これ以降に開始するセッションの出力（コマンドと表示内容を含む）をローカルに保存し、14日で自動削除します。クラッシュ直前の状況を後から読むための保険です。"
+        loggingCaption.stringValue = "これ以降に開始するセッションの出力（コマンドと表示内容を含む）をローカルに保存します。完全終了時に選んだ回復用記録も同じフォルダに置かれ、どちらも14日で自動削除します。"
 
         [persistCaption, loggingCaption, commitLabel, installationLabel].forEach {
             $0.font = .systemFont(ofSize: 11)

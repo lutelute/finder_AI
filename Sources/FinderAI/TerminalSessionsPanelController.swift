@@ -21,6 +21,44 @@ struct TerminalSessionRowModel: Equatable {
     let isPinned: Bool
 }
 
+/// Freezes exactly what the user selected before an alert is shown. Table rows
+/// may refresh while tmux reconciliation runs, so destructive work must never
+/// be recalculated from row indexes after confirmation.
+struct TerminalSessionClosePlan: Equatable {
+    let inAppSessionIDs: [UUID]
+    let detachedTmuxNames: [String]
+    let recordIDs: [UUID]
+
+    init(rows: [TerminalSessionRowModel]) {
+        var inAppSessionIDs: [UUID] = []
+        var detachedTmuxNames: [String] = []
+        var recordIDs: [UUID] = []
+        for row in rows {
+            switch row.target {
+            case .inApp(let id):
+                inAppSessionIDs.append(id)
+            case .detachedTmux(let name):
+                detachedTmuxNames.append(name)
+            case .record(let id):
+                recordIDs.append(id)
+            }
+        }
+        self.inAppSessionIDs = inAppSessionIDs
+        self.detachedTmuxNames = detachedTmuxNames
+        self.recordIDs = recordIDs
+    }
+
+    var isEmpty: Bool {
+        inAppSessionIDs.isEmpty && detachedTmuxNames.isEmpty && recordIDs.isEmpty
+    }
+
+    var containsInAppSessions: Bool { !inAppSessionIDs.isEmpty }
+
+    var containsOnlyRecords: Bool {
+        !recordIDs.isEmpty && inAppSessionIDs.isEmpty && detachedTmuxNames.isEmpty
+    }
+}
+
 enum TerminalSessionRowCategory: Int, Equatable {
     case active
     case background
@@ -364,12 +402,12 @@ final class TerminalSessionsPanelController: NSWindowController {
         pinButton.target = self
         pinButton.action = #selector(togglePinSelected)
 
-        killButton.title = "選択を終了"
+        killButton.title = "選択を閉じる…"
         killButton.bezelStyle = .rounded
         killButton.target = self
         killButton.action = #selector(killSelected)
 
-        killAllButton.title = "すべて終了"
+        killAllButton.title = "すべて整理…"
         killAllButton.bezelStyle = .rounded
         killAllButton.target = self
         killAllButton.action = #selector(killAll)
@@ -489,7 +527,7 @@ final class TerminalSessionsPanelController: NSWindowController {
         killButton.title = !selected.isEmpty && selected.allSatisfy {
             if case .record = $0.target { return true }
             return false
-        } ? "記録を削除" : "選択を終了"
+        } ? "記録を削除…" : "選択を閉じる…"
         killAllButton.isEnabled = !rows.isEmpty
     }
 
@@ -589,43 +627,103 @@ final class TerminalSessionsPanelController: NSWindowController {
     }
 
     private func confirmAndKill(_ targets: [TerminalSessionRowModel]) {
-        guard !targets.isEmpty, let window else { return }
-        let recordsOnly = targets.allSatisfy {
-            if case .record = $0.target { return true }
-            return false
+        let plan = TerminalSessionClosePlan(rows: targets)
+        guard !plan.isEmpty, let window else { return }
+        if plan.containsOnlyRecords {
+            let alert = NSAlert()
+            alert.messageText = "セッション記録\(plan.recordIDs.count)件を削除しますか？"
+            alert.informativeText = "履歴だけを削除します。フォルダや保存済みログは削除しません。"
+            // Cancellation is first/default so Return can never delete records.
+            alert.addButton(withTitle: "キャンセル")
+            alert.addButton(withTitle: "記録を削除")
+            alert.beginSheetModal(for: window) { [weak self] response in
+                guard response == .alertSecondButtonReturn else { return }
+                self?.terminatePermanently(plan, archiveTranscripts: false)
+            }
+            return
         }
+
         let alert = NSAlert()
-        alert.messageText = recordsOnly
-            ? "セッション記録\(targets.count)件を削除しますか？"
-            : "セッション\(targets.count)件を終了しますか？"
-        alert.informativeText = recordsOnly
-            ? "履歴だけを削除します。フォルダや保存済みログは削除しません。"
-            : "実行中のプロセスは終了します。永続セッションはtmux側ごと終了し、再接続できなくなります。"
-        alert.addButton(withTitle: recordsOnly ? "記録を削除" : "終了")
-        alert.addButton(withTitle: "キャンセル")
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard response == .alertFirstButtonReturn, let self else { return }
-            self.kill(targets)
+        if plan.containsInAppSessions {
+            alert.messageText = "選択したセッションをどうしますか？"
+            alert.informativeText = "「実行を続けて非表示」はプロセスを終了せず、セッションセンターから戻せます。"
+                + "完全終了すると選択した通常PTYを停止し、選択に含まれるtmux実体と履歴を削除します。"
+                + (plan.detachedTmuxNames.isEmpty && plan.recordIDs.isEmpty
+                    ? ""
+                    : "非表示を選ぶと、tmuxと履歴の選択項目には何も行いません。")
+            let archiveCheckbox = NSButton(
+                checkboxWithTitle: "完全終了前に現在の表示を回復用ログへ保存",
+                target: nil,
+                action: nil
+            )
+            archiveCheckbox.state = .on
+            alert.accessoryView = archiveCheckbox
+            alert.addButton(withTitle: "実行を続けて非表示")
+            alert.addButton(withTitle: "完全に終了")
+            alert.addButton(withTitle: "キャンセル")
+            alert.beginSheetModal(for: window) { [weak self] response in
+                guard let self else { return }
+                switch response {
+                case .alertFirstButtonReturn:
+                    self.keepRunning(plan)
+                case .alertSecondButtonReturn:
+                    self.terminatePermanently(
+                        plan,
+                        archiveTranscripts: archiveCheckbox.state == .on
+                    )
+                default:
+                    break
+                }
+            }
+        } else {
+            alert.messageText = "選択したtmuxセッションを完全に終了しますか？"
+            alert.informativeText = "tmux側の実体を削除するため再接続できなくなります。この操作は元に戻せません。"
+            // Detached tmux has nothing left to hide. Keep cancellation as the
+            // default and require an explicit destructive click.
+            alert.addButton(withTitle: "キャンセル")
+            alert.addButton(withTitle: "完全に終了")
+            alert.beginSheetModal(for: window) { [weak self] response in
+                guard response == .alertSecondButtonReturn else { return }
+                self?.terminatePermanently(plan, archiveTranscripts: false)
+            }
         }
     }
 
-    private func kill(_ targets: [TerminalSessionRowModel]) {
-        var tmuxNames: [String] = []
-        for row in targets {
-            switch row.target {
-            case .inApp(let id):
-                if let session = sessionManager.allSessions.first(where: { $0.id == id }) {
-                    sessionManager.remove(session)
+    private func keepRunning(_ plan: TerminalSessionClosePlan) {
+        for id in plan.inAppSessionIDs {
+            guard let session = sessionManager.allSessions.first(where: { $0.id == id }) else {
+                continue
+            }
+            sessionManager.hideFromTabs(session)
+        }
+    }
+
+    private func terminatePermanently(
+        _ plan: TerminalSessionClosePlan,
+        archiveTranscripts: Bool
+    ) {
+        let sessions = plan.inAppSessionIDs.compactMap { id in
+            sessionManager.allSessions.first { $0.id == id }
+        }
+        if archiveTranscripts {
+            do {
+                for session in sessions {
+                    _ = try SessionTranscriptExporter.archiveBeforeTermination(session)
                 }
-            case .detachedTmux(let name):
-                tmuxNames.append(name)
-            case .record(let id):
-                sessionManager.forgetSessionRecord(id: id)
+            } catch {
+                presentError(
+                    title: "終了を中止しました",
+                    message: "回復用のTerminal記録を保存できませんでした。\n\(error.localizedDescription)"
+                )
+                return
             }
         }
-        guard !tmuxNames.isEmpty else { return }
+
+        sessions.forEach(sessionManager.remove)
+        plan.recordIDs.forEach(sessionManager.forgetSessionRecord)
+        guard !plan.detachedTmuxNames.isEmpty else { return }
         let manager = sessionManager
-        Task { await manager.killPersistentSessions(named: tmuxNames) }
+        Task { await manager.killPersistentSessions(named: plan.detachedTmuxNames) }
     }
 
     private func presentError(title: String, message: String) {
