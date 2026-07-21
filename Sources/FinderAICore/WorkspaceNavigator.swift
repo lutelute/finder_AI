@@ -45,6 +45,44 @@ public struct WorkspaceNavigator: Equatable, Sendable {
         navigate(to: parent)
         return parent
     }
+
+    /// Keeps navigation valid when a displayed ancestor folder is renamed.
+    /// History entries under that folder move with it as well; retaining their
+    /// old paths would make Back or Forward lead to locations that no longer
+    /// exist.
+    @discardableResult
+    public mutating func relocatePathPrefix(from source: URL, to destination: URL) -> Bool {
+        let oldCurrent = currentDirectory
+        currentDirectory = Self.replacingPathPrefix(
+            in: currentDirectory,
+            from: source,
+            to: destination
+        )
+        backHistory = backHistory.map {
+            Self.replacingPathPrefix(in: $0, from: source, to: destination)
+        }
+        forwardHistory = forwardHistory.map {
+            Self.replacingPathPrefix(in: $0, from: source, to: destination)
+        }
+        return currentDirectory != oldCurrent
+    }
+
+    private static func replacingPathPrefix(
+        in target: URL,
+        from source: URL,
+        to destination: URL
+    ) -> URL {
+        let targetComponents = target.standardizedFileURL.pathComponents
+        let sourceComponents = source.standardizedFileURL.pathComponents
+        guard targetComponents.starts(with: sourceComponents) else {
+            return target.standardizedFileURL
+        }
+        return targetComponents.dropFirst(sourceComponents.count).reduce(
+            destination.standardizedFileURL
+        ) { partial, component in
+            partial.appendingPathComponent(component, isDirectory: true)
+        }.standardizedFileURL
+    }
 }
 
 public enum WorkspaceNameValidator {
