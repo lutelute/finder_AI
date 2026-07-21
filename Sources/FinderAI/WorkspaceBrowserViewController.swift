@@ -178,6 +178,7 @@ private final class WorkspaceFileTableView: NSTableView {
     var onQuickLook: (() -> Void)?
     var onRenameRequested: ((Int) -> Void)?
     private let renameScheduler = FinderLikeRenameScheduler()
+    private var dragOccurred = false
 
     override func keyDown(with event: NSEvent) {
         renameScheduler.cancel()
@@ -193,6 +194,7 @@ private final class WorkspaceFileTableView: NSTableView {
 
     override func mouseDown(with event: NSEvent) {
         renameScheduler.cancel()
+        dragOccurred = false
         let point = convert(event.locationInWindow, from: nil)
         let row = self.row(at: point)
         let column = self.column(at: point)
@@ -212,7 +214,7 @@ private final class WorkspaceFileTableView: NSTableView {
         )
 
         super.mouseDown(with: event)
-        guard shouldSchedule,
+        guard !dragOccurred, shouldSchedule,
               selectedRowIndexes == IndexSet(integer: row) else { return }
         renameScheduler.schedule { [weak self] in
             guard let self,
@@ -222,8 +224,14 @@ private final class WorkspaceFileTableView: NSTableView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        dragOccurred = true
         renameScheduler.cancel()
         super.mouseDragged(with: event)
+    }
+
+    func draggingSessionWillBegin() {
+        dragOccurred = true
+        renameScheduler.cancel()
     }
 
     private func nameCell(atRow row: Int, column: Int) -> WorkspaceNameCellView? {
@@ -240,6 +248,7 @@ private final class WorkspaceGalleryCollectionView: NSCollectionView {
     var onQuickLook: (() -> Void)?
     var onRenameRequested: ((IndexPath) -> Void)?
     private let renameScheduler = FinderLikeRenameScheduler()
+    private var dragOccurred = false
 
     override func keyDown(with event: NSEvent) {
         renameScheduler.cancel()
@@ -252,6 +261,7 @@ private final class WorkspaceGalleryCollectionView: NSCollectionView {
 
     override func mouseDown(with event: NSEvent) {
         renameScheduler.cancel()
+        dragOccurred = false
         let point = convert(event.locationInWindow, from: nil)
         let indexPath = indexPathForItem(at: point)
         let wasSelected = indexPath.map(selectionIndexPaths.contains) ?? false
@@ -268,7 +278,7 @@ private final class WorkspaceGalleryCollectionView: NSCollectionView {
         if event.clickCount == 2 {
             renameScheduler.cancel()
             onOpen?()
-        } else if shouldSchedule, let indexPath,
+        } else if !dragOccurred, shouldSchedule, let indexPath,
                   selectionIndexPaths == [indexPath] {
             renameScheduler.schedule { [weak self] in
                 guard let self, self.selectionIndexPaths == [indexPath] else { return }
@@ -278,8 +288,14 @@ private final class WorkspaceGalleryCollectionView: NSCollectionView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        dragOccurred = true
         renameScheduler.cancel()
         super.mouseDragged(with: event)
+    }
+
+    func draggingSessionWillBegin() {
+        dragOccurred = true
+        renameScheduler.cancel()
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -624,6 +640,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         sidebarTable.delegate = self
         sidebarTable.dataSource = self
         sidebarTable.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("sidebar")))
+        sidebarTable.registerForDraggedTypes([.fileURL])
         scroll.documentView = sidebarTable
 
         [title, scroll].forEach {
@@ -707,6 +724,8 @@ final class WorkspaceBrowserViewController: NSViewController {
         galleryView.isSelectable = true
         galleryView.allowsMultipleSelection = true
         galleryView.registerForDraggedTypes([.fileURL])
+        galleryView.setDraggingSourceOperationMask(WorkspaceDragDrop.sourceOperations, forLocal: true)
+        galleryView.setDraggingSourceOperationMask(WorkspaceDragDrop.sourceOperations, forLocal: false)
         galleryView.dataSource = self
         galleryView.delegate = self
         galleryView.register(
@@ -765,6 +784,11 @@ final class WorkspaceBrowserViewController: NSViewController {
         columnView.onSelectionChange = { [weak self] _ in self?.updateStatus() }
         columnView.onRename = { [weak self] item, name in
             self?.renameItem(at: item.url, to: name)
+        }
+        columnView.onTransfer = { [weak self] sources, destination, copy in
+            guard let self else { return }
+            self.transferItems(sources, to: destination, copy: copy)
+            self.columnView.reload(directory: destination)
         }
         columnView.contextMenuProvider = { [weak self] in self?.fileTable.menu }
     }
@@ -989,6 +1013,8 @@ final class WorkspaceBrowserViewController: NSViewController {
         fileTable.target = self
         fileTable.doubleAction = #selector(openSelection)
         fileTable.registerForDraggedTypes([.fileURL])
+        fileTable.setDraggingSourceOperationMask(WorkspaceDragDrop.sourceOperations, forLocal: true)
+        fileTable.setDraggingSourceOperationMask(WorkspaceDragDrop.sourceOperations, forLocal: false)
         fileTable.onOpen = { [weak self] in self?.openSelection() }
         fileTable.onQuickLook = { [weak self] in self?.toggleQuickLook() }
         fileTable.onRenameRequested = { [weak self] row in
@@ -2396,17 +2422,38 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
 
     func tableView(
         _ tableView: NSTableView,
+        draggingSession session: NSDraggingSession,
+        willBeginAt screenPoint: NSPoint,
+        forRowIndexes rowIndexes: IndexSet
+    ) {
+        if tableView === fileTable { fileTable.draggingSessionWillBegin() }
+    }
+
+    func tableView(
+        _ tableView: NSTableView,
         validateDrop info: any NSDraggingInfo,
         proposedRow row: Int,
         proposedDropOperation dropOperation: NSTableView.DropOperation
     ) -> NSDragOperation {
-        guard tableView === fileTable, !draggedFileURLs(from: info).isEmpty else { return [] }
+        let sources = WorkspaceDragDrop.fileURLs(from: info.draggingPasteboard)
+        if tableView === sidebarTable {
+            guard let destination = sidebarDropDestination(at: row) else { return [] }
+            let operation = dragOperation(for: info, sources: sources, destination: destination)
+            guard !operation.isEmpty else { return [] }
+            tableView.setDropRow(row, dropOperation: .on)
+            return operation
+        }
+
+        guard tableView === fileTable else { return [] }
+        let destination: URL
         if displayedItems.indices.contains(row), displayedItems[row].isDirectory {
+            destination = displayedItems[row].url
             tableView.setDropRow(row, dropOperation: .on)
         } else {
+            destination = navigator.currentDirectory
             tableView.setDropRow(-1, dropOperation: .on)
         }
-        return NSEvent.modifierFlags.contains(.option) ? .copy : .move
+        return dragOperation(for: info, sources: sources, destination: destination)
     }
 
     func tableView(
@@ -2415,22 +2462,44 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
         row: Int,
         dropOperation: NSTableView.DropOperation
     ) -> Bool {
-        let sources = draggedFileURLs(from: info)
-        guard !sources.isEmpty else { return false }
-        let destination = displayedItems.indices.contains(row) && displayedItems[row].isDirectory
-            ? displayedItems[row].url
-            : navigator.currentDirectory
-        transferItems(sources, to: destination, copy: NSEvent.modifierFlags.contains(.option))
+        let sources = WorkspaceDragDrop.fileURLs(from: info.draggingPasteboard)
+        let destination: URL
+        if tableView === sidebarTable {
+            guard let sidebarDestination = sidebarDropDestination(at: row) else { return false }
+            destination = sidebarDestination
+        } else if tableView === fileTable {
+            destination = displayedItems.indices.contains(row) && displayedItems[row].isDirectory
+                ? displayedItems[row].url
+                : navigator.currentDirectory
+        } else {
+            return false
+        }
+        let operation = dragOperation(for: info, sources: sources, destination: destination)
+        guard !operation.isEmpty else { return false }
+        transferItems(sources, to: destination, copy: operation == .copy)
         return true
     }
 
-    private func draggedFileURLs(from info: any NSDraggingInfo) -> [URL] {
-        let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
-        let objects = info.draggingPasteboard.readObjects(
-            forClasses: [NSURL.self],
-            options: options
-        ) as? [NSURL] ?? []
-        return objects.map { $0 as URL }
+    private func dragOperation(
+        for info: any NSDraggingInfo,
+        sources: [URL],
+        destination: URL
+    ) -> NSDragOperation {
+        let operation = WorkspaceDragDrop.operation(
+            allowedOperations: info.draggingSourceOperationMask,
+            optionKeyPressed: NSEvent.modifierFlags.contains(.option)
+        )
+        return WorkspaceDragDrop.allows(
+            sources: sources,
+            destination: destination,
+            operation: operation
+        ) ? operation : []
+    }
+
+    private func sidebarDropDestination(at row: Int) -> URL? {
+        guard sidebarRows.indices.contains(row),
+              case .item(let item) = sidebarRows[row] else { return nil }
+        return item.url
     }
 
     private static let dateFormatter: DateFormatter = {
@@ -2478,6 +2547,57 @@ extension WorkspaceBrowserViewController: NSCollectionViewDataSource, NSCollecti
     ) -> (any NSPasteboardWriting)? {
         guard displayedItems.indices.contains(indexPath.item) else { return nil }
         return displayedItems[indexPath.item].url as NSURL
+    }
+
+    func collectionView(
+        _ collectionView: NSCollectionView,
+        draggingSession session: NSDraggingSession,
+        willBeginAt screenPoint: NSPoint,
+        forItemsAt indexPaths: Set<IndexPath>
+    ) {
+        galleryView.draggingSessionWillBegin()
+    }
+
+    func collectionView(
+        _ collectionView: NSCollectionView,
+        validateDrop draggingInfo: any NSDraggingInfo,
+        proposedIndexPath proposedDropIndexPath: AutoreleasingUnsafeMutablePointer<NSIndexPath>,
+        dropOperation proposedDropOperation: UnsafeMutablePointer<NSCollectionView.DropOperation>
+    ) -> NSDragOperation {
+        let indexPath = proposedDropIndexPath.pointee as IndexPath
+        let destination: URL
+        if displayedItems.indices.contains(indexPath.item),
+           displayedItems[indexPath.item].isDirectory {
+            destination = displayedItems[indexPath.item].url
+            proposedDropOperation.pointee = .on
+        } else {
+            destination = navigator.currentDirectory
+            proposedDropOperation.pointee = .before
+        }
+        let sources = WorkspaceDragDrop.fileURLs(from: draggingInfo.draggingPasteboard)
+        return dragOperation(for: draggingInfo, sources: sources, destination: destination)
+    }
+
+    func collectionView(
+        _ collectionView: NSCollectionView,
+        acceptDrop draggingInfo: any NSDraggingInfo,
+        indexPath: IndexPath,
+        dropOperation: NSCollectionView.DropOperation
+    ) -> Bool {
+        let destination = dropOperation == .on
+            && displayedItems.indices.contains(indexPath.item)
+            && displayedItems[indexPath.item].isDirectory
+            ? displayedItems[indexPath.item].url
+            : navigator.currentDirectory
+        let sources = WorkspaceDragDrop.fileURLs(from: draggingInfo.draggingPasteboard)
+        let operation = dragOperation(
+            for: draggingInfo,
+            sources: sources,
+            destination: destination
+        )
+        guard !operation.isEmpty else { return false }
+        transferItems(sources, to: destination, copy: operation == .copy)
+        return true
     }
 
     func collectionView(

@@ -7,9 +7,11 @@ private final class WorkspaceColumnTableView: NSTableView {
     var onRenameRequested: ((Int) -> Void)?
     var contextMenuProvider: (() -> NSMenu?)?
     private let renameScheduler = FinderLikeRenameScheduler()
+    private var dragOccurred = false
 
     override func mouseDown(with event: NSEvent) {
         renameScheduler.cancel()
+        dragOccurred = false
         onBecameActive?()
         let point = convert(event.locationInWindow, from: nil)
         let row = self.row(at: point)
@@ -28,7 +30,7 @@ private final class WorkspaceColumnTableView: NSTableView {
         )
 
         super.mouseDown(with: event)
-        guard shouldSchedule,
+        guard !dragOccurred, shouldSchedule,
               selectedRowIndexes == IndexSet(integer: row) else { return }
         renameScheduler.schedule { [weak self] in
             guard let self,
@@ -38,8 +40,14 @@ private final class WorkspaceColumnTableView: NSTableView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        dragOccurred = true
         renameScheduler.cancel()
         super.mouseDragged(with: event)
+    }
+
+    func draggingSessionWillBegin() {
+        dragOccurred = true
+        renameScheduler.cancel()
     }
 
     override func keyDown(with event: NSEvent) {
@@ -74,6 +82,7 @@ final class WorkspaceColumnView: NSView {
     var onOpenFile: ((URL) -> Void)?
     var onSelectionChange: (([WorkspaceItem]) -> Void)?
     var onRename: ((WorkspaceItem, String) -> Void)?
+    var onTransfer: (([URL], URL, Bool) -> Void)?
     var contextMenuProvider: (() -> NSMenu?)?
 
     private let scroll = NSScrollView()
@@ -194,6 +203,13 @@ final class WorkspaceColumnView: NSView {
         load(column)
     }
 
+    func reload(directory: URL) {
+        guard let column = columns.first(where: {
+            $0.url == directory.standardizedFileURL
+        }) else { return }
+        load(column)
+    }
+
     private func removeLastColumn() {
         guard let column = columns.popLast() else { return }
         if activeColumn === column { activeColumn = columns.last }
@@ -216,6 +232,8 @@ final class WorkspaceColumnView: NSView {
         table.target = self
         table.doubleAction = #selector(openDoubleClicked(_:))
         table.registerForDraggedTypes([.fileURL])
+        table.setDraggingSourceOperationMask(WorkspaceDragDrop.sourceOperations, forLocal: true)
+        table.setDraggingSourceOperationMask(WorkspaceDragDrop.sourceOperations, forLocal: false)
         table.contextMenuProvider = { [weak self] in self?.contextMenuProvider?() }
         table.onBecameActive = { [weak self, weak column] in
             self?.activeColumn = column
@@ -331,6 +349,76 @@ final class WorkspaceColumnView: NSView {
 extension WorkspaceColumnView: NSTableViewDataSource, NSTableViewDelegate {
     func numberOfRows(in tableView: NSTableView) -> Int {
         columns.first { $0.table === tableView }?.items.count ?? 0
+    }
+
+    func tableView(
+        _ tableView: NSTableView,
+        pasteboardWriterForRow row: Int
+    ) -> (any NSPasteboardWriting)? {
+        guard let column = columns.first(where: { $0.table === tableView }),
+              column.items.indices.contains(row) else { return nil }
+        return column.items[row].url as NSURL
+    }
+
+    func tableView(
+        _ tableView: NSTableView,
+        draggingSession session: NSDraggingSession,
+        willBeginAt screenPoint: NSPoint,
+        forRowIndexes rowIndexes: IndexSet
+    ) {
+        (tableView as? WorkspaceColumnTableView)?.draggingSessionWillBegin()
+    }
+
+    func tableView(
+        _ tableView: NSTableView,
+        validateDrop info: any NSDraggingInfo,
+        proposedRow row: Int,
+        proposedDropOperation dropOperation: NSTableView.DropOperation
+    ) -> NSDragOperation {
+        guard let column = columns.first(where: { $0.table === tableView }) else { return [] }
+        let destination: URL
+        if column.items.indices.contains(row), column.items[row].isDirectory {
+            destination = column.items[row].url
+            tableView.setDropRow(row, dropOperation: .on)
+        } else {
+            destination = column.url
+            tableView.setDropRow(-1, dropOperation: .on)
+        }
+        let sources = WorkspaceDragDrop.fileURLs(from: info.draggingPasteboard)
+        return dragOperation(for: info, sources: sources, destination: destination)
+    }
+
+    func tableView(
+        _ tableView: NSTableView,
+        acceptDrop info: any NSDraggingInfo,
+        row: Int,
+        dropOperation: NSTableView.DropOperation
+    ) -> Bool {
+        guard let column = columns.first(where: { $0.table === tableView }) else { return false }
+        let destination = column.items.indices.contains(row) && column.items[row].isDirectory
+            ? column.items[row].url
+            : column.url
+        let sources = WorkspaceDragDrop.fileURLs(from: info.draggingPasteboard)
+        let operation = dragOperation(for: info, sources: sources, destination: destination)
+        guard !operation.isEmpty else { return false }
+        onTransfer?(sources, destination, operation == .copy)
+        return true
+    }
+
+    private func dragOperation(
+        for info: any NSDraggingInfo,
+        sources: [URL],
+        destination: URL
+    ) -> NSDragOperation {
+        let operation = WorkspaceDragDrop.operation(
+            allowedOperations: info.draggingSourceOperationMask,
+            optionKeyPressed: NSEvent.modifierFlags.contains(.option)
+        )
+        return WorkspaceDragDrop.allows(
+            sources: sources,
+            destination: destination,
+            operation: operation
+        ) ? operation : []
     }
 
     func tableView(

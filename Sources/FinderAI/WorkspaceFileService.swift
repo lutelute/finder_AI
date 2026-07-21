@@ -54,10 +54,17 @@ struct WorkspaceFileService {
             ) else {
                 throw WorkspaceFileOperationError.sourceMissing(source.lastPathComponent)
             }
-            let destination = directory.appendingPathComponent(
+            var destination = directory.appendingPathComponent(
                 source.lastPathComponent,
                 isDirectory: sourceIsDirectory.boolValue
             ).standardizedFileURL
+            if copy, source == destination {
+                destination = availableDuplicateDestination(
+                    for: source,
+                    isDirectory: sourceIsDirectory.boolValue,
+                    reserved: plannedDestinations
+                )
+            }
             guard source != destination else {
                 throw WorkspaceFileOperationError.sameDirectory
             }
@@ -84,6 +91,32 @@ struct WorkspaceFileService {
             }
         }
         return operations.map { (source: $0.0, destination: $0.1) }
+    }
+
+    private func availableDuplicateDestination(
+        for source: URL,
+        isDirectory: Bool,
+        reserved: Set<URL>
+    ) -> URL {
+        let directory = source.deletingLastPathComponent()
+        let ext = isDirectory ? "" : source.pathExtension
+        let stem = ext.isEmpty
+            ? source.lastPathComponent
+            : source.deletingPathExtension().lastPathComponent
+
+        func candidate(_ suffix: String) -> URL {
+            let name = ext.isEmpty ? "\(stem)\(suffix)" : "\(stem)\(suffix).\(ext)"
+            return directory.appendingPathComponent(name, isDirectory: isDirectory)
+                .standardizedFileURL
+        }
+
+        var destination = candidate(" のコピー")
+        var index = 2
+        while fileManager.fileExists(atPath: destination.path) || reserved.contains(destination) {
+            destination = candidate(" のコピー \(index)")
+            index += 1
+        }
+        return destination
     }
 
     private static func isDescendant(_ candidate: URL, of ancestor: URL) -> Bool {
