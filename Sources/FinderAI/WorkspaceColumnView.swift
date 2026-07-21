@@ -1,6 +1,64 @@
 import AppKit
 import FinderAICore
 
+@MainActor
+private final class WorkspaceColumnTableView: NSTableView {
+    var onBecameActive: (() -> Void)?
+    var onRenameRequested: ((Int) -> Void)?
+    var contextMenuProvider: (() -> NSMenu?)?
+    private let renameScheduler = FinderLikeRenameScheduler()
+
+    override func mouseDown(with event: NSEvent) {
+        renameScheduler.cancel()
+        onBecameActive?()
+        let point = convert(event.locationInWindow, from: nil)
+        let row = self.row(at: point)
+        let column = self.column(at: point)
+        let wasSelected = row >= 0 && selectedRowIndexes.contains(row)
+        let cell = row >= 0 && column >= 0
+            ? view(atColumn: column, row: row, makeIfNecessary: false) as? WorkspaceColumnCellView
+            : nil
+        let hitName = cell.map { $0.containsName(at: $0.convert(point, from: self)) } ?? false
+        let shouldSchedule = FinderLikeRenameGesture.permitsRename(
+            wasSelectedBeforeClick: wasSelected,
+            selectionCount: selectedRowIndexes.count,
+            clickCount: event.clickCount,
+            modifierFlags: event.modifierFlags,
+            hitName: hitName
+        )
+
+        super.mouseDown(with: event)
+        guard shouldSchedule,
+              selectedRowIndexes == IndexSet(integer: row) else { return }
+        renameScheduler.schedule { [weak self] in
+            guard let self,
+                  self.selectedRowIndexes == IndexSet(integer: row) else { return }
+            self.onRenameRequested?(row)
+        }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        renameScheduler.cancel()
+        super.mouseDragged(with: event)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        renameScheduler.cancel()
+        super.keyDown(with: event)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        renameScheduler.cancel()
+        onBecameActive?()
+        let point = convert(event.locationInWindow, from: nil)
+        let row = self.row(at: point)
+        if row >= 0, !selectedRowIndexes.contains(row) {
+            selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        }
+        return contextMenuProvider?() ?? super.menu(for: event)
+    }
+}
+
 /// Finder's column view: one column per folder along the path, scrolling right
 /// as you go deeper.
 ///
@@ -15,6 +73,7 @@ final class WorkspaceColumnView: NSView {
     var onDirectoryChange: ((URL) -> Void)?
     var onOpenFile: ((URL) -> Void)?
     var onSelectionChange: (([WorkspaceItem]) -> Void)?
+    var onRename: ((WorkspaceItem, String) -> Void)?
     var contextMenuProvider: (() -> NSMenu?)?
 
     private let scroll = NSScrollView()
@@ -22,12 +81,13 @@ final class WorkspaceColumnView: NSView {
     private var columns: [Column] = []
     private var showHiddenFiles = false
     private var isRestoringSelection = false
+    private weak var activeColumn: Column?
 
     /// One column: the folder it lists, its table, and the load in flight for it.
     @MainActor
     private final class Column {
         let url: URL
-        let table = NSTableView()
+        let table = WorkspaceColumnTableView()
         let scroll = NSScrollView()
         var items: [WorkspaceItem] = []
         var task: Task<Void, Never>?
@@ -74,10 +134,17 @@ final class WorkspaceColumnView: NSView {
     }
 
     var selectedItems: [WorkspaceItem] {
-        guard let last = columns.last else { return [] }
-        return last.table.selectedRowIndexes.compactMap {
-            last.items.indices.contains($0) ? last.items[$0] : nil
+        guard let column = activeColumn ?? columns.last else { return [] }
+        return column.table.selectedRowIndexes.compactMap {
+            column.items.indices.contains($0) ? column.items[$0] : nil
         }
+    }
+
+    func beginRenamingSelection() {
+        guard let column = activeColumn ?? columns.last,
+              column.table.selectedRowIndexes.count == 1,
+              let row = column.table.selectedRowIndexes.first else { return }
+        beginRenaming(row: row, in: column)
     }
 
     /// Rebuilds only the columns that actually changed.
@@ -118,8 +185,18 @@ final class WorkspaceColumnView: NSView {
         load(last)
     }
 
+    func reloadAfterRename(from source: URL, to destination: URL) {
+        guard let column = columns.first(where: {
+            $0.url == source.deletingLastPathComponent().standardizedFileURL
+        }) else { return }
+        column.selectedURL = destination
+        activeColumn = column
+        load(column)
+    }
+
     private func removeLastColumn() {
         guard let column = columns.popLast() else { return }
+        if activeColumn === column { activeColumn = columns.last }
         column.task?.cancel()
         content.removeArrangedSubview(column.scroll)
         column.scroll.removeFromSuperview()
@@ -139,7 +216,14 @@ final class WorkspaceColumnView: NSView {
         table.target = self
         table.doubleAction = #selector(openDoubleClicked(_:))
         table.registerForDraggedTypes([.fileURL])
-        table.menu = contextMenuProvider?()
+        table.contextMenuProvider = { [weak self] in self?.contextMenuProvider?() }
+        table.onBecameActive = { [weak self, weak column] in
+            self?.activeColumn = column
+        }
+        table.onRenameRequested = { [weak self, weak column] row in
+            guard let column else { return }
+            self?.beginRenaming(row: row, in: column)
+        }
 
         column.scroll.documentView = table
         column.scroll.hasVerticalScroller = true
@@ -151,6 +235,31 @@ final class WorkspaceColumnView: NSView {
         content.addArrangedSubview(column.scroll)
         columns.append(column)
         load(column)
+    }
+
+    private func beginRenaming(row: Int, in column: Column) {
+        guard columns.contains(where: { $0 === column }),
+              column.items.indices.contains(row),
+              column.table.selectedRowIndexes == IndexSet(integer: row) else { return }
+        let item = column.items[row]
+        column.table.scrollRowToVisible(row)
+        DispatchQueue.main.async { [weak self, weak column] in
+            guard let self, let column,
+                  self.columns.contains(where: { $0 === column }),
+                  column.items.indices.contains(row),
+                  column.items[row].url == item.url,
+                  let cell = column.table.view(
+                    atColumn: 0,
+                    row: row,
+                    makeIfNecessary: true
+                  ) as? WorkspaceColumnCellView else { return }
+            cell.beginRenaming(
+                name: item.name,
+                isDirectory: item.isDirectory
+            ) { [weak self] name in
+                self?.onRename?(item, name)
+            }
+        }
     }
 
     /// Same shape as the list view's loader: the detached task is the one held and
@@ -257,6 +366,7 @@ extension WorkspaceColumnView: NSTableViewDataSource, NSTableViewDelegate {
               let tableView = notification.object as? NSTableView,
               let index = columns.firstIndex(where: { $0.table === tableView }) else { return }
         let column = columns[index]
+        activeColumn = column
         guard let row = tableView.selectedRowIndexes.first,
               column.items.indices.contains(row) else { return }
         let item = column.items[row]
@@ -276,7 +386,7 @@ extension WorkspaceColumnView: NSTableViewDataSource, NSTableViewDelegate {
 @MainActor
 private final class WorkspaceColumnCellView: NSTableCellView {
     private let iconView = NSImageView()
-    private let label = NSTextField(labelWithString: "")
+    private let label = FinderInlineRenameField()
     private let chevron = NSImageView()
 
     override init(frame frameRect: NSRect) {
@@ -319,8 +429,7 @@ private final class WorkspaceColumnCellView: NSTableCellView {
     var representedURL: URL?
 
     func configure(name: String, image: NSImage, isDirectory: Bool) {
-        label.stringValue = name
-        label.toolTip = name
+        label.show(name)
         iconView.image = image
         // The chevron says "this one goes deeper"; a file has nowhere to go.
         chevron.isHidden = !isDirectory
@@ -328,5 +437,17 @@ private final class WorkspaceColumnCellView: NSTableCellView {
 
     func updateIcon(_ image: NSImage) {
         iconView.image = image
+    }
+
+    func containsName(at point: NSPoint) -> Bool {
+        label.frame.insetBy(dx: -3, dy: -2).contains(point)
+    }
+
+    func beginRenaming(
+        name: String,
+        isDirectory: Bool,
+        onCommit: @escaping (String) -> Void
+    ) {
+        label.beginEditing(name: name, isDirectory: isDirectory, onCommit: onCommit)
     }
 }

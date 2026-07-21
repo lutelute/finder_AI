@@ -5,7 +5,7 @@ import QuickLookUI
 @MainActor
 private final class WorkspaceNameCellView: NSTableCellView {
     private let iconView = NSImageView()
-    private let label = NSTextField(labelWithString: "")
+    private let label = FinderInlineRenameField()
     private let cloudView = NSImageView()
 
     override init(frame frameRect: NSRect) {
@@ -49,10 +49,21 @@ private final class WorkspaceNameCellView: NSTableCellView {
     var representedURL: URL?
 
     func configure(name: String, image: NSImage, cloud: WorkspaceCloudStatus) {
-        label.stringValue = name
-        label.toolTip = name
+        label.show(name)
         iconView.image = image
         applyCloud(cloud)
+    }
+
+    func containsName(at point: NSPoint) -> Bool {
+        label.frame.insetBy(dx: -3, dy: -2).contains(point)
+    }
+
+    func beginRenaming(
+        name: String,
+        isDirectory: Bool,
+        onCommit: @escaping (String) -> Void
+    ) {
+        label.beginEditing(name: name, isDirectory: isDirectory, onCommit: onCommit)
     }
 
     func updateIcon(_ image: NSImage) {
@@ -165,8 +176,11 @@ private final class WorkspaceSidebarHeaderView: NSTableCellView {
 private final class WorkspaceFileTableView: NSTableView {
     var onOpen: (() -> Void)?
     var onQuickLook: (() -> Void)?
+    var onRenameRequested: ((Int) -> Void)?
+    private let renameScheduler = FinderLikeRenameScheduler()
 
     override func keyDown(with event: NSEvent) {
+        renameScheduler.cancel()
         switch event.charactersIgnoringModifiers {
         case "\r", "\u{3}":
             onOpen?()
@@ -176,14 +190,59 @@ private final class WorkspaceFileTableView: NSTableView {
             super.keyDown(with: event)
         }
     }
+
+    override func mouseDown(with event: NSEvent) {
+        renameScheduler.cancel()
+        let point = convert(event.locationInWindow, from: nil)
+        let row = self.row(at: point)
+        let column = self.column(at: point)
+        let wasSelected = row >= 0 && selectedRowIndexes.contains(row)
+        let nameCell = row >= 0 && column >= 0
+            ? nameCell(atRow: row, column: column)
+            : nil
+        let hitName = nameCell.map {
+            $0.containsName(at: $0.convert(point, from: self))
+        } ?? false
+        let shouldSchedule = FinderLikeRenameGesture.permitsRename(
+            wasSelectedBeforeClick: wasSelected,
+            selectionCount: selectedRowIndexes.count,
+            clickCount: event.clickCount,
+            modifierFlags: event.modifierFlags,
+            hitName: hitName
+        )
+
+        super.mouseDown(with: event)
+        guard shouldSchedule,
+              selectedRowIndexes == IndexSet(integer: row) else { return }
+        renameScheduler.schedule { [weak self] in
+            guard let self,
+                  self.selectedRowIndexes == IndexSet(integer: row) else { return }
+            self.onRenameRequested?(row)
+        }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        renameScheduler.cancel()
+        super.mouseDragged(with: event)
+    }
+
+    private func nameCell(atRow row: Int, column: Int) -> WorkspaceNameCellView? {
+        guard tableColumns.indices.contains(column),
+              tableColumns[column].identifier.rawValue == "name" else { return nil }
+        return view(atColumn: column, row: row, makeIfNecessary: false)
+            as? WorkspaceNameCellView
+    }
 }
 
 @MainActor
 private final class WorkspaceGalleryCollectionView: NSCollectionView {
     var onOpen: (() -> Void)?
     var onQuickLook: (() -> Void)?
+    var onRenameRequested: ((IndexPath) -> Void)?
+    private let renameScheduler = FinderLikeRenameScheduler()
 
     override func keyDown(with event: NSEvent) {
+        renameScheduler.cancel()
         switch event.charactersIgnoringModifiers {
         case "\r", "\u{3}": onOpen?()
         case " ": onQuickLook?()
@@ -192,8 +251,35 @@ private final class WorkspaceGalleryCollectionView: NSCollectionView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        renameScheduler.cancel()
+        let point = convert(event.locationInWindow, from: nil)
+        let indexPath = indexPathForItem(at: point)
+        let wasSelected = indexPath.map(selectionIndexPaths.contains) ?? false
+        let hitName = indexPath.flatMap { item(at: $0) as? WorkspaceGalleryItem }
+            .map { $0.containsName(at: $0.view.convert(point, from: self)) } ?? false
+        let shouldSchedule = FinderLikeRenameGesture.permitsRename(
+            wasSelectedBeforeClick: wasSelected,
+            selectionCount: selectionIndexPaths.count,
+            clickCount: event.clickCount,
+            modifierFlags: event.modifierFlags,
+            hitName: hitName
+        )
         super.mouseDown(with: event)
-        if event.clickCount == 2 { onOpen?() }
+        if event.clickCount == 2 {
+            renameScheduler.cancel()
+            onOpen?()
+        } else if shouldSchedule, let indexPath,
+                  selectionIndexPaths == [indexPath] {
+            renameScheduler.schedule { [weak self] in
+                guard let self, self.selectionIndexPaths == [indexPath] else { return }
+                self.onRenameRequested?(indexPath)
+            }
+        }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        renameScheduler.cancel()
+        super.mouseDragged(with: event)
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -210,7 +296,7 @@ private final class WorkspaceGalleryCollectionView: NSCollectionView {
 private final class WorkspaceGalleryItem: NSCollectionViewItem {
     static let identifier = NSUserInterfaceItemIdentifier("WorkspaceGalleryItem")
     private let icon = NSImageView()
-    private let titleLabel = NSTextField(labelWithString: "")
+    private let titleLabel = FinderInlineRenameField()
     private let detail = NSTextField(labelWithString: "")
     var representedURL: URL?
 
@@ -254,7 +340,7 @@ private final class WorkspaceGalleryItem: NSCollectionViewItem {
 
     func configure(with item: WorkspaceItem) {
         representedURL = item.url
-        titleLabel.stringValue = item.name
+        titleLabel.show(item.name)
         titleLabel.toolTip = item.relativePath ?? item.name
         detail.stringValue = item.relativePath.map {
             ($0 as NSString).deletingLastPathComponent
@@ -265,6 +351,18 @@ private final class WorkspaceGalleryItem: NSCollectionViewItem {
             guard let self, self.representedURL == item.url else { return }
             self.icon.image = image
         }
+    }
+
+    func containsName(at point: NSPoint) -> Bool {
+        titleLabel.frame.insetBy(dx: -3, dy: -2).contains(point)
+    }
+
+    func beginRenaming(
+        name: String,
+        isDirectory: Bool,
+        onCommit: @escaping (String) -> Void
+    ) {
+        titleLabel.beginEditing(name: name, isDirectory: isDirectory, onCommit: onCommit)
     }
 }
 
@@ -617,6 +715,9 @@ final class WorkspaceBrowserViewController: NSViewController {
         )
         galleryView.onOpen = { [weak self] in self?.openSelection() }
         galleryView.onQuickLook = { [weak self] in self?.toggleQuickLook() }
+        galleryView.onRenameRequested = { [weak self] indexPath in
+            self?.beginGalleryRename(at: indexPath)
+        }
 
         let scroll = NSScrollView()
         scroll.drawsBackground = true
@@ -662,6 +763,9 @@ final class WorkspaceBrowserViewController: NSViewController {
         }
         columnView.onOpenFile = { url in NSWorkspace.shared.open(url) }
         columnView.onSelectionChange = { [weak self] _ in self?.updateStatus() }
+        columnView.onRename = { [weak self] item, name in
+            self?.renameItem(at: item.url, to: name)
+        }
         columnView.contextMenuProvider = { [weak self] in self?.fileTable.menu }
     }
 
@@ -887,6 +991,9 @@ final class WorkspaceBrowserViewController: NSViewController {
         fileTable.registerForDraggedTypes([.fileURL])
         fileTable.onOpen = { [weak self] in self?.openSelection() }
         fileTable.onQuickLook = { [weak self] in self?.toggleQuickLook() }
+        fileTable.onRenameRequested = { [weak self] row in
+            self?.beginListRename(at: row)
+        }
 
         let scroll = NSScrollView()
         scroll.drawsBackground = true
@@ -967,7 +1074,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         menu.addItem(services)
         menu.addItem(.separator())
 
-        add("名前を変更…", #selector(renameSelection))
+        add("名前を変更", #selector(renameSelection))
         add("新規フォルダ", #selector(createFolder))
         menu.addItem(.separator())
         add("ゴミ箱に入れる…", #selector(trashSelection))
@@ -1744,10 +1851,61 @@ final class WorkspaceBrowserViewController: NSViewController {
             }
             workspaceUndoManager?.setActionName("名前の変更")
             searchField.stringValue = ""
-            pendingSelectionURL = renamed
-            reloadContents()
+            if navigator.relocatePathPrefix(from: source, to: renamed) {
+                pendingSelectionURL = nil
+                navigate(to: navigator.currentDirectory, addHistory: false)
+            } else {
+                pendingSelectionURL = renamed
+                reloadContents()
+                if preferences.usesColumnView {
+                    columnView.reloadAfterRename(from: source, to: renamed)
+                }
+            }
         } catch {
             presentError(title: "名前を変更できません", message: error.localizedDescription)
+        }
+    }
+
+    private func beginListRename(at row: Int) {
+        guard displayedItems.indices.contains(row),
+              fileTable.selectedRowIndexes == IndexSet(integer: row) else { return }
+        let item = displayedItems[row]
+        fileTable.scrollRowToVisible(row)
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  self.displayedItems.indices.contains(row),
+                  self.displayedItems[row].url == item.url,
+                  let nameColumn = self.fileTable.tableColumns.firstIndex(
+                    where: { $0.identifier == Column.name }
+                  ),
+                  let cell = self.fileTable.view(
+                    atColumn: nameColumn,
+                    row: row,
+                    makeIfNecessary: true
+                  ) as? WorkspaceNameCellView else { return }
+            cell.beginRenaming(name: item.name, isDirectory: item.isDirectory) { [weak self] name in
+                self?.renameItem(at: item.url, to: name)
+            }
+        }
+    }
+
+    private func beginGalleryRename(at indexPath: IndexPath) {
+        guard displayedItems.indices.contains(indexPath.item),
+              galleryView.selectionIndexPaths == [indexPath] else { return }
+        let item = displayedItems[indexPath.item]
+        galleryView.scrollToItems(at: [indexPath], scrollPosition: .nearestVerticalEdge)
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  self.displayedItems.indices.contains(indexPath.item),
+                  self.displayedItems[indexPath.item].url == item.url,
+                  let galleryItem = self.galleryView.item(at: indexPath) as? WorkspaceGalleryItem
+            else { return }
+            galleryItem.beginRenaming(
+                name: item.name,
+                isDirectory: item.isDirectory
+            ) { [weak self] name in
+                self?.renameItem(at: item.url, to: name)
+            }
         }
     }
 
@@ -1800,19 +1958,15 @@ final class WorkspaceBrowserViewController: NSViewController {
     }
 
     @objc func renameSelection() {
-        guard selectedItems.count == 1, let item = selectedItems.first,
-              let window = view.window else { return }
-        let input = NSTextField(string: item.name)
-        input.frame.size = NSSize(width: 320, height: 24)
-        let alert = NSAlert()
-        alert.messageText = "名前を変更"
-        alert.informativeText = "上書きは行いません。"
-        alert.accessoryView = input
-        alert.addButton(withTitle: "変更")
-        alert.addButton(withTitle: "キャンセル")
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard response == .alertFirstButtonReturn, let self else { return }
-            self.renameItem(at: item.url, to: input.stringValue)
+        guard selectedItems.count == 1 else { return }
+        switch effectiveViewMode {
+        case .column:
+            columnView.beginRenamingSelection()
+        case .gallery:
+            guard let indexPath = galleryView.selectionIndexPaths.first else { return }
+            beginGalleryRename(at: indexPath)
+        case .list:
+            beginListRename(at: fileTable.selectedRow)
         }
     }
 
@@ -2388,10 +2542,12 @@ extension WorkspaceBrowserViewController: NSMenuDelegate {
             return
         }
 
-        let clickedRow = fileTable.clickedRow
-        if displayedItems.indices.contains(clickedRow),
-           !fileTable.selectedRowIndexes.contains(clickedRow) {
-            fileTable.selectRowIndexes(IndexSet(integer: clickedRow), byExtendingSelection: false)
+        if effectiveViewMode == .list {
+            let clickedRow = fileTable.clickedRow
+            if displayedItems.indices.contains(clickedRow),
+               !fileTable.selectedRowIndexes.contains(clickedRow) {
+                fileTable.selectRowIndexes(IndexSet(integer: clickedRow), byExtendingSelection: false)
+            }
         }
         let selection = selectedItems
         let selectionCount = selection.count
@@ -2403,7 +2559,7 @@ extension WorkspaceBrowserViewController: NSMenuDelegate {
         menu.item(withTitle: "複製")?.isEnabled = selectionCount > 0
         menu.item(withTitle: "エイリアスを作成")?.isEnabled = selectionCount > 0
         menu.item(withTitle: "圧縮")?.isEnabled = true
-        menu.item(withTitle: "名前を変更…")?.isEnabled = selectionCount == 1
+        menu.item(withTitle: "名前を変更")?.isEnabled = selectionCount == 1
         menu.item(withTitle: "ゴミ箱に入れる…")?.isEnabled = selectionCount > 0
         menu.item(withTitle: "ペースト")?.isEnabled = pasteboardHasFiles
         rebuildOpenWithSubmenu(for: selection.map(\.url))
