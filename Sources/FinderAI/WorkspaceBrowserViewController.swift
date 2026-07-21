@@ -182,12 +182,20 @@ private final class WorkspaceFileTableView: NSTableView {
 
     override func keyDown(with event: NSEvent) {
         renameScheduler.cancel()
-        switch event.charactersIgnoringModifiers {
-        case "\r", "\u{3}":
-            onOpen?()
-        case " ":
+        switch FinderLikeBrowserKeyboard.action(
+            charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+            modifierFlags: event.modifierFlags
+        ) {
+        case .rename:
+            guard selectedRowIndexes.count == 1,
+                  let row = selectedRowIndexes.first else {
+                NSSound.beep()
+                return
+            }
+            onRenameRequested?(row)
+        case .quickLook:
             onQuickLook?()
-        default:
+        case .forwardToAppKit:
             super.keyDown(with: event)
         }
     }
@@ -252,10 +260,21 @@ private final class WorkspaceGalleryCollectionView: NSCollectionView {
 
     override func keyDown(with event: NSEvent) {
         renameScheduler.cancel()
-        switch event.charactersIgnoringModifiers {
-        case "\r", "\u{3}": onOpen?()
-        case " ": onQuickLook?()
-        default: super.keyDown(with: event)
+        switch FinderLikeBrowserKeyboard.action(
+            charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+            modifierFlags: event.modifierFlags
+        ) {
+        case .rename:
+            guard selectionIndexPaths.count == 1,
+                  let indexPath = selectionIndexPaths.first else {
+                NSSound.beep()
+                return
+            }
+            onRenameRequested?(indexPath)
+        case .quickLook:
+            onQuickLook?()
+        case .forwardToAppKit:
+            super.keyDown(with: event)
         }
     }
 
@@ -791,6 +810,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         }
         columnView.onOpenFile = { url in NSWorkspace.shared.open(url) }
         columnView.onSelectionChange = { [weak self] _ in self?.updateStatus() }
+        columnView.onQuickLook = { [weak self] in self?.toggleQuickLook() }
         columnView.onRename = { [weak self] item, name in
             self?.renameItem(at: item.url, to: name)
         }

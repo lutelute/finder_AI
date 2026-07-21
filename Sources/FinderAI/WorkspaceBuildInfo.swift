@@ -29,6 +29,18 @@ struct WorkspaceBuildInfo: Equatable, Sendable {
         isDirectory: true
     )
 
+    /// Bundle.main's Info.plist lives beside the executable and can be replaced
+    /// while this process keeps running. Capture it before the event loop starts;
+    /// reading Bundle.main lazily after an install would mistake the new file on
+    /// disk for code that is already running.
+    private static let runningIdentity = WorkspaceBuildIdentity(
+        infoDictionary: Bundle.main.infoDictionary ?? [:]
+    )
+
+    static func captureRunningIdentity() {
+        _ = runningIdentity
+    }
+
     let identity: WorkspaceBuildIdentity
     let bundleURL: URL
     let installationState: InstallationState
@@ -38,7 +50,19 @@ struct WorkspaceBuildInfo: Equatable, Sendable {
         bundleURL: URL,
         installedInfoDictionary: [String: Any]? = nil
     ) {
-        identity = WorkspaceBuildIdentity(infoDictionary: infoDictionary)
+        self.init(
+            identity: WorkspaceBuildIdentity(infoDictionary: infoDictionary),
+            bundleURL: bundleURL,
+            installedInfoDictionary: installedInfoDictionary
+        )
+    }
+
+    private init(
+        identity: WorkspaceBuildIdentity,
+        bundleURL: URL,
+        installedInfoDictionary: [String: Any]? = nil
+    ) {
+        self.identity = identity
         self.bundleURL = bundleURL.standardizedFileURL
 
         guard bundleURL.pathExtension == "app" else {
@@ -59,7 +83,7 @@ struct WorkspaceBuildInfo: Equatable, Sendable {
 
     static var current: WorkspaceBuildInfo {
         WorkspaceBuildInfo(
-            infoDictionary: Bundle.main.infoDictionary ?? [:],
+            identity: runningIdentity,
             bundleURL: Bundle.main.bundleURL,
             installedInfoDictionary: readInfoDictionary(
                 at: installedAppURL.appendingPathComponent("Contents/Info.plist")

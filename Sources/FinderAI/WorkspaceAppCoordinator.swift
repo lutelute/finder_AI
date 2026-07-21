@@ -15,6 +15,8 @@ final class WorkspaceAppCoordinator {
     private var settingsWindow: SettingsWindowController?
     // Read back only in `deinit`, which cannot hop to the main actor.
     private nonisolated(unsafe) var sessionsObserver: (any NSObjectProtocol)?
+    private nonisolated(unsafe) var activationObserver: (any NSObjectProtocol)?
+    private var restartRequired = false
 
     /// Terminal sessions are keyed by folder and kind across the whole app, so two
     /// windows on the same folder share one shell rather than racing to spawn a
@@ -36,6 +38,15 @@ final class WorkspaceAppCoordinator {
         _ = makeWindow(directory: Self.defaultDirectory())
         windows.first?.show()
         restoreLastDirectory()
+        refreshInstallationIndicator()
+
+        activationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshInstallationIndicator() }
+        }
 
         sessionsObserver = NotificationCenter.default.addObserver(
             forName: .terminalSessionsDidChange,
@@ -62,6 +73,9 @@ final class WorkspaceAppCoordinator {
         if let sessionsObserver {
             NotificationCenter.default.removeObserver(sessionsObserver)
         }
+        if let activationObserver {
+            NotificationCenter.default.removeObserver(activationObserver)
+        }
     }
 
     @discardableResult
@@ -86,8 +100,22 @@ final class WorkspaceAppCoordinator {
             self?.showTerminalSessionsPanel()
         }
         windows.append(controller)
+        applyInstallationIndicator(to: controller)
         captureSnapshot()
         return controller
+    }
+
+    /// Updating the bundle does not update a running process. Keep that state
+    /// visible in every window and in the Dock so a newly installed interaction
+    /// is never mistaken for one that is already active.
+    private func refreshInstallationIndicator() {
+        restartRequired = WorkspaceBuildInfo.current.installationState == .restartRequired
+        NSApp.dockTile.badgeLabel = restartRequired ? "更新" : nil
+        windows.forEach(applyInstallationIndicator)
+    }
+
+    private func applyInstallationIndicator(to controller: WorkspaceWindowController) {
+        controller.window?.subtitle = restartRequired ? "新版あり — 再起動で適用" : ""
     }
 
     // MARK: - Crash restoration

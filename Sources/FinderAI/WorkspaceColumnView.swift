@@ -5,6 +5,7 @@ import FinderAICore
 private final class WorkspaceColumnTableView: NSTableView {
     var onBecameActive: (() -> Void)?
     var onRenameRequested: ((Int) -> Void)?
+    var onQuickLook: (() -> Void)?
     var contextMenuProvider: (() -> NSMenu?)?
     private let renameScheduler = FinderLikeRenameScheduler()
     private var dragOccurred = false
@@ -52,7 +53,22 @@ private final class WorkspaceColumnTableView: NSTableView {
 
     override func keyDown(with event: NSEvent) {
         renameScheduler.cancel()
-        super.keyDown(with: event)
+        switch FinderLikeBrowserKeyboard.action(
+            charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+            modifierFlags: event.modifierFlags
+        ) {
+        case .rename:
+            guard selectedRowIndexes.count == 1,
+                  let row = selectedRowIndexes.first else {
+                NSSound.beep()
+                return
+            }
+            onRenameRequested?(row)
+        case .quickLook:
+            onQuickLook?()
+        case .forwardToAppKit:
+            super.keyDown(with: event)
+        }
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -64,6 +80,43 @@ private final class WorkspaceColumnTableView: NSTableView {
             selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         }
         return contextMenuProvider?() ?? super.menu(for: event)
+    }
+}
+
+/// A column has its own vertical scroller inside the browser's horizontal
+/// scroller. AppKit sends trackpad events to the inner scroller under the
+/// pointer, which otherwise swallows the horizontal component. Forward the
+/// complete event to the outer browser while still letting this view consume
+/// its vertical component, including momentum phases.
+@MainActor
+final class WorkspaceColumnScrollView: NSScrollView {
+    var onScrollForOuterBrowser: ((NSEvent) -> Void)?
+
+    override func scrollWheel(with event: NSEvent) {
+        onScrollForOuterBrowser?(event)
+        super.scrollWheel(with: event)
+    }
+}
+
+@MainActor
+enum WorkspaceColumnHorizontalScroll {
+    static func apply(_ event: NSEvent, to scrollView: NSScrollView) {
+        let scale: CGFloat = event.hasPreciseScrollingDeltas ? 1 : 12
+        let delta = event.scrollingDeltaX * scale
+        guard abs(delta) > .ulpOfOne else { return }
+        let clipView = scrollView.contentView
+        let documentWidth = max(
+            scrollView.documentView?.bounds.width ?? 0,
+            scrollView.documentView?.frame.width ?? 0
+        )
+        let maximumX = max(0, documentWidth - clipView.bounds.width)
+        let destinationX = min(
+            max(clipView.bounds.origin.x - delta, 0),
+            maximumX
+        )
+        guard destinationX != clipView.bounds.origin.x else { return }
+        clipView.scroll(to: NSPoint(x: destinationX, y: clipView.bounds.origin.y))
+        scrollView.reflectScrolledClipView(clipView)
     }
 }
 
@@ -81,6 +134,7 @@ final class WorkspaceColumnView: NSView {
     var onDirectoryChange: ((URL) -> Void)?
     var onOpenFile: ((URL) -> Void)?
     var onSelectionChange: (([WorkspaceItem]) -> Void)?
+    var onQuickLook: (() -> Void)?
     var onRename: ((WorkspaceItem, String) -> Void)?
     var onTransfer: (([URL], URL, Bool) -> Void)?
     var contextMenuProvider: (() -> NSMenu?)?
@@ -97,7 +151,7 @@ final class WorkspaceColumnView: NSView {
     private final class Column {
         let url: URL
         let table = WorkspaceColumnTableView()
-        let scroll = NSScrollView()
+        let scroll = WorkspaceColumnScrollView()
         var items: [WorkspaceItem] = []
         var task: Task<Void, Never>?
         /// Which row was clicked to open the next column, so the trail stays
@@ -247,6 +301,11 @@ final class WorkspaceColumnView: NSView {
         table.onRenameRequested = { [weak self, weak column] row in
             guard let column else { return }
             self?.beginRenaming(row: row, in: column)
+        }
+        table.onQuickLook = { [weak self] in self?.onQuickLook?() }
+        column.scroll.onScrollForOuterBrowser = { [weak self] event in
+            guard let self else { return }
+            WorkspaceColumnHorizontalScroll.apply(event, to: self.scroll)
         }
 
         column.scroll.documentView = table
