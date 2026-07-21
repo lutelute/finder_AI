@@ -70,6 +70,27 @@ struct WorkspaceFileServiceTests {
         #expect(!FileManager.default.fileExists(atPath: destination.appendingPathComponent("same.txt").path))
     }
 
+    @Test("Option-copy inside the same folder creates Finder-style copies")
+    func optionCopyInPlaceUsesUniqueNames() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("draft.txt")
+        let folder = root.appendingPathComponent("folder.with.dot", isDirectory: true)
+        try Data("draft".utf8).write(to: file)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        let service = WorkspaceFileService()
+
+        let first = try service.transfer([file, folder], to: root, copy: true)
+        let second = try service.transfer([file], to: root, copy: true)
+
+        #expect(first[0].destination.lastPathComponent == "draft のコピー.txt")
+        #expect(first[1].destination.lastPathComponent == "folder.with.dot のコピー")
+        #expect(second[0].destination.lastPathComponent == "draft のコピー 2.txt")
+        #expect(FileManager.default.fileExists(atPath: file.path))
+        #expect(FileManager.default.fileExists(atPath: first[0].destination.path))
+        #expect(FileManager.default.fileExists(atPath: first[1].destination.path))
+    }
+
     @Test("a folder cannot be transferred through a symlink into itself")
     func symlinkDescendantIsRejected() throws {
         let root = try temporaryDirectory()
