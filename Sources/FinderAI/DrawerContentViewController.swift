@@ -32,16 +32,10 @@ final class DrawerContentViewController: NSViewController {
     private var expanded = false
     private var bodyLayoutConstraints: [NSLayoutConstraint] = []
     private var mountedSessionID: UUID?
-    private var renderedTabs: [TabSnapshot] = []
 
     /// The tab strip is rebuilt from scratch on every reload; this is what the
-    /// strip currently shows, so an unchanged folder can skip the teardown.
-    private struct TabSnapshot: Equatable {
-        let id: UUID
-        let title: String
-        let isRunning: Bool
-        let isActive: Bool
-    }
+    /// strip currently shows, so an unchanged session set can skip the teardown.
+    private var renderedTabs: [DrawerSessionTab] = []
 
     private let resizeHandle = ResizeHandleView()
     private let topBorder = NSView()
@@ -134,7 +128,12 @@ final class DrawerContentViewController: NSViewController {
         guard drawerLink.finderDirectoryURL != standardized else { return }
         drawerLink.setFinderDirectory(standardized)
         updateDirectoryPresentation()
-        if previousTerminalDirectory != directoryURL { reloadSessions() }
+        guard previousTerminalDirectory != directoryURL else { return }
+        // Following means "bring the new folder's session forward when it has
+        // one". When it has none, whatever the user was watching stays on
+        // screen — its tab grows a folder suffix instead of the view going
+        // blank, which is how the binding stays visible without pinning.
+        reloadSessions(prefer: directoryURL.flatMap { sessionManager.sessions(for: $0).last })
     }
 
     func setExpanded(_ expanded: Bool) {
@@ -378,7 +377,9 @@ final class DrawerContentViewController: NSViewController {
 
     private func reloadSessions(prefer preferred: (any ManagedTerminalSession)? = nil) {
         guard isViewLoaded else { return }
-        visibleSessions = directoryURL.map(sessionManager.sessions(for:)) ?? []
+        // Every presented session, not just the current folder's — see
+        // DrawerSessionTab for why the strip never hides running work.
+        visibleSessions = sessionManager.allSessions.filter { sessionManager.isPresented($0) }
 
         if let preferred, visibleSessions.contains(where: { $0.id == preferred.id }) {
             activeSession = preferred
@@ -388,26 +389,29 @@ final class DrawerContentViewController: NSViewController {
             activeSession = visibleSessions.last
         }
 
-        let snapshots = visibleSessions.map {
-            TabSnapshot(
-                id: $0.id,
-                title: $0.kind.displayName,
-                isRunning: $0.isRunning,
-                isActive: $0.id == activeSession?.id
-            )
-        }
-        if snapshots != renderedTabs {
+        let rows = DrawerSessionTabs.rows(
+            sources: visibleSessions.map {
+                DrawerSessionTabs.Source(
+                    id: $0.id,
+                    kindName: $0.kind.displayName,
+                    directoryURL: $0.directoryURL,
+                    isRunning: $0.isRunning
+                )
+            },
+            currentDirectory: directoryURL,
+            activeID: activeSession?.id
+        )
+        if rows != renderedTabs {
             sessionTabs.arrangedSubviews.forEach {
                 sessionTabs.removeArrangedSubview($0)
                 $0.removeFromSuperview()
             }
-            for (index, session) in visibleSessions.enumerated() {
+            for (index, row) in rows.enumerated() {
+                let session = visibleSessions[index]
                 let button = SessionTabButton()
-                button.title = session.isRunning
-                    ? "●  \(session.kind.displayName)"
-                    : session.kind.displayName
+                button.title = row.title
                 button.font = .systemFont(ofSize: 11, weight: .medium)
-                button.contentTintColor = session.isRunning
+                button.contentTintColor = row.isRunning && (row.isActive || row.belongsToCurrentFolder)
                     ? IntegratedPanelTheme.text
                     : IntegratedPanelTheme.secondaryText
                 button.isBordered = false
@@ -415,14 +419,14 @@ final class DrawerContentViewController: NSViewController {
                 button.target = self
                 button.action = #selector(selectSession(_:))
                 button.menu = sessionContextMenu(for: session)
-                button.isActiveTab = session.id == activeSession?.id
-                button.toolTip = "\(session.kind.displayName) — \(session.directoryURL.path(percentEncoded: false))"
+                button.isActiveTab = row.isActive
+                button.toolTip = row.tooltip
                 button.translatesAutoresizingMaskIntoConstraints = false
                 button.widthAnchor.constraint(greaterThanOrEqualToConstant: 68).isActive = true
                 button.heightAnchor.constraint(equalToConstant: 26).isActive = true
                 sessionTabs.addArrangedSubview(button)
             }
-            renderedTabs = snapshots
+            renderedTabs = rows
         }
         sessionTabs.isHidden = visibleSessions.isEmpty
         closeButton.isEnabled = activeSession != nil
@@ -626,7 +630,9 @@ final class DrawerContentViewController: NSViewController {
         drawerLink.followFinder()
         renderedTabs.removeAll()
         updateDirectoryPresentation()
-        reloadSessions()
+        // Un-pinning means "go back to where Finder is", so the Finder folder's
+        // own session comes forward when it exists.
+        reloadSessions(prefer: directoryURL.flatMap { sessionManager.sessions(for: $0).last })
     }
 
     @objc private func followFinderFromMenu(_ sender: NSMenuItem) {
