@@ -411,9 +411,15 @@ final class DrawerContentViewController: NSViewController {
                 let button = SessionTabButton()
                 button.title = row.title
                 button.font = .systemFont(ofSize: 11, weight: .medium)
-                button.contentTintColor = row.isRunning && (row.isActive || row.belongsToCurrentFolder)
-                    ? IntegratedPanelTheme.text
-                    : IntegratedPanelTheme.secondaryText
+                // Arriving somewhere that already has a live terminal is
+                // announced in color: only current-folder running sessions get
+                // the accent, so the strip separates "open here" from
+                // "open elsewhere" without reading a single label.
+                button.contentTintColor = row.isRunning && row.belongsToCurrentFolder
+                    ? IntegratedPanelTheme.accent
+                    : row.isRunning && row.isActive
+                        ? IntegratedPanelTheme.text
+                        : IntegratedPanelTheme.secondaryText
                 button.isBordered = false
                 button.tag = index
                 button.target = self
@@ -429,6 +435,13 @@ final class DrawerContentViewController: NSViewController {
             renderedTabs = rows
         }
         sessionTabs.isHidden = visibleSessions.isEmpty
+        // The folder icon echoes the same cue for the place itself.
+        let currentFolderHasLiveSession = directoryURL.map {
+            sessionManager.sessions(for: $0).contains(where: \.isRunning)
+        } ?? false
+        directoryImage.contentTintColor = currentFolderHasLiveSession
+            ? IntegratedPanelTheme.accent
+            : IntegratedPanelTheme.secondaryText
         closeButton.isEnabled = activeSession != nil
         let runningCount = sessionManager.runningCount
         manageSessionsButton.toolTip = runningCount == 0
