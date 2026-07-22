@@ -50,6 +50,7 @@ FinderAICore（UI非依存）
 - 「直下」検索は取得済み項目をローカルに絞り込みます。「配下」はCoreのキャンセル可能な再帰列挙をdetached taskで実行し、最大5,000件を相対パス付きで返します。
 - リスト、カラム、ギャラリーは同じ`WorkspaceItem`とファイル操作経路を使います。カラムはflatな検索結果を表現できないため検索中だけリストへ退避します。
 - ウインドウ初期content sizeは1180×760pt、最小820×520ptです。
+- `DirectoryWatcher`は表示中フォルダと全上位フォルダをvnodeソースで監視します。descriptorはrename後も同じフォルダを指し続けるため、外部（Finder・シェル）での移動・改名は`F_GETPATH`で新パスを復元し、`WorkspaceNavigator.relocatePathPrefix`で履歴ごと追従します。削除・ゴミ箱行きは追従せず、残っている最も近い上位フォルダへ退避します。
 
 File Providerや保護フォルダのmetadata問い合わせがAppKit起動を止めないよう、サイドバー作成時の`fileExists`と起動時のGitHub存在確認は行いません。実際の一覧取得エラーは通常状態としてUIに表示します。
 
