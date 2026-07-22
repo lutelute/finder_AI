@@ -10,7 +10,7 @@ let package = Package(
     products: [
         .library(name: "FinderAICore", targets: ["FinderAICore"]),
         .library(name: "FinderAIApp", targets: ["FinderAIApp"]),
-        .executable(name: "FinderAIWorkspace", targets: ["FinderAIWorkspace"])
+        .executable(name: "FinderAI", targets: ["FinderAI"])
     ],
     dependencies: [
         .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", exact: "1.14.0"),
@@ -33,10 +33,15 @@ let package = Package(
             ],
             path: "Sources/FinderAI"
         ),
+        // The target name is the binary name, and the binary name is the
+        // process name users see in ps, pgrep and Accessibility — it must
+        // match the app's visible name. The bundle identifier keeps its
+        // historical "workspace" segment: changing it would orphan TCC folder
+        // grants and the Sparkle update chain.
         .executableTarget(
-            name: "FinderAIWorkspace",
+            name: "FinderAI",
             dependencies: ["FinderAIApp"],
-            path: "Sources/FinderAIWorkspaceMain"
+            path: "Sources/FinderAIMain"
         ),
         .testTarget(
             name: "FinderAICoreTests",
