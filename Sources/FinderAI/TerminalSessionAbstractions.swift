@@ -27,6 +27,25 @@ protocol ManagedTerminalSession: AnyObject {
     /// 現在の表示バッファを、ユーザーが明示的に保存するためのUTF-8テキストへする。
     /// 実行中セッションを自動で記録する機能とは別で、nilなら取得できない。
     func transcriptData() -> Data?
+
+    /// 固定（追従しない）フラグ。プレーンシェルにだけ意味がある。
+    var isAnchored: Bool { get set }
+    /// プロンプト待ちのプレーンシェルへ追従cdを送る。対象外・実行中はfalse。
+    func followDirectory(to url: URL) -> Bool
+    /// 追従成功後にセッション自身の所属を移す。索引の付け替えはmanagerの仕事。
+    func rebind(to url: URL)
+}
+
+/// 追従に関与しないセッション実装（テストのフェイク等）の既定値。
+extension ManagedTerminalSession {
+    var isAnchored: Bool {
+        get { false }
+        set {}
+    }
+
+    func followDirectory(to url: URL) -> Bool { false }
+
+    func rebind(to url: URL) {}
 }
 
 @MainActor
@@ -93,6 +112,13 @@ protocol TerminalSessionManaging: AnyObject {
         kind: TerminalSessionKind,
         directoryURL: URL
     ) throws -> any ManagedTerminalSession
+    /// 表示中のシェルをフォルダ移動へ追従させ、成功したら台帳と索引も
+    /// 新しい所属へ付け替える。移動先に同種のセッションが既にいる場合は
+    /// 何もせずfalse（呼び出し側が移動先のセッションを前面に出す）。
+    func followSession(
+        _ session: any ManagedTerminalSession,
+        to directoryURL: URL
+    ) -> Bool
     func remove(_ session: any ManagedTerminalSession)
     func renameSessionRecord(id: UUID, name: String?)
     func setSessionRecordPinned(id: UUID, isPinned: Bool)

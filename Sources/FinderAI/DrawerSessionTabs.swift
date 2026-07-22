@@ -21,12 +21,20 @@ enum DrawerSessionTabs {
         let kindName: String
         let directoryURL: URL
         let isRunning: Bool
+        let isAnchored: Bool
 
-        init(id: UUID, kindName: String, directoryURL: URL, isRunning: Bool) {
+        init(
+            id: UUID,
+            kindName: String,
+            directoryURL: URL,
+            isRunning: Bool,
+            isAnchored: Bool = false
+        ) {
             self.id = id
             self.kindName = kindName
             self.directoryURL = directoryURL
             self.isRunning = isRunning
+            self.isAnchored = isAnchored
         }
     }
 
@@ -42,7 +50,10 @@ enum DrawerSessionTabs {
             let folder = directory.lastPathComponent.isEmpty
                 ? directory.path(percentEncoded: false)
                 : directory.lastPathComponent
-            let name = source.isRunning ? "●  \(source.kindName)" : source.kindName
+            var name = source.isRunning ? "●  \(source.kindName)" : source.kindName
+            // An anchored shell deliberately stays put; the pin says "this one
+            // does not follow you" right on the tab.
+            if source.isAnchored { name = "📌 \(name)" }
             return DrawerSessionTab(
                 id: source.id,
                 title: belongsToCurrentFolder ? name : "\(name) · \(folder)",

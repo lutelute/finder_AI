@@ -76,6 +76,24 @@ struct DrawerSessionTabsTests {
         #expect(rows.map(\.title) == ["●  Claude · projectA", "●  Codex · projectB"])
     }
 
+    @Test("an anchored shell wears the pin on its tab")
+    func anchoredShellShowsPin() {
+        let rows = DrawerSessionTabs.rows(
+            sources: [
+                DrawerSessionTabs.Source(
+                    id: UUID(),
+                    kindName: "Shell",
+                    directoryURL: home,
+                    isRunning: true,
+                    isAnchored: true
+                )
+            ],
+            currentDirectory: home,
+            activeID: nil
+        )
+        #expect(rows.map(\.title) == ["📌 ●  Shell"])
+    }
+
     @Test("a volume-root session falls back to its full path as the folder name")
     func rootFolderFallsBackToPath() {
         let root = URL(fileURLWithPath: "/", isDirectory: true)
