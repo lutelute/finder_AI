@@ -473,6 +473,7 @@ final class WorkspaceBrowserViewController: NSViewController {
     private let forwardButton = NSButton()
     private let upButton = NSButton()
     private let refreshButton = NSButton()
+    private let copyCDButton = NSButton()
     private let newFolderButton = NSButton()
     private let statusLabel = NSTextField(labelWithString: "")
     private let progress = NSProgressIndicator()
@@ -908,6 +909,15 @@ final class WorkspaceBrowserViewController: NSViewController {
         configureNavigationButton(forwardButton, symbol: "chevron.right", action: #selector(goForward), label: "進む")
         configureNavigationButton(upButton, symbol: "arrow.up", action: #selector(goUp), label: "親フォルダ")
         configureNavigationButton(refreshButton, symbol: "arrow.clockwise", action: #selector(refresh), label: "再読み込み")
+        // The address bar's raw text breaks in a shell on spaces, parentheses
+        // and quotes, so the terminal-ready form gets its own visible button
+        // right next to where people were copying by hand.
+        configureNavigationButton(
+            copyCDButton,
+            symbol: "terminal",
+            action: #selector(copyCDFromButton),
+            label: "“cd” コマンドをコピー — Terminalに貼るだけで移動"
+        )
         configureNavigationButton(newFolderButton, symbol: "folder.badge.plus", action: #selector(createFolder), label: "新規フォルダ")
 
         viewModeControl.segmentCount = 3
@@ -968,7 +978,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         // Layout to crush the address field at exactly the size where it matters
         // most. Navigation stays on top and search gets a dedicated compact row.
         let navigationStack = NSStackView(views: [
-            backButton, forwardButton, upButton, pathSlot,
+            backButton, forwardButton, upButton, pathSlot, copyCDButton,
             refreshButton, newFolderButton, viewModeControl
         ])
         navigationStack.orientation = .horizontal
@@ -1487,7 +1497,9 @@ final class WorkspaceBrowserViewController: NSViewController {
         // the field permanently empty, because nil === nil counted as "editing"
         // before the window ever existed.
         if pathField.currentEditor() == nil {
-            pathField.stringValue = directory.path(percentEncoded: false)
+            // People copy this text straight into `cd`; the Finder form
+            // without the trailing slash is what they expect to travel.
+            pathField.stringValue = Self.plainPath(for: directory)
         }
     }
 
@@ -2285,7 +2297,7 @@ final class WorkspaceBrowserViewController: NSViewController {
     /// The field is permanent; ending an edit restores the truth and hands
     /// focus back to the list.
     private func endPathEditing() {
-        pathField.stringValue = navigator.currentDirectory.path(percentEncoded: false)
+        pathField.stringValue = Self.plainPath(for: navigator.currentDirectory)
         view.window?.makeFirstResponder(
             effectiveViewMode == .gallery ? galleryView : fileTable
         )
@@ -2347,6 +2359,23 @@ final class WorkspaceBrowserViewController: NSViewController {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
+    }
+
+    /// The toolbar button confirms itself: a silent copy leaves the user
+    /// wondering whether anything reached the clipboard.
+    @objc private func copyCDFromButton() {
+        copyChangeDirectoryCommand()
+        copyCDButton.image = NSImage(
+            systemSymbolName: "checkmark",
+            accessibilityDescription: "コピーしました"
+        )
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            self?.copyCDButton.image = NSImage(
+                systemSymbolName: "terminal",
+                accessibilityDescription: "“cd” コマンドをコピー"
+            )
+        }
     }
 
     /// Directory URLs render with a trailing slash; people expect the Finder
