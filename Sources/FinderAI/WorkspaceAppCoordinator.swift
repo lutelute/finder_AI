@@ -476,9 +476,14 @@ final class WorkspaceAppCoordinator {
         viewMenu.addItem(.separator())
         viewMenu.addItem(item("このフォルダを検索", action: #selector(WorkspaceBrowserViewController.focusSearchField), key: "f"))
         viewMenu.addItem(item("パスを入力…", action: #selector(WorkspaceBrowserViewController.beginPathEditing), key: "l"))
-        let copyPath = item("パスをコピー", action: #selector(WorkspaceBrowserViewController.copyCurrentPath), key: "c")
+        let copyPath = item("パス名をコピー", action: #selector(WorkspaceBrowserViewController.copyCurrentPath), key: "c")
         copyPath.keyEquivalentModifierMask = [.command, .option]
         viewMenu.addItem(copyPath)
+        viewMenu.addItem(item(
+            "“cd” コマンドをコピー",
+            action: #selector(WorkspaceBrowserViewController.copyChangeDirectoryCommand),
+            key: ""
+        ))
         viewItem.submenu = viewMenu
         main.addItem(viewItem)
 
