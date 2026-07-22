@@ -24,7 +24,7 @@ export CLANG_MODULE_CACHE_PATH="$MODULE_CACHE"
 export SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE"
 
 mkdir -p "$MODULE_CACHE" "$ROOT/dist"
-swift build --disable-sandbox -c release --product FinderAIWorkspace
+swift build --disable-sandbox -c release --product FinderAI
 BIN_DIR=$(swift build --disable-sandbox -c release --show-bin-path)
 
 case "$DIST_APP" in
@@ -36,7 +36,7 @@ case "$DIST_APP" in
 esac
 
 mkdir -p "$MACOS" "$RESOURCES"
-install -m 755 "$BIN_DIR/FinderAIWorkspace" "$MACOS/FinderAIWorkspace"
+install -m 755 "$BIN_DIR/FinderAI" "$MACOS/FinderAI"
 install -m 644 "$ROOT/Resources/Workspace-Info.plist" "$CONTENTS/Info.plist"
 GIT_COMMIT=$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 /usr/libexec/PlistBuddy -c "Set :FinderAIGitCommit $GIT_COMMIT" "$CONTENTS/Info.plist"
@@ -77,7 +77,7 @@ ditto "$SPARKLE_FRAMEWORK" "$FRAMEWORKS/Sparkle.framework"
 # The executable is built against @rpath/Sparkle.framework; point that rpath at
 # the bundle's own Frameworks directory.
 install_name_tool -add_rpath "@executable_path/../Frameworks" \
-    "$MACOS/FinderAIWorkspace" 2>/dev/null || true
+    "$MACOS/FinderAI" 2>/dev/null || true
 
 plutil -lint "$CONTENTS/Info.plist"
 xattr -cr "$APP"

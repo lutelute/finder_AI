@@ -21,7 +21,10 @@ DEST="/Applications/$APP_NAME"
     exit 1
 }
 
-if pgrep -x FinderAIWorkspace >/dev/null 2>&1; then
+# The executable was renamed FinderAIWorkspace → FinderAI in 1.9.4; the old
+# name stays in the check so an in-place upgrade of a running old build still
+# gets the warning.
+if pgrep -x FinderAI >/dev/null 2>&1 || pgrep -x FinderAIWorkspace >/dev/null 2>&1; then
     # Asking the app to quit can open its terminal-session confirmation sheet.
     # `osascript` then waits forever, while falling back to `killall` destroys
     # non-tmux shells and AI work. Replacing the on-disk bundle is safe on macOS:

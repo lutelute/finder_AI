@@ -7,7 +7,7 @@
 	<key>CFBundleDisplayName</key>
 	<string>FinderAI</string>
 	<key>CFBundleExecutable</key>
-	<string>FinderAIWorkspace</string>
+	<string>FinderAI</string>
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 	<key>CFBundleIconName</key>
@@ -21,9 +21,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.9.3</string>
+	<string>1.9.4</string>
 	<key>CFBundleVersion</key>
-	<string>34</string>
+	<string>35</string>
 	<key>FinderAIGitCommit</key>
 	<string>source</string>
 	<key>LSApplicationCategoryType</key>
@@ -31,11 +31,11 @@
 	<key>LSMinimumSystemVersion</key>
 	<string>15.0</string>
 	<key>NSDesktopFolderUsageDescription</key>
-	<string>FinderAI Workspaceは、ユーザーが選んだデスクトップ上のファイルを整理するためにアクセスします。</string>
+	<string>FinderAIは、ユーザーが選んだデスクトップ上のファイルを整理するためにアクセスします。</string>
 	<key>NSDocumentsFolderUsageDescription</key>
-	<string>FinderAI Workspaceは、ユーザーが整理する書類とプロジェクトを一覧・移動するために書類フォルダへアクセスします。</string>
+	<string>FinderAIは、ユーザーが整理する書類とプロジェクトを一覧・移動するために書類フォルダへアクセスします。</string>
 	<key>NSDownloadsFolderUsageDescription</key>
-	<string>FinderAI Workspaceは、ユーザーが選んだダウンロード済みファイルを整理するためにアクセスします。</string>
+	<string>FinderAIは、ユーザーが選んだダウンロード済みファイルを整理するためにアクセスします。</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
