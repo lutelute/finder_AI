@@ -25,8 +25,11 @@ final class DrawerContentViewController: NSViewController {
     var onOpenDirectory: ((URL) -> Void)?
 
     private let sessionManager: any TerminalSessionManaging
-    private var drawerLink = TerminalDrawerLink()
-    private var directoryURL: URL? { drawerLink.terminalDirectoryURL }
+    /// The folder the browser is showing. There is no drawer-level "fixed"
+    /// mode any more: whether a session moves with this is each session's own
+    /// story — shells follow (and actually `cd`), AI sessions stay put, and a
+    /// pinned (📌) shell stays put too. The tab strip shows all of it.
+    private var directoryURL: URL?
     private var visibleSessions: [any ManagedTerminalSession] = []
     private var activeSession: (any ManagedTerminalSession)?
     private var expanded = false
@@ -44,7 +47,6 @@ final class DrawerContentViewController: NSViewController {
     private let divider = NSView()
     private let directoryImage = NSImageView()
     private let pathLabel = NSTextField(labelWithString: "Finder")
-    private let bindingButton = NSButton()
     private let sessionTabs = NSStackView()
     private let manageSessionsButton = NSButton()
     private let newSessionButton = NSButton()
@@ -124,16 +126,23 @@ final class DrawerContentViewController: NSViewController {
 
     func setDirectory(_ url: URL) {
         let standardized = url.standardizedFileURL
-        let previousTerminalDirectory = directoryURL
-        guard drawerLink.finderDirectoryURL != standardized else { return }
-        drawerLink.setFinderDirectory(standardized)
+        guard directoryURL != standardized else { return }
+        directoryURL = standardized
         updateDirectoryPresentation()
-        guard previousTerminalDirectory != directoryURL else { return }
-        // Following means "bring the new folder's session forward when it has
-        // one". When it has none, whatever the user was watching stays on
-        // screen — its tab grows a folder suffix instead of the view going
-        // blank, which is how the binding stays visible without pinning.
-        reloadSessions(prefer: directoryURL.flatMap { sessionManager.sessions(for: $0).last })
+        // Following, in order of what the user meant by "follow": an active
+        // un-pinned shell moves with the click — it actually `cd`s (only at an
+        // idle prompt; the session refuses otherwise). When it cannot — busy,
+        // pinned, an AI session, or the destination already has its own shell
+        // — the destination's session comes forward instead, and failing that
+        // whatever was on screen stays there. Nothing ever silently vanishes.
+        if let active = activeSession,
+           active.kind == .shell,
+           !active.isAnchored,
+           sessionManager.followSession(active, to: standardized) {
+            reloadSessions(prefer: active)
+        } else {
+            reloadSessions(prefer: sessionManager.sessions(for: standardized).last)
+        }
     }
 
     func setExpanded(_ expanded: Bool) {
@@ -180,14 +189,6 @@ final class DrawerContentViewController: NSViewController {
         pathLabel.maximumNumberOfLines = 1
         pathLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        configureIconButton(
-            bindingButton,
-            symbol: "link",
-            accessibilityLabel: "TerminalとFinderの場所の紐付け"
-        )
-        bindingButton.target = self
-        bindingButton.action = #selector(showBindingMenu)
-
         sessionTabs.orientation = .horizontal
         sessionTabs.alignment = .centerY
         sessionTabs.spacing = 2
@@ -224,7 +225,6 @@ final class DrawerContentViewController: NSViewController {
             divider,
             directoryImage,
             pathLabel,
-            bindingButton,
             spacer,
             sessionTabs,
             manageSessionsButton,
@@ -247,8 +247,6 @@ final class DrawerContentViewController: NSViewController {
             directoryImage.widthAnchor.constraint(equalToConstant: 14),
             directoryImage.heightAnchor.constraint(equalToConstant: 14),
             pathLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 260),
-            bindingButton.widthAnchor.constraint(equalToConstant: 26),
-            bindingButton.heightAnchor.constraint(equalToConstant: 26),
             manageSessionsButton.widthAnchor.constraint(equalToConstant: 26),
             manageSessionsButton.heightAnchor.constraint(equalToConstant: 26),
             newSessionButton.widthAnchor.constraint(equalToConstant: 26),
@@ -263,30 +261,11 @@ final class DrawerContentViewController: NSViewController {
 
     private func updateDirectoryPresentation() {
         guard isViewLoaded else { return }
-        let terminalURL = directoryURL
-        let terminalPath = terminalURL?.path(percentEncoded: false) ?? "Finder"
-        let finderPath = drawerLink.finderDirectoryURL?.path(percentEncoded: false) ?? "Finder"
-        let fixed = drawerLink.mode == .fixed
-        pathLabel.stringValue = terminalURL?.lastPathComponent.isEmpty == false
-            ? terminalURL?.lastPathComponent ?? terminalPath
-            : terminalPath
-        pathLabel.toolTip = fixed
-            ? "Terminal固定先: \(terminalPath)\nFinder現在地: \(finderPath)"
-            : terminalPath
-        directoryImage.image = NSImage(
-            systemSymbolName: fixed ? "pin.fill" : "folder.fill",
-            accessibilityDescription: fixed ? "固定したTerminalの場所" : "現在のFinderフォルダ"
-        )
-        bindingButton.image = NSImage(
-            systemSymbolName: fixed ? "pin.fill" : "link",
-            accessibilityDescription: fixed ? "Terminal固定中" : "Finderに追従中"
-        )
-        bindingButton.contentTintColor = fixed
-            ? IntegratedPanelTheme.accent
-            : IntegratedPanelTheme.secondaryText
-        bindingButton.toolTip = fixed
-            ? "Terminalを固定中 — クリックして紐付けを変更"
-            : "TerminalはFinderの場所に追従中 — クリックして固定"
+        let path = directoryURL?.path(percentEncoded: false) ?? "Finder"
+        pathLabel.stringValue = directoryURL?.lastPathComponent.isEmpty == false
+            ? directoryURL?.lastPathComponent ?? path
+            : path
+        pathLabel.toolTip = path
     }
 
     private func configureBody() {
@@ -395,7 +374,8 @@ final class DrawerContentViewController: NSViewController {
                     id: $0.id,
                     kindName: $0.kind.displayName,
                     directoryURL: $0.directoryURL,
-                    isRunning: $0.isRunning
+                    isRunning: $0.isRunning,
+                    isAnchored: $0.isAnchored
                 )
             },
             currentDirectory: directoryURL,
@@ -448,9 +428,7 @@ final class DrawerContentViewController: NSViewController {
             ? "すべてのTerminalセッションを管理（⌘⌥T）"
             : "Terminalセッションを管理 — 実行中\(runningCount)件（⌘⌥T）"
         newSessionButton.isEnabled = directoryURL != nil
-        newSessionButton.toolTip = drawerLink.mode == .fixed
-            ? "固定中の場所で新しいTerminalセッション"
-            : "現在のFinderフォルダで新しいTerminalセッション"
+        newSessionButton.toolTip = "現在のFinderフォルダで新しいTerminalセッション"
         codexButton.isEnabled = sessionManager.canStart(.codex)
         codexButton.toolTip = codexButton.isEnabled ? nil : "codexコマンドが見つかりません"
         claudeButton.isEnabled = sessionManager.canStart(.claude)
@@ -555,111 +533,10 @@ final class DrawerContentViewController: NSViewController {
         }
     }
 
-    @objc private func showBindingMenu() {
-        let menu = NSMenu(title: "Terminalの表示先")
-        let status = NSMenuItem(
-            title: drawerLink.mode == .fixed
-                ? "このウインドウに固定中"
-                : "Finderの場所に追従中",
-            action: nil,
-            keyEquivalent: ""
-        )
-        status.isEnabled = false
-        menu.addItem(status)
-
-        let follow = NSMenuItem(
-            title: "Finderの場所に追従",
-            action: #selector(followFinderFromMenu(_:)),
-            keyEquivalent: ""
-        )
-        follow.target = self
-        follow.state = drawerLink.mode == .followsFinder ? .on : .off
-        menu.addItem(follow)
-
-        if let activeSession {
-            let fix = NSMenuItem(
-                title: "このTerminalの場所に固定",
-                action: #selector(fixActiveSessionFromMenu(_:)),
-                keyEquivalent: ""
-            )
-            fix.target = self
-            fix.state = isFixed(to: activeSession) ? .on : .off
-            menu.addItem(fix)
-        }
-
-        let runningSessions = sessionManager.allSessions.filter(\.isRunning)
-        if !runningSessions.isEmpty {
-            menu.addItem(.separator())
-            let choose = NSMenuItem(
-                title: "別の実行中Terminalを固定",
-                action: nil,
-                keyEquivalent: ""
-            )
-            let submenu = NSMenu(title: choose.title)
-            for session in runningSessions {
-                let path = session.directoryURL.path(percentEncoded: false)
-                let folder = session.directoryURL.lastPathComponent.isEmpty
-                    ? path
-                    : session.directoryURL.lastPathComponent
-                let item = NSMenuItem(
-                    title: "\(session.kind.displayName) — \(folder)",
-                    action: #selector(fixSessionFromMenu(_:)),
-                    keyEquivalent: ""
-                )
-                item.target = self
-                item.representedObject = session.id.uuidString
-                item.toolTip = path
-                item.state = activeSession?.id == session.id && isFixed(to: session)
-                    ? .on
-                    : .off
-                submenu.addItem(item)
-            }
-            choose.submenu = submenu
-            menu.addItem(choose)
-        }
-
-        menu.popUp(
-            positioning: nil,
-            at: NSPoint(x: 0, y: bindingButton.bounds.maxY + 2),
-            in: bindingButton
-        )
-    }
-
-    private func isFixed(to session: any ManagedTerminalSession) -> Bool {
-        drawerLink.fixedDirectoryURL == session.directoryURL.standardizedFileURL
-    }
-
-    private func fix(to session: any ManagedTerminalSession) {
-        sessionManager.revealInTabs(session)
-        drawerLink.fixTerminalDirectory(session.directoryURL)
-        renderedTabs.removeAll()
-        updateDirectoryPresentation()
-        reloadSessions(prefer: session)
-        if !expanded { onToggle?() }
-        view.window?.makeFirstResponder(session.contentView)
-    }
-
-    private func resumeFollowingFinder() {
-        drawerLink.followFinder()
-        renderedTabs.removeAll()
-        updateDirectoryPresentation()
-        // Un-pinning means "go back to where Finder is", so the Finder folder's
-        // own session comes forward when it exists.
-        reloadSessions(prefer: directoryURL.flatMap { sessionManager.sessions(for: $0).last })
-    }
-
-    @objc private func followFinderFromMenu(_ sender: NSMenuItem) {
-        resumeFollowingFinder()
-    }
-
-    @objc private func fixActiveSessionFromMenu(_ sender: NSMenuItem) {
-        guard let activeSession else { return }
-        fix(to: activeSession)
-    }
-
-    @objc private func fixSessionFromMenu(_ sender: NSMenuItem) {
+    @objc private func toggleAnchorFromMenu(_ sender: NSMenuItem) {
         guard let session = session(from: sender) else { return }
-        fix(to: session)
+        session.isAnchored.toggle()
+        reloadSessions()
     }
 
     private func sessionContextMenu(
@@ -673,14 +550,16 @@ final class DrawerContentViewController: NSViewController {
             item.representedObject = id
             return item
         }
-        menu.addItem(item(
-            isFixed(to: session)
-                ? "固定を解除してFinderに追従"
-                : "このTerminalの場所に固定",
-            action: isFixed(to: session)
-                ? #selector(followFinderFromMenu(_:))
-                : #selector(fixSessionFromMenu(_:))
-        ))
+        // AIセッションはそもそも追従しない（cdを送れない）ので、固定トグルは
+        // プレーンシェルにだけ出す。
+        if session.kind == .shell {
+            let follow = item(
+                "フォルダ移動に追従（cd）",
+                action: #selector(toggleAnchorFromMenu(_:))
+            )
+            follow.state = session.isAnchored ? .off : .on
+            menu.addItem(follow)
+        }
         menu.addItem(item(
             "Terminalの場所をFinderで開く",
             action: #selector(openSessionDirectoryFromMenu(_:))

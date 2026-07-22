@@ -65,9 +65,16 @@ final class LoggingTerminalView: LocalProcessTerminalView {
 @MainActor
 final class TerminalSession: NSObject, @preconcurrency LocalProcessTerminalViewDelegate {
     let id = UUID()
-    let key: TerminalSessionKey
-    let directoryURL: URL
+    private(set) var key: TerminalSessionKey
+    private(set) var directoryURL: URL
     let kind: TerminalSessionKind
+
+    /// An anchored shell stays in its folder instead of following browser
+    /// navigation. AI sessions never follow regardless — this flag only
+    /// matters for plain shells.
+    var isAnchored = false {
+        didSet { onChange?() }
+    }
     let persistence: TerminalSessionPersistence?
     let terminalView: LocalProcessTerminalView
     private let outputLog: SessionOutputLog?
@@ -148,6 +155,57 @@ final class TerminalSession: NSObject, @preconcurrency LocalProcessTerminalViewD
     func terminate() {
         guard isRunning else { return }
         OwnedProcessTerminator.terminate(terminalView.process)
+    }
+
+    /// True only while a plain, app-owned shell sits at its prompt: the
+    /// foreground process group on the PTY is the shell itself. Commands,
+    /// full-screen TUIs and tmux clients all fail this gate, so nothing is
+    /// ever typed into them.
+    var isShellIdleAtPrompt: Bool {
+        guard kind == .shell, persistence == nil, isRunning,
+              let process = terminalView.process else { return false }
+        let descriptor = process.childfd
+        let shellPid = process.shellPid
+        guard descriptor >= 0, shellPid > 0 else { return false }
+        let foreground = tcgetpgrp(descriptor)
+        guard foreground > 0, foreground == getpgid(shellPid) else { return false }
+        // The line editor draws its prompt in raw mode (ICANON off); a shell
+        // that is still starting up sits in the default cooked mode with its
+        // SIGINT handler not yet installed — our ^C would kill it outright
+        // (measured, not theory). Cooked mode with the shell in the foreground
+        // also covers `read`: input meant for it must never be ours.
+        var attributes = termios()
+        guard tcgetattr(descriptor, &attributes) == 0 else { return false }
+        return attributes.c_lflag & UInt(ICANON) == 0
+    }
+
+    /// The shell's real working directory, straight from the kernel.
+    var shellWorkingDirectoryPath: String? {
+        guard isRunning, let process = terminalView.process else { return nil }
+        return ProcessWorkingDirectory.path(for: process.shellPid)
+    }
+
+    /// Sends a follow-`cd` when — and only when — that is safe. Every guard
+    /// for injecting bytes into the PTY lives here.
+    func followDirectory(to url: URL) -> Bool {
+        guard isShellIdleAtPrompt else { return false }
+        let target = url.standardizedFileURL.path
+        // The kernel answers /private/var/… where Foundation says /var/…;
+        // normalize through URL so "already there" is recognized either way.
+        if let current = shellWorkingDirectoryPath,
+           URL(fileURLWithPath: current).standardizedFileURL.path == target {
+            return true
+        }
+        terminalView.send(txt: ShellFollow.command(forPath: target))
+        return true
+    }
+
+    /// Re-homes the session after a successful follow. The manager owns the
+    /// key-indexed dictionaries; this only updates the session's own identity.
+    func rebind(to url: URL) {
+        directoryURL = url.standardizedFileURL
+        key = TerminalSessionKey(directoryURL: directoryURL, kind: kind)
+        onChange?()
     }
 
     func transcriptData() -> Data? {

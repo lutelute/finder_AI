@@ -358,6 +358,33 @@ final class TerminalSessionManager: TerminalSessionManaging {
         return session
     }
 
+    func followSession(
+        _ session: any ManagedTerminalSession,
+        to directoryURL: URL
+    ) -> Bool {
+        let oldKey = session.key
+        let newKey = TerminalSessionKey(directoryURL: directoryURL, kind: session.kind)
+        guard oldKey != newKey else { return true }
+        // 索引と食い違うセッション（既にremove済み等）を動かさない。
+        guard sessionsByKey[oldKey]?.id == session.id else { return false }
+        guard sessionsByKey[newKey] == nil else { return false }
+        // cdの安全判定（プロンプト待ちのプレーンシェルか）はセッション側。
+        guard session.followDirectory(to: directoryURL) else { return false }
+
+        sessionsByKey.removeValue(forKey: oldKey)
+        session.rebind(to: directoryURL)
+        sessionsByKey[newKey] = session
+        if let index = insertionOrder.firstIndex(of: oldKey) {
+            insertionOrder[index] = newKey
+        }
+        updateRecord(for: session) {
+            $0.directoryPath = directoryURL.standardizedFileURL.path
+            $0.lastActivityAt = Date()
+        }
+        notifyChange()
+        return true
+    }
+
     func remove(_ session: any ManagedTerminalSession) {
         let persistence = session.persistence
         if session.isRunning {
