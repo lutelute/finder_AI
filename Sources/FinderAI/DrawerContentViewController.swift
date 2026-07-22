@@ -531,7 +531,12 @@ final class DrawerContentViewController: NSViewController {
         reloadSessions(prefer: session)
         view.window?.makeFirstResponder(session.contentView)
         // ダブルクリックはブラウザもそのセッションの現在地へ連れて行く。
-        if NSApp.currentEvent?.clickCount == 2 {
+        // clickCountはマウスイベントにしか意味がない: Accessibility経由の
+        // AXPressでは直前のキーイベントが残っていて偽の2を返し、押しただけで
+        // ブラウザが飛ぶ（実測）。
+        if let event = NSApp.currentEvent,
+           event.type == .leftMouseUp || event.type == .leftMouseDown,
+           event.clickCount == 2 {
             onOpenDirectory?(currentLocationURL(of: session))
         }
     }

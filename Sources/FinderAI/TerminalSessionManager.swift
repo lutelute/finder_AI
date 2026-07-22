@@ -364,7 +364,9 @@ final class TerminalSessionManager: TerminalSessionManaging {
     ) -> Bool {
         let oldKey = session.key
         let newKey = TerminalSessionKey(directoryURL: directoryURL, kind: session.kind)
-        guard oldKey != newKey else { return true }
+        // 所属が同じでも実cwdは手動cdでズレていることがある。付け替えは不要でも
+        // cd自体はセッションに任せる（既に一致していれば何も送らない）。
+        guard oldKey != newKey else { return session.followDirectory(to: directoryURL) }
         // 索引と食い違うセッション（既にremove済み等）を動かさない。
         guard sessionsByKey[oldKey]?.id == session.id else { return false }
         guard sessionsByKey[newKey] == nil else { return false }
