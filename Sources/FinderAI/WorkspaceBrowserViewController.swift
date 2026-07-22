@@ -2386,6 +2386,35 @@ final class WorkspaceBrowserViewController: NSViewController {
         return String(path.dropLast())
     }
 
+    /// Jumps to the folder the real Finder's front window is showing — the
+    /// bridge in the opposite direction of 「Finderで表示」.
+    @objc func openFinderLocation() {
+        Task { [weak self] in
+            let result = await FinderFrontWindow.currentFolder()
+            guard let self else { return }
+            switch result {
+            case .success(let url):
+                self.navigate(to: url)
+            case .failure(.noWindow):
+                self.presentError(
+                    title: "Finderの現在地を開けません",
+                    message: "macOS Finderのウインドウが開いていません。"
+                )
+            case .failure(.notAuthorized):
+                self.presentError(
+                    title: "Finderの現在地を開けません",
+                    message: "システム設定 > プライバシーとセキュリティ > オートメーション で、"
+                        + "FinderAIからFinderへの制御を許可してください。"
+                )
+            case .failure(.failed(let message)):
+                self.presentError(
+                    title: "Finderの現在地を開けません",
+                    message: message.isEmpty ? "Finderの場所を取得できませんでした。" : message
+                )
+            }
+        }
+    }
+
     @objc func toggleQuickLook() {
         guard let panel = QLPreviewPanel.shared() else { return }
         if QLPreviewPanel.sharedPreviewPanelExists(), panel.isVisible {

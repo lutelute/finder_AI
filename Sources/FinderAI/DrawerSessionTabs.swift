@@ -57,7 +57,8 @@ enum DrawerSessionTabs {
             return DrawerSessionTab(
                 id: source.id,
                 title: belongsToCurrentFolder ? name : "\(name) · \(folder)",
-                tooltip: "\(source.kindName) — \(directory.path(percentEncoded: false))",
+                tooltip: "\(source.kindName) — \(directory.path(percentEncoded: false))\n"
+                    + "ダブルクリックでこの場所をブラウザに表示",
                 isRunning: source.isRunning,
                 isActive: source.id == activeID,
                 belongsToCurrentFolder: belongsToCurrentFolder

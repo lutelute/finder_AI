@@ -41,7 +41,7 @@ struct DrawerSessionTabsTests {
         )
         #expect(rows.map(\.title) == ["●  Claude · projectB"])
         #expect(rows.map(\.belongsToCurrentFolder) == [false])
-        #expect(rows[0].tooltip == "Claude — /Users/x/projectB/")
+        #expect(rows[0].tooltip == "Claude — /Users/x/projectB/\nダブルクリックでこの場所をブラウザに表示")
     }
 
     @Test("stopped sessions lose the running dot but keep their identity")
