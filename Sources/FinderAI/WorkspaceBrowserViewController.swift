@@ -1388,14 +1388,44 @@ final class WorkspaceBrowserViewController: NSViewController {
     }
 
     private func watchCurrentDirectory() {
-        watcher.start(url: navigator.currentDirectory) { [weak self] in
-            // The folder changed underneath us; refresh without disturbing the
-            // user's selection or scroll position more than necessary.
+        watcher.start(url: navigator.currentDirectory) { [weak self] event in
             guard let self else { return }
-            let selected = self.selectedItems.first?.url
-            self.pendingSelectionURL = selected
-            self.reloadContents()
+            switch event {
+            case .contentsChanged:
+                // The folder changed underneath us; refresh without disturbing
+                // the user's selection or scroll position more than necessary.
+                let selected = self.selectedItems.first?.url
+                self.pendingSelectionURL = selected
+                self.reloadContents()
+            case .relocated(let source, let destination):
+                self.followDisplayedDirectory(from: source, to: destination)
+            case .disappeared(let url):
+                self.retreatFromDeletedDirectory(url)
+            }
         }
+    }
+
+    /// The folder on screen was moved or renamed outside the app — in the real
+    /// Finder or from a shell. Follow it the same way an in-app rename does:
+    /// current path, history and window title all move to the new location.
+    private func followDisplayedDirectory(from source: URL, to destination: URL) {
+        guard navigator.relocatePathPrefix(from: source, to: destination) else { return }
+        pendingSelectionURL = nil
+        navigate(to: navigator.currentDirectory, addHistory: false)
+    }
+
+    /// The folder on screen was deleted or trashed outside the app. Retreating
+    /// to the nearest surviving ancestor keeps the window usable instead of
+    /// leaving a dead listing; going through history keeps Back as the record of
+    /// where the user actually was.
+    private func retreatFromDeletedDirectory(_ deleted: URL) {
+        guard deleted == navigator.currentDirectory else { return }
+        var candidate = deleted.deletingLastPathComponent().standardizedFileURL
+        while candidate.pathComponents.count > 1,
+              !FileManager.default.fileExists(atPath: candidate.path) {
+            candidate = candidate.deletingLastPathComponent().standardizedFileURL
+        }
+        navigate(to: candidate)
     }
 
     private func updateNavigationUI() {
