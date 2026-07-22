@@ -789,6 +789,24 @@ final class WorkspaceBrowserViewController: NSViewController {
         ribbonPath.font = .systemFont(ofSize: 10.5)
         ribbonPath.target = self
         ribbonPath.action = #selector(ribbonComponentClicked)
+        // Right-clicking the path is how people try to take the path with
+        // them; both forms live here so a terminal `cd` is paste-and-return.
+        let pathMenu = NSMenu(title: "パス")
+        let copyPathItem = NSMenuItem(
+            title: "パス名をコピー",
+            action: #selector(copyCurrentFolderPath),
+            keyEquivalent: ""
+        )
+        copyPathItem.target = self
+        pathMenu.addItem(copyPathItem)
+        let copyCDItem = NSMenuItem(
+            title: "“cd” コマンドをコピー",
+            action: #selector(copyChangeDirectoryCommand),
+            keyEquivalent: ""
+        )
+        copyCDItem.target = self
+        pathMenu.addItem(copyCDItem)
+        ribbonPath.menu = pathMenu
         ribbonPath.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         ribbonPath.translatesAutoresizingMaskIntoConstraints = false
         bar.addSubview(ribbonPath)
@@ -1120,6 +1138,7 @@ final class WorkspaceBrowserViewController: NSViewController {
 
         add("カット", #selector(cutSelection))
         add("コピー", #selector(copySelection))
+        add("パス名をコピー", #selector(copyCurrentPath))
         add("ペースト", #selector(pasteIntoCurrentFolder))
         add("複製", #selector(duplicateSelection))
         add("エイリアスを作成", #selector(makeAliasForSelection))
@@ -2298,13 +2317,44 @@ final class WorkspaceBrowserViewController: NSViewController {
         }
     }
 
+    /// Finder's ⌥⌘C: the selection's path names, or the folder's when nothing
+    /// is selected.
     @objc func copyCurrentPath() {
+        let urls = selectedItems.isEmpty
+            ? [navigator.currentDirectory]
+            : selectedItems.map(\.url)
+        copyToPasteboard(urls.map(Self.plainPath(for:)).joined(separator: "\n"))
+    }
+
+    /// The path-bar variant always means the folder on screen, regardless of
+    /// what happens to be selected in the listing.
+    @objc func copyCurrentFolderPath() {
+        copyToPasteboard(Self.plainPath(for: navigator.currentDirectory))
+    }
+
+    /// Pasting a bare path after a typed `cd ` breaks on spaces and quotes, so
+    /// this hands over the whole command already escaped — moving a shell to
+    /// the folder on screen becomes copy, paste, return.
+    @objc func copyChangeDirectoryCommand() {
+        copyToPasteboard(
+            ShellQuoting.changeDirectoryCommand(
+                forPath: Self.plainPath(for: navigator.currentDirectory)
+            )
+        )
+    }
+
+    private func copyToPasteboard(_ text: String) {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(
-            navigator.currentDirectory.path(percentEncoded: false),
-            forType: .string
-        )
+        pasteboard.setString(text, forType: .string)
+    }
+
+    /// Directory URLs render with a trailing slash; people expect the Finder
+    /// form without one everywhere a path is copied.
+    private static func plainPath(for url: URL) -> String {
+        let path = url.path(percentEncoded: false)
+        guard path.count > 1, path.hasSuffix("/") else { return path }
+        return String(path.dropLast())
     }
 
     @objc func toggleQuickLook() {
