@@ -7,3 +7,6 @@ dist/
 
 # ローカル生成物（鍵・ログ）
 logs/
+
+# Claude Codeローカル状態（権限設定・worktree）
+.claude/
