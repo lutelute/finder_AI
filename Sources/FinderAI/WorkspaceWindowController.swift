@@ -131,6 +131,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         wire(leftPane)
         terminal.onToggle = { [weak self] in self?.toggleTerminal() }
         terminal.onResizeDelta = { [weak self] delta in self?.resizeTerminal(by: delta) }
+        terminal.onOpenDirectory = { [weak self] url in
+            self?.activePane.navigate(to: url)
+        }
         window.setContentSize(NSSize(width: 1180, height: 760))
 
         if preferences.splitEnabled { setSplitEnabled(true) }
