@@ -448,6 +448,14 @@ final class WorkspaceAppCoordinator {
         up.keyEquivalentModifierMask = [.command]
         goMenu.addItem(up)
         goMenu.addItem(item("再読み込み", action: #selector(WorkspaceBrowserViewController.refresh), key: "r"))
+        goMenu.addItem(.separator())
+        let finderHere = item(
+            "Finderの現在地を開く",
+            action: #selector(WorkspaceBrowserViewController.openFinderLocation),
+            key: "f"
+        )
+        finderHere.keyEquivalentModifierMask = [.command, .shift]
+        goMenu.addItem(finderHere)
         goItem.submenu = goMenu
         main.addItem(goItem)
 

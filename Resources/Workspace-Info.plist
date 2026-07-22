@@ -21,15 +21,17 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.10.0</string>
+	<string>1.10.1</string>
 	<key>CFBundleVersion</key>
-	<string>36</string>
+	<string>37</string>
 	<key>FinderAIGitCommit</key>
 	<string>source</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.developer-tools</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>15.0</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>「Finderの現在地を開く」で、macOS Finderが表示中のフォルダを取得するためにFinderへ問い合わせます。</string>
 	<key>NSDesktopFolderUsageDescription</key>
 	<string>FinderAIは、ユーザーが選んだデスクトップ上のファイルを整理するためにアクセスします。</string>
 	<key>NSDocumentsFolderUsageDescription</key>

@@ -139,7 +139,9 @@ sign --preserve-metadata=entitlements "$SPARKLE_VERSION/XPCServices/Downloader.x
 sign "$SPARKLE_VERSION/Autoupdate"
 sign "$SPARKLE_VERSION/Updater.app"
 sign "$FRAMEWORKS/Sparkle.framework"
-sign "$APP"
+# The app itself carries the automation entitlement: hardened runtime blocks
+# Apple events otherwise, and 「Finderの現在地を開く」 asks Finder over them.
+sign --entitlements "$ROOT/Resources/FinderAI.entitlements" "$APP"
 codesign --verify --deep --strict --verbose=4 "$APP"
 if [ "$RELEASE_BUILD" = "1" ]; then
     "$ROOT/scripts/verify-distribution-app.sh" pre-notarization "$APP"

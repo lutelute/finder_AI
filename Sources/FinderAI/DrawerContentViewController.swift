@@ -526,11 +526,25 @@ final class DrawerContentViewController: NSViewController {
 
     @objc private func selectSession(_ sender: NSButton) {
         guard visibleSessions.indices.contains(sender.tag) else { return }
-        activeSession = visibleSessions[sender.tag]
-        reloadSessions(prefer: activeSession)
-        if let activeSession {
-            view.window?.makeFirstResponder(activeSession.contentView)
+        let session = visibleSessions[sender.tag]
+        activeSession = session
+        reloadSessions(prefer: session)
+        view.window?.makeFirstResponder(session.contentView)
+        // ダブルクリックはブラウザもそのセッションの現在地へ連れて行く。
+        if NSApp.currentEvent?.clickCount == 2 {
+            onOpenDirectory?(currentLocationURL(of: session))
         }
+    }
+
+    /// The place a session is *actually* at. A shell may have been `cd`-ed by
+    /// hand, so the kernel's answer beats the registered folder; other kinds
+    /// fall back to where they were started.
+    private func currentLocationURL(of session: any ManagedTerminalSession) -> URL {
+        if let live = session as? TerminalSession,
+           let cwd = live.shellWorkingDirectoryPath {
+            return URL(fileURLWithPath: cwd, isDirectory: true).standardizedFileURL
+        }
+        return session.directoryURL
     }
 
     @objc private func toggleAnchorFromMenu(_ sender: NSMenuItem) {
@@ -561,7 +575,7 @@ final class DrawerContentViewController: NSViewController {
             menu.addItem(follow)
         }
         menu.addItem(item(
-            "Terminalの場所をFinderで開く",
+            "このセッションの場所をブラウザで表示",
             action: #selector(openSessionDirectoryFromMenu(_:))
         ))
         menu.addItem(.separator())
@@ -599,7 +613,7 @@ final class DrawerContentViewController: NSViewController {
 
     @objc private func openSessionDirectoryFromMenu(_ sender: NSMenuItem) {
         guard let session = session(from: sender) else { return }
-        onOpenDirectory?(session.directoryURL)
+        onOpenDirectory?(currentLocationURL(of: session))
     }
 
     @objc private func saveTranscriptFromMenu(_ sender: NSMenuItem) {
