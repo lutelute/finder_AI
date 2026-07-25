@@ -1074,11 +1074,12 @@ final class WorkspaceBrowserViewController: NSViewController {
         return [name, modified, size, kind]
     }
 
-    /// Slack belongs to 名前, not 種類. 種類 holds a short fixed label
-    /// ("PPTX ファイル") while file names are what actually need room, so giving
-    /// the last column the extra width truncated every long name and — once the
-    /// sidebar was widened — pushed the total past the viewport into a permanent
-    /// horizontal scroller.
+    /// When the list is wider than the columns need, the leftover belongs to
+    /// 名前: 種類 holds a short fixed label ("PPTX ファイル") and gains nothing
+    /// from extra width, while names are what actually get truncated.
+    ///
+    /// This only decides who receives *surplus* width. It does nothing when the
+    /// columns are too wide for the list — see `nameColumnWidth`.
     static let fileColumnAutoresizing = NSTableView.ColumnAutoresizingStyle
         .firstColumnOnlyAutoresizingStyle
 

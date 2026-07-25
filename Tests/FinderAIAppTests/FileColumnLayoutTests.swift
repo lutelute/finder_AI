@@ -3,15 +3,16 @@ import Testing
 
 @testable import FinderAIApp
 
-/// The authored widths add up to 850pt and the gutters add 68 more, which only
-/// just fits beside a default sidebar. Widening the sidebar — an ordinary thing
-/// to do — pushed the total past the viewport, and because the slack went to the
-/// *last* column the list showed a permanent horizontal scroller while long file
-/// names truncated and 種類 ("PPTX ファイル") sat on empty space.
+/// The authored widths add up to 850pt and the gutters add 68 more, so the row
+/// wants 918pt however narrow the list is. Beside the default 210pt sidebar that
+/// fits and there is even 36pt to spare; beside a 299pt one it does not, and the
+/// list carried a permanent horizontal scroller with 種類 pushed off-screen.
 ///
-/// AppKit's autoresizing does not fix this on its own: it redistributes width
-/// only when a table is resized, never on the first layout, and it never shrinks
-/// a column below its authored width. 名前 therefore gets sized explicitly.
+/// Two separate things were wrong, and only the second causes the scroller:
+/// surplus width went to 種類 instead of 名前, and nothing ever handled a
+/// *shortfall* — AppKit redistributes width only when a table is resized, never
+/// on the first layout, and never below a column's authored width. 名前 is
+/// therefore sized explicitly on every layout, which covers both directions.
 @MainActor
 @Suite("File list column geometry")
 struct FileColumnLayoutTests {
@@ -55,6 +56,20 @@ struct FileColumnLayoutTests {
             )
             #expect(sized[0].width > sized[3].width, "名前 should outgrow 種類")
         }
+    }
+
+    /// Measured on a real window: 名前 was 433pt with the scroller and is 380pt
+    /// without it. Removing the scroller costs name width at a wide sidebar and
+    /// gains it at a narrow one, and that trade is the point of the change — a
+    /// regression here would most likely show up as one direction silently
+    /// swallowing the other.
+    @Test("名前 grows past its authored width only when the row has surplus")
+    func theTradeIsExplicit() {
+        let roomy = sizedColumns(viewport: viewport(window: 1180, sidebar: 210))[0].width
+        let tight = sizedColumns(viewport: viewport(window: 1180, sidebar: 299))[0].width
+        #expect(roomy > 430, "a default sidebar leaves surplus, so 名前 exceeds 430pt")
+        #expect(tight < 430, "a 299pt sidebar cannot fit 430pt without a scroller")
+        #expect(tight >= 220)
     }
 
     @Test("the fixed columns keep their authored widths")
