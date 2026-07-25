@@ -15,14 +15,18 @@ struct WorkspaceWindowLayoutTests {
     }
 
     /// `cascadeTopLeft(from:)` keeps a window on screen. A display too small to
-    /// hold the 1180×760 window plus the cascade travel clamps every call to the
-    /// same spot, so the origins stop being distinct — correct behaviour, but it
-    /// turns the cascade test into a statement about the display. CI runners are
-    /// exactly that case: the suite otherwise passed there and only this failed.
-    static var displayHasRoomToCascade: Bool {
-        guard let visible = NSScreen.main?.visibleFrame else { return false }
-        let travel: CGFloat = 120
-        return visible.width >= 1180 + travel && visible.height >= 760 + travel
+    /// hold the 1180×760 window plus its title bar and the cascade travel clamps
+    /// every call to the same spot, so the origins stop being distinct — correct
+    /// behaviour, but it turns the cascade test into a statement about the
+    /// display. A CI runner is exactly that case: on the first run of the
+    /// workflow this was the only failure in the whole suite.
+    ///
+    /// `CGDisplayBounds`, not `NSScreen`: a trait condition is evaluated from a
+    /// `Sendable` closure and `NSScreen` is main-actor isolated, so reading it
+    /// here does not compile.
+    nonisolated static var displayHasRoomToCascade: Bool {
+        let bounds = CGDisplayBounds(CGMainDisplayID())
+        return bounds.width >= 1180 + 100 && bounds.height >= 788 + 72
     }
 
     @Test("view mode cycles through list, column, and gallery")
