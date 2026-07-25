@@ -353,6 +353,16 @@ final class WorkspaceAppCoordinator {
     }
 
     private func configureMainMenu() {
+        let main = Self.makeMainMenu(coordinator: self)
+        // Populates the window list and keeps the checkmark on the key window.
+        NSApp.windowsMenu = main.items.compactMap(\.submenu).first { $0.title == "ウインドウ" }
+        NSApp.mainMenu = main
+    }
+
+    /// Built without touching app state so the key-equivalent table can be
+    /// asserted in tests. `coordinator` is only the target for the two commands
+    /// that own the window list; everything else rides the responder chain.
+    static func makeMainMenu(coordinator: WorkspaceAppCoordinator?) -> NSMenu {
         let main = NSMenu()
 
         let appItem = NSMenuItem()
@@ -366,7 +376,7 @@ final class WorkspaceAppCoordinator {
             action: #selector(WorkspaceUpdater.checkForUpdates(_:)),
             keyEquivalent: ""
         )
-        update.target = updater
+        update.target = coordinator?.updater
         appMenu.addItem(update)
         appMenu.addItem(.separator())
         let settings = NSMenuItem(
@@ -374,7 +384,7 @@ final class WorkspaceAppCoordinator {
             action: #selector(showSettings),
             keyEquivalent: ","
         )
-        settings.target = self
+        settings.target = coordinator
         appMenu.addItem(settings)
         appMenu.addItem(.separator())
         let quit = NSMenuItem(title: "FinderAIを終了", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -387,8 +397,12 @@ final class WorkspaceAppCoordinator {
         let fileMenu = NSMenu(title: "ファイル")
         // The coordinator owns the window list, so this one keeps an explicit
         // target instead of riding the responder chain.
-        let newWindowItem = NSMenuItem(title: "新規ウインドウ", action: #selector(newWindow), keyEquivalent: "n")
-        newWindowItem.target = self
+        let newWindowItem = NSMenuItem(
+            title: "新規ウインドウ",
+            action: #selector(WorkspaceAppCoordinator.newWindow),
+            keyEquivalent: "n"
+        )
+        newWindowItem.target = coordinator
         fileMenu.addItem(newWindowItem)
         fileMenu.addItem(.separator())
         fileMenu.addItem(item("フォルダを開く…", action: #selector(WorkspaceBrowserViewController.openFolderChooser), key: "o"))
@@ -401,6 +415,20 @@ final class WorkspaceAppCoordinator {
         let quickLook = item("クイックルック", action: #selector(WorkspaceBrowserViewController.toggleQuickLook), key: "y")
         fileMenu.addItem(quickLook)
         fileMenu.addItem(item("名前を変更…", action: #selector(WorkspaceBrowserViewController.renameSelection), key: ""))
+        fileMenu.addItem(.separator())
+        // These existed only in the context menu, so a user who never
+        // right-clicked had no way to reach them — or to learn they existed.
+        // Keys match Finder: ⌘I, ⌘D, ⌃⌘A.
+        fileMenu.addItem(item("情報を見る", action: #selector(WorkspaceBrowserViewController.showInfo), key: "i"))
+        fileMenu.addItem(item("複製", action: #selector(WorkspaceBrowserViewController.duplicateSelection), key: "d"))
+        let alias = item(
+            "エイリアスを作成",
+            action: #selector(WorkspaceBrowserViewController.makeAliasForSelection),
+            key: "a"
+        )
+        alias.keyEquivalentModifierMask = [.command, .control]
+        fileMenu.addItem(alias)
+        fileMenu.addItem(item("圧縮", action: #selector(WorkspaceBrowserViewController.compressSelection), key: ""))
         fileMenu.addItem(.separator())
         let trash = item("ゴミ箱に入れる…", action: #selector(WorkspaceBrowserViewController.trashSelection), key: "\u{8}")
         trash.keyEquivalentModifierMask = [.command]
@@ -461,18 +489,29 @@ final class WorkspaceAppCoordinator {
 
         let viewItem = NSMenuItem()
         let viewMenu = NSMenu(title: "表示")
-        viewMenu.addItem(item("表示モードを切り替え", action: #selector(WorkspaceBrowserViewController.toggleColumnView), key: "2"))
+        // ⌘2/⌘3/⌘4 are where Finder puts list/column/gallery. The cycle keeps
+        // its own key so the older habit still works.
+        viewMenu.addItem(item("リスト表示", action: #selector(WorkspaceBrowserViewController.selectListView), key: "2"))
+        viewMenu.addItem(item("カラム表示", action: #selector(WorkspaceBrowserViewController.selectColumnView), key: "3"))
+        viewMenu.addItem(item("ギャラリー表示", action: #selector(WorkspaceBrowserViewController.selectGalleryView), key: "4"))
+        let cycleView = item(
+            "表示モードを切り替え",
+            action: #selector(WorkspaceBrowserViewController.toggleColumnView),
+            key: "2"
+        )
+        cycleView.keyEquivalentModifierMask = [.command, .option]
+        viewMenu.addItem(cycleView)
         viewMenu.addItem(.separator())
         viewMenu.addItem(item("Terminalを開く／隠す", action: #selector(WorkspaceWindowController.toggleTerminal), key: "j"))
         // 永続化と出力ログのトグルは設定ウインドウ（⌘,）にある。メニューに残すのは
         // 動作だけで、状態の置き場にはしない。
         let manageSessions = NSMenuItem(
             title: "Terminalセッションを管理…",
-            action: #selector(showTerminalSessionsPanel),
+            action: #selector(WorkspaceAppCoordinator.showTerminalSessionsPanel),
             keyEquivalent: "t"
         )
         manageSessions.keyEquivalentModifierMask = [.command, .option]
-        manageSessions.target = self
+        manageSessions.target = coordinator
         viewMenu.addItem(manageSessions)
         let split = item("2画面に分割／解除", action: #selector(WorkspaceWindowController.toggleSplit), key: "s")
         split.keyEquivalentModifierMask = [.command, .option]
@@ -480,7 +519,15 @@ final class WorkspaceAppCoordinator {
         let hidden = item("隠しファイルを表示／隠す", action: #selector(WorkspaceBrowserViewController.toggleHiddenFiles), key: ".")
         hidden.keyEquivalentModifierMask = [.command, .shift]
         viewMenu.addItem(hidden)
-        viewMenu.addItem(item("サイドバーにピン留め／解除", action: #selector(WorkspaceBrowserViewController.togglePin), key: "d"))
+        // ⌘D belongs to 複製 in Finder; pinning takes ⌃⌘T, where Finder puts
+        // "サイドバーに追加".
+        let pin = item(
+            "サイドバーにピン留め／解除",
+            action: #selector(WorkspaceBrowserViewController.togglePin),
+            key: "t"
+        )
+        pin.keyEquivalentModifierMask = [.command, .control]
+        viewMenu.addItem(pin)
         viewMenu.addItem(.separator())
         viewMenu.addItem(item("このフォルダを検索", action: #selector(WorkspaceBrowserViewController.focusSearchField), key: "f"))
         viewMenu.addItem(item("パスを入力…", action: #selector(WorkspaceBrowserViewController.beginPathEditing), key: "l"))
@@ -503,10 +550,7 @@ final class WorkspaceAppCoordinator {
         windowMenu.addItem(NSMenuItem(title: "すべてを手前に移動", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: ""))
         windowItem.submenu = windowMenu
         main.addItem(windowItem)
-        // Populates the window list and keeps the checkmark on the key window.
-        NSApp.windowsMenu = windowMenu
-
-        NSApp.mainMenu = main
+        return main
     }
 
     /// Target stays nil so AppKit walks the responder chain and the command lands
@@ -515,7 +559,7 @@ final class WorkspaceAppCoordinator {
     /// These used to target `workspace.browser` — the first window's browser —
     /// which was invisible with one window and would have sent every menu command
     /// to window 1 regardless of what the user was looking at.
-    private func item(
+    private static func item(
         _ title: String,
         action: Selector,
         key: String
