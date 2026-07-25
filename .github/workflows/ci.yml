@@ -1,0 +1,65 @@
+name: Tests
+
+# Until now the only workflow was the release, so nothing verified a pull
+# request: the suite ran on whichever machine the author happened to use, and a
+# branch could merge green-by-assertion. A clean build plus the whole suite
+# takes about a minute, and this repository is public, so the macOS minutes are
+# free — there is no reason for a PR to reach main unverified.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A newer push to the same branch makes the older run pointless. main is
+# exempt: those runs record whether a merged commit is actually green.
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - name: Check out the commit under test
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Record the toolchain the results belong to
+        run: swift --version
+
+      # run-tests.sh, not `swift test`: it also runs the release-script checks,
+      # which is what release.sh calls. Keeping one entry point means a green CI
+      # and a green release mean the same thing.
+      - name: Run the suite
+        run: ./scripts/run-tests.sh
+
+  lint:
+    name: Shell and workflow lint
+    # Both linters are static and platform-independent, so this stays off the
+    # macOS runners. The release scripts hold the signing and notarization
+    # logic; a shell mistake there surfaces at publish time, when it is most
+    # expensive to find.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the commit under test
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Lint the scripts
+        run: shellcheck scripts/*.sh
+
+      - name: Lint the workflows
+        run: |
+          set -euo pipefail
+          # 1.7.7 predates the macos-26 runner label and rejects it in both
+          # workflows. Bumping is the fix; declaring it as a self-hosted label
+          # in actionlint.yaml would silence real typos in that field too.
+          version=1.7.12
+          curl -fsSL --retry 3 \
+            "https://github.com/rhysd/actionlint/releases/download/v${version}/actionlint_${version}_linux_amd64.tar.gz" \
+            | tar -xz actionlint
+          ./actionlint -color

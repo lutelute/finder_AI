@@ -26,7 +26,7 @@ struct OwnedProcessTerminatorTests {
 
         OwnedProcessTerminator.terminate(process)
 
-        for _ in 0..<200 {
+        for _ in 0..<4_000 {
             if Darwin.kill(pid, 0) == -1, errno == ESRCH { break }
             try await Task.sleep(for: .milliseconds(5))
         }
@@ -100,7 +100,7 @@ struct OwnedProcessTerminatorTests {
     private func waitUntil(
         _ condition: () -> Bool
     ) async throws {
-        for _ in 0..<400 {
+        for _ in 0..<4_000 {
             if condition() { return }
             try await Task.sleep(for: .milliseconds(5))
         }

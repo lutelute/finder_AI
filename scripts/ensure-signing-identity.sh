@@ -15,7 +15,7 @@
 # release.
 set -eu
 
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 CN="FinderAI Local Signing"
 KEYCHAIN_NAME="finderai-signing.keychain"
 KEYCHAIN="$HOME/Library/Keychains/${KEYCHAIN_NAME}-db"

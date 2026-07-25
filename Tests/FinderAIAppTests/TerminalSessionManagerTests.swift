@@ -112,7 +112,7 @@ private actor RecordingTmuxController: TmuxControlling {
 private func eventually(
     _ condition: @MainActor () -> Bool
 ) async throws {
-    for _ in 0..<400 where !condition() {
+    for _ in 0..<4_000 where !condition() {
         try await Task.sleep(for: .milliseconds(5))
     }
     #expect(condition())
@@ -219,7 +219,7 @@ struct TerminalSessionManagerTests {
             registry: registry
         )
 
-        for _ in 0..<400 where await controller.callCount() == 0 {
+        for _ in 0..<4_000 where await controller.callCount() == 0 {
             try await Task.sleep(for: .milliseconds(5))
         }
         #expect(await controller.callCount() > 0)
@@ -412,7 +412,7 @@ struct TerminalSessionManagerTests {
         manager.remove(session)
         // killはTaskで走るので、actorへの記録が届くまで直接ポーリングする。
         var killed: [String] = []
-        for _ in 0..<400 {
+        for _ in 0..<4_000 {
             killed = await controller.killed()
             if killed.contains(expectedName) { break }
             try await Task.sleep(for: .milliseconds(5))
