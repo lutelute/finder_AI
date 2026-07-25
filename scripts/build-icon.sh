@@ -6,7 +6,7 @@
 
 set -eu
 
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 SVG="$ROOT/Resources/AppIcon.svg"
 ICNS="$ROOT/Resources/AppIcon.icns"
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/finderai-icon.XXXXXX")

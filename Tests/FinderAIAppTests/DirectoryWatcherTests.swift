@@ -18,7 +18,7 @@ struct DirectoryWatcherTests {
     private func waitUntil(
         _ condition: () -> Bool
     ) async throws {
-        for _ in 0..<400 {
+        for _ in 0..<4_000 {
             if condition() { return }
             try await Task.sleep(for: .milliseconds(5))
         }

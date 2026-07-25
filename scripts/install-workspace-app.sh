@@ -10,7 +10,7 @@
 
 set -eu
 
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 APP_NAME="FinderAI.app"
 SRC="$ROOT/dist/$APP_NAME"
 DEST="/Applications/$APP_NAME"

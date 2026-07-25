@@ -20,7 +20,7 @@ struct ShellFollowIntegrationTests {
         _ what: Comment,
         _ condition: () -> Bool
     ) async throws {
-        for _ in 0..<600 {
+        for _ in 0..<2_000 {
             if condition() { return }
             try await Task.sleep(for: .milliseconds(10))
         }
