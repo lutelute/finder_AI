@@ -14,6 +14,17 @@ struct WorkspaceWindowLayoutTests {
         return WorkspacePreferences(defaults: suite ?? .standard)
     }
 
+    /// `cascadeTopLeft(from:)` keeps a window on screen. A display too small to
+    /// hold the 1180×760 window plus the cascade travel clamps every call to the
+    /// same spot, so the origins stop being distinct — correct behaviour, but it
+    /// turns the cascade test into a statement about the display. CI runners are
+    /// exactly that case: the suite otherwise passed there and only this failed.
+    static var displayHasRoomToCascade: Bool {
+        guard let visible = NSScreen.main?.visibleFrame else { return false }
+        let travel: CGFloat = 120
+        return visible.width >= 1180 + travel && visible.height >= 760 + travel
+    }
+
     @Test("view mode cycles through list, column, and gallery")
     func viewModeCycleIncludesGallery() {
         _ = NSApplication.shared
@@ -171,7 +182,10 @@ struct WorkspaceWindowLayoutTests {
     /// Opening several in a row leaves the key window unchanged between calls, so
     /// deriving each offset from "the window in front" stacked them all on one
     /// spot. The running point is what keeps them apart.
-    @Test("each cascaded window lands somewhere new")
+    @Test(
+        "each cascaded window lands somewhere new",
+        .enabled(if: WorkspaceWindowLayoutTests.displayHasRoomToCascade)
+    )
     func cascadeWalks() throws {
         _ = NSApplication.shared
         let first = WorkspaceWindowController(
