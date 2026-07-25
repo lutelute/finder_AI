@@ -851,12 +851,23 @@ final class WorkspaceBrowserViewController: NSViewController {
         updateStatus()
     }
 
-    /// ⌘2でlist→column→galleryを循環する。toolbarからは直接選べる。
+    /// list→column→galleryを循環する。toolbarとメニューからは直接選べる。
     @objc func toggleColumnView() {
-        let selection = selectedItems.map(\.url)
         let modes = WorkspaceViewMode.allCases
         let index = modes.firstIndex(of: preferences.viewMode) ?? 0
-        preferences.viewMode = modes[(index + 1) % modes.count]
+        select(viewMode: modes[(index + 1) % modes.count])
+    }
+
+    // Finder binds ⌘2/⌘3/⌘4 to list/column/gallery. Cycling on a single key
+    // made the fourth press the only way back, so each mode gets its own key
+    // and the cycle stays available for anyone who learned it.
+    @objc func selectListView() { select(viewMode: .list) }
+    @objc func selectColumnView() { select(viewMode: .column) }
+    @objc func selectGalleryView() { select(viewMode: .gallery) }
+
+    private func select(viewMode: WorkspaceViewMode) {
+        let selection = selectedItems.map(\.url)
+        preferences.viewMode = viewMode
         applyViewMode()
         restoreFlatSelection(selection)
     }
@@ -1066,7 +1077,12 @@ final class WorkspaceBrowserViewController: NSViewController {
         fileTable.gridColor = IntegratedPanelTheme.border.withAlphaComponent(0.55)
         fileTable.allowsMultipleSelection = true
         fileTable.allowsEmptySelection = true
-        fileTable.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        // Slack belongs to 名前, not 種類. 種類 holds a short fixed label
+        // ("PPTX ファイル") while file names are what actually need room, so
+        // giving the last column the extra width truncated every long name and
+        // — once the sidebar was widened — pushed the total past the viewport
+        // into a permanent horizontal scroller.
+        fileTable.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
         fileTable.target = self
         fileTable.doubleAction = #selector(openSelection)
         fileTable.registerForDraggedTypes([.fileURL])
@@ -2901,6 +2917,11 @@ extension WorkspaceBrowserViewController: NSMenuItemValidation {
             return !selectedItems.isEmpty
         case #selector(paste(_:)):
             return fileClipboard.canPaste(into: navigator.currentDirectory)
+        // These no-op on an empty selection, so they must not look available.
+        // 情報を見る and 圧縮 deliberately stay enabled: both fall back to the
+        // current folder.
+        case #selector(duplicateSelection), #selector(makeAliasForSelection):
+            return !selectedItems.isEmpty
         default:
             return true
         }
