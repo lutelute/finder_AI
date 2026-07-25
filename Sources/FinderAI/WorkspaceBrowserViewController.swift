@@ -633,6 +633,7 @@ final class WorkspaceBrowserViewController: NSViewController {
 
     override func viewDidLayout() {
         super.viewDidLayout()
+        layoutFileColumns()
         guard showsSidebar, !didSetInitialSidebarPosition,
               splitView.bounds.width >= 761 else { return }
         splitView.setPosition(preferences.sidebarWidth, ofDividerAt: 0)
@@ -1042,7 +1043,10 @@ final class WorkspaceBrowserViewController: NSViewController {
         button.widthAnchor.constraint(equalToConstant: 28).isActive = true
     }
 
-    private func makeFileTable() -> NSScrollView {
+    /// Split out so the column geometry can be exercised without a window: the
+    /// widths and the autoresizing style together decide whether long names
+    /// truncate, and that only shows up once a table is laid out at a real size.
+    static func makeFileColumns() -> [NSTableColumn] {
         let name = NSTableColumn(identifier: Column.name)
         name.title = "名前"
         name.minWidth = 220
@@ -1067,8 +1071,51 @@ final class WorkspaceBrowserViewController: NSViewController {
         kind.minWidth = 110
         kind.width = 145
         kind.sortDescriptorPrototype = NSSortDescriptor(key: Column.kind.rawValue, ascending: true)
+        return [name, modified, size, kind]
+    }
 
-        [name, modified, size, kind].forEach(fileTable.addTableColumn)
+    /// Slack belongs to 名前, not 種類. 種類 holds a short fixed label
+    /// ("PPTX ファイル") while file names are what actually need room, so giving
+    /// the last column the extra width truncated every long name and — once the
+    /// sidebar was widened — pushed the total past the viewport into a permanent
+    /// horizontal scroller.
+    static let fileColumnAutoresizing = NSTableView.ColumnAutoresizingStyle
+        .firstColumnOnlyAutoresizingStyle
+
+    /// What 名前 should be, given everything else in the row.
+    ///
+    /// The autoresizing style alone is not enough: AppKit redistributes width
+    /// only when a table is *resized*, so on the first layout the columns keep
+    /// their authored widths. Too wide and the list opens with a horizontal
+    /// scroller; too narrow and it opens with dead space past 種類. Sizing 名前
+    /// explicitly on every layout removes both.
+    static func nameColumnWidth(
+        viewport: CGFloat,
+        fixedColumnsTotal: CGFloat,
+        gutters: CGFloat,
+        minimum: CGFloat
+    ) -> CGFloat {
+        max(minimum, viewport - fixedColumnsTotal - gutters)
+    }
+
+    /// Re-sized on every layout pass, so the width is only written when it
+    /// actually changes — assigning a column width re-enters layout.
+    private func layoutFileColumns() {
+        guard let viewport = listScrollView?.contentView.bounds.width else { return }
+        let columns = fileTable.tableColumns
+        guard let name = columns.first, columns.count > 1, viewport > 0 else { return }
+        let target = Self.nameColumnWidth(
+            viewport: viewport,
+            fixedColumnsTotal: columns.dropFirst().reduce(0) { $0 + $1.width },
+            gutters: fileTable.intercellSpacing.width * CGFloat(columns.count),
+            minimum: name.minWidth
+        )
+        guard abs(name.width - target) > 0.5 else { return }
+        name.width = target
+    }
+
+    private func makeFileTable() -> NSScrollView {
+        Self.makeFileColumns().forEach(fileTable.addTableColumn)
         fileTable.delegate = self
         fileTable.dataSource = self
         fileTable.rowHeight = 27
@@ -1077,12 +1124,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         fileTable.gridColor = IntegratedPanelTheme.border.withAlphaComponent(0.55)
         fileTable.allowsMultipleSelection = true
         fileTable.allowsEmptySelection = true
-        // Slack belongs to 名前, not 種類. 種類 holds a short fixed label
-        // ("PPTX ファイル") while file names are what actually need room, so
-        // giving the last column the extra width truncated every long name and
-        // — once the sidebar was widened — pushed the total past the viewport
-        // into a permanent horizontal scroller.
-        fileTable.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
+        fileTable.columnAutoresizingStyle = Self.fileColumnAutoresizing
         fileTable.target = self
         fileTable.doubleAction = #selector(openSelection)
         fileTable.registerForDraggedTypes([.fileURL])
