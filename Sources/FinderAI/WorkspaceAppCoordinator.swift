@@ -29,6 +29,18 @@ final class WorkspaceAppCoordinator {
         controller.onAddCurrentFolder = { [weak self] in
             self?.toggleEdgeTabForCurrentFolder()
         }
+        controller.windowRowsProvider = { [weak self] in self?.windowRows() ?? [] }
+        controller.onSelectWindow = { [weak self] id in
+            // 押したら確定。戻す先は忘れる。
+            self?.previewRestoreTarget = nil
+            self?.windows.first { ObjectIdentifier($0) == id }?.show()
+        }
+        controller.onCloseWindow = { [weak self] id in
+            self?.windows.first { ObjectIdentifier($0) == id }?.window?.performClose(nil)
+        }
+        controller.onPreviewWindow = { [weak self] id in self?.previewWindow(id) }
+        controller.onBeginPreviewWindows = { [weak self] in self?.beginWindowPreview() }
+        controller.onEndPreviewWindows = { [weak self] in self?.endWindowPreview() }
         controller.windowsLayoutProvider = { [weak self] in
             guard let self else { return .init(screens: [], windows: [], frontmost: nil) }
             let front = self.lastKeyWorkspaceWindow
@@ -62,6 +74,7 @@ final class WorkspaceAppCoordinator {
     private weak var lastKeyWorkspaceWindow: NSWindow?
     /// 一覧のカードに触れて仮に前へ出す前、手元にいたウインドウ。離れたら戻す。
     private weak var previewRestoreTarget: NSWindow?
+
 
     /// Terminal sessions are keyed by folder and kind across the whole app, so two
     /// windows on the same folder share one shell rather than racing to spawn a
@@ -463,6 +476,7 @@ final class WorkspaceAppCoordinator {
             }
             panel.onOpenNew = { [weak self] in self?.newWindow() }
             panel.onPreview = { [weak self] id in self?.previewWindow(id) }
+            panel.onBeginPreview = { [weak self] in self?.beginWindowPreview() }
             panel.onEndPreview = { [weak self] in self?.endWindowPreview() }
             windowsPanel = panel
         }
@@ -476,21 +490,46 @@ final class WorkspaceAppCoordinator {
     /// 「仮に」なので、離れれば元の並びへ戻す。
     private func previewWindow(_ id: ObjectIdentifier) {
         guard let target = windows.first(where: { ObjectIdentifier($0) == id })?.window else { return }
-        if previewRestoreTarget == nil {
-            previewRestoreTarget = lastKeyWorkspaceWindow ?? NSApp.keyWindow
-        }
-        target.orderFront(nil)
-        // 一覧そのものは上に残す。前に出した拍子に隠れると、次のカードへ移れない。
-        windowsPanel?.window?.orderFront(nil)
+        // `orderFront`は、このアプリが前面にいないと効かない回がある。袖は
+        // 非アクティブのまま使うものなので、効いたり効かなかったりした——
+        // 実測で、触れても前に出ない行が並びの中に混ざった。
+        target.orderFrontRegardless()
+        // 独立した一覧は上に残す。前に出した拍子に隠れると、次の行へ移れない。
+        // 袖から広げた一覧は`.floating`なので、放っておいても隠れない。
+        raiseWindowsPanelIfVisible()
     }
 
+    /// 一覧を開いた。いまの前後関係を覚えておく。
+    ///
+    /// 行ごとに覚えて行ごとに戻す作りにしていたが、隣へ移る一瞬の「入った」と
+    /// 「離れた」は順序が決まっておらず、片方が落ちることさえある。実測でも
+    /// 戻る先が1手ずれた。覚えるのは開いたときの1回だけにする。
+    private func beginWindowPreview() {
+        // 戻る先は「最後に手を触れていたウインドウ」。
+        //
+        // `NSApp.orderedWindows`の前後関係は、このアプリが前面にいないあいだ
+        // 更新されず、実際の重なりと食い違う——袖は非アクティブのまま使うので
+        // まさにその状況で、戻したはずが別の1枚が前に出ていた。
+        previewRestoreTarget = lastKeyWorkspaceWindow
+            ?? NSApp.orderedWindows.first { candidate in
+                windows.contains { $0.window === candidate }
+            }
+    }
+
+    /// 一覧を畳んだ。覚えた前後関係へ戻す。押して確定した場合は戻さない。
     private func endWindowPreview() {
         guard let restore = previewRestoreTarget else { return }
         previewRestoreTarget = nil
         // 閉じたウインドウを戻そうとしない。
         guard restore.isVisible else { return }
-        restore.orderFront(nil)
-        windowsPanel?.window?.orderFront(nil)
+        restore.orderFrontRegardless()
+        raiseWindowsPanelIfVisible()
+    }
+
+    /// 開いているときだけ前に戻す。閉じている一覧を開いてしまわない。
+    private func raiseWindowsPanelIfVisible() {
+        guard let panel = windowsPanel?.window, panel.isVisible else { return }
+        panel.orderFrontRegardless()
     }
 
     private func windowRows() -> [WorkspaceWindowsPanelController.Row] {

@@ -1,18 +1,13 @@
 import AppKit
 import FinderAICore
 
-/// 開いているFinderAIのウインドウを一覧する。
+/// 開いているFinderAIのウインドウを一覧する、独立したウインドウ。
+///
+/// ふだんは袖から広がる一覧（`EdgeWindowsListController`）を使う。こちらは袖を
+/// 切っているときの受け皿で、行の見た目は`WorkspaceWindowRowView`で揃えてある。
 ///
 /// 何十枚も開いて使われるので、ウインドウメニューの並びだけでは足りない——
 /// あちらはタイトルしか出ず、同じ名前のフォルダが並ぶと選びようがない。
-///
-/// 縦1列のリストから、カードを並べる形へ作り替えた。リストは1行につき
-/// 「主画面・中央 1180×792」のような同じ文言が並ぶだけで、同じ場所に重ねて
-/// 使っているときは何枚あっても一字一句同じになる。読む手がかりを増やすより、
-/// フォルダの絵を大きく出して目で分けるほうが早い。
-///
-/// 触れているあいだは、そのウインドウが実際に前へ出る。開くまで中身が分から
-/// ないのでは、どれか当てる作業が残ったままになる。
 @MainActor
 final class WorkspaceWindowsPanelController: NSWindowController {
     /// 一覧に出す1枚分。表示に必要なことだけを写して持つ。
@@ -25,7 +20,7 @@ final class WorkspaceWindowsPanelController: NSWindowController {
         let path: String
         let runningSessions: Int
         let isFrontmost: Bool
-        /// 置き場所。カードの下に短く添える。
+        /// 置き場所。行に添えるのではなく、ツールチップに回す。
         let windowFrame: CGRect
         let screenFrame: CGRect
         let screenName: String
@@ -39,31 +34,32 @@ final class WorkspaceWindowsPanelController: NSWindowController {
     /// 触れているあいだ、そのウインドウを仮に前へ出す。
     var onPreview: ((ObjectIdentifier) -> Void)?
     /// 仮に出したものを元の並びへ戻す。
+    /// 一覧を開いた。この時点の前後関係を覚えてもらう。
+    var onBeginPreview: (() -> Void)?
+    /// 一覧を閉じた。覚えた前後関係へ戻してもらう。
     var onEndPreview: (() -> Void)?
 
     private let scrollView = NSScrollView()
-    private let grid = NSStackView()
+    private let list = NSStackView()
     private let searchField = NSSearchField()
     private let countLabel = NSTextField(labelWithString: "")
     private var rows: [Row] = []
     private var filtered: [Row] = []
-    private var columnsInUse = 0
 
-    private static let gap: CGFloat = 10
     private static let sideInset: CGFloat = 14
     /// タイトルバー・検索欄・枚数表示・余白。中身に合わせて高さを決めるときの分。
     private static let chrome: CGFloat = 116
 
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 580, height: 360),
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 360),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "ウインドウ"
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 380, height: 240)
+        window.minSize = NSSize(width: 320, height: 220)
         // 置いた場所を覚える。開くたびに真ん中へ戻ると、置き直しが要る。
         window.setFrameAutosaveName("FinderAIWindowsPanel")
         super.init(window: window)
@@ -78,6 +74,7 @@ final class WorkspaceWindowsPanelController: NSWindowController {
     func show() {
         reload()
         fitHeightToContent()
+        onBeginPreview?()
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -107,8 +104,7 @@ final class WorkspaceWindowsPanelController: NSWindowController {
                         .localizedCaseInsensitiveContains(term)
             }
         }
-        columnsInUse = 0
-        rebuildGrid()
+        rebuildList()
         countLabel.stringValue = rows.isEmpty
             ? "開いているウインドウはありません"
             : (filtered.count == rows.count
@@ -116,81 +112,55 @@ final class WorkspaceWindowsPanelController: NSWindowController {
                 : "\(filtered.count) / \(rows.count)枚")
     }
 
-    // MARK: - 並べる
-
-    /// いまの幅に何枚入るか。
-    private var columnCount: Int {
-        let available = scrollView.frame.width - Self.gap
-        let step = WorkspaceWindowCardView.width + Self.gap
-        return max(1, Int((available) / step))
-    }
-
-    private func rebuildGrid() {
-        let columns = columnCount
-        columnsInUse = columns
-        grid.arrangedSubviews.forEach {
-            grid.removeArrangedSubview($0)
+    private func rebuildList() {
+        list.arrangedSubviews.forEach {
+            list.removeArrangedSubview($0)
             $0.removeFromSuperview()
         }
-        var line: NSStackView?
-        for (index, row) in filtered.enumerated() {
-            if index % columns == 0 {
-                let stack = NSStackView()
-                stack.orientation = .horizontal
-                stack.alignment = .top
-                stack.spacing = Self.gap
-                grid.addArrangedSubview(stack)
-                line = stack
-            }
-            line?.addArrangedSubview(makeCard(row))
+        for row in filtered {
+            let view = makeRow(row)
+            list.addArrangedSubview(view)
+            // 行は幅いっぱいに広げる。触れる的が文字の長さで変わると狙いづらい。
+            view.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
         }
     }
 
-    private func makeCard(_ row: Row) -> WorkspaceWindowCardView {
-        let region = WorkspaceScreenRegion.describe(window: row.windowFrame, on: row.screenFrame)
-        // 添えるのは置き場所ではなく、ひとつ上のフォルダ名。同じ画面に重ねて
-        // 使っていると「主画面・中央」が全枚数ぶん並ぶだけで区別に使えない。
-        // どこにあるかは、触れれば実際に前へ出るので目で分かる。
+    private func makeRow(_ row: Row) -> WorkspaceWindowRowView {
         let parentName = (row.parent as NSString).lastPathComponent
-        let card = WorkspaceWindowCardView(
+        let view = WorkspaceWindowRowView(
             icon: NSWorkspace.shared.icon(forFile: row.path),
             name: row.name,
-            place: parentName.isEmpty ? row.parent : parentName,
+            parent: parentName.isEmpty ? row.parent : parentName,
             serial: row.serial,
             runningSessions: row.runningSessions,
-            isFrontmost: row.isFrontmost
+            isFrontmost: row.isFrontmost,
+            onDark: false
         )
-        card.toolTip = "\(row.path)\n\(row.screenName)・\(region)　\(row.sizeText)"
-        card.onHoverChanged = { [weak self] isInside in
+        let region = WorkspaceScreenRegion.describe(window: row.windowFrame, on: row.screenFrame)
+        view.toolTip = "\(row.path)\n\(row.screenName)・\(region)　\(row.sizeText)"
+        view.onHoverChanged = { [weak self] isInside in
             guard let self else { return }
-            if isInside {
-                self.onPreview?(row.id)
-            } else {
-                self.onEndPreview?()
-            }
+            // 離れたほうは何もしない。一覧を閉じたときにまとめて戻す。
+            if isInside { self.onPreview?(row.id) }
         }
-        card.onPress = { [weak self] in
-            self?.onSelect?(row.id)
-        }
+        view.onPress = { [weak self] in self?.onSelect?(row.id) }
         // 閉じる相手は行番号ではなくウインドウそのもので指す。絞り込みや並びが
         // 変わったときに別のウインドウを閉じないため。
-        card.onClose = { [weak self] in
+        view.onClose = { [weak self] in
             self?.onClose?(row.id)
             self?.reload()
         }
-        return card
+        return view
     }
 
-    /// 中身の段数に高さを合わせる。
+    /// 中身の行数に高さを合わせる。
     ///
-    /// 固定の高さだと、3枚しか開いていないときに下の3分の2が空く。
+    /// 固定の高さだと、3枚しか開いていないときに下の大半が空く。
     private func fitHeightToContent() {
         guard let window else { return }
-        let columns = max(1, columnCount)
-        let lines = max(1, Int(ceil(Double(filtered.count) / Double(columns))))
-        let content = CGFloat(lines) * WorkspaceWindowCardView.height
-            + CGFloat(max(0, lines - 1)) * Self.gap
-        let wanted = min(content + Self.chrome, (window.screen ?? NSScreen.main)?.visibleFrame.height ?? 700)
+        let content = CGFloat(max(filtered.count, 1)) * WorkspaceWindowRowView.height
+        let ceiling = (window.screen ?? NSScreen.main)?.visibleFrame.height ?? 700
+        let wanted = min(content + Self.chrome, ceiling)
         var frame = window.frame
         let delta = wanted - frame.height
         guard abs(delta) > 1 else { return }
@@ -216,20 +186,18 @@ final class WorkspaceWindowsPanelController: NSWindowController {
         openNew.bezelStyle = .rounded
         openNew.controlSize = .small
 
-        grid.orientation = .vertical
-        grid.alignment = .leading
-        grid.spacing = Self.gap
-        grid.edgeInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+        list.orientation = .vertical
+        list.alignment = .leading
+        list.spacing = 0
 
-        let flipped = FlippedClipContainer()
-        flipped.translatesAutoresizingMaskIntoConstraints = false
-        flipped.addSubview(grid)
-        grid.translatesAutoresizingMaskIntoConstraints = false
+        let flipped = FlippedListContainer()
+        flipped.addSubview(list)
+        [list, flipped].forEach { $0.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
-            grid.leadingAnchor.constraint(equalTo: flipped.leadingAnchor),
-            grid.trailingAnchor.constraint(lessThanOrEqualTo: flipped.trailingAnchor),
-            grid.topAnchor.constraint(equalTo: flipped.topAnchor),
-            grid.bottomAnchor.constraint(equalTo: flipped.bottomAnchor)
+            list.leadingAnchor.constraint(equalTo: flipped.leadingAnchor),
+            list.trailingAnchor.constraint(equalTo: flipped.trailingAnchor),
+            list.topAnchor.constraint(equalTo: flipped.topAnchor),
+            list.bottomAnchor.constraint(equalTo: flipped.bottomAnchor)
         ])
 
         scrollView.documentView = flipped
@@ -250,8 +218,8 @@ final class WorkspaceWindowsPanelController: NSWindowController {
             header.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -Self.sideInset),
             header.topAnchor.constraint(equalTo: content.topAnchor, constant: 14),
 
-            scrollView.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: Self.sideInset),
-            scrollView.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -Self.sideInset),
+            scrollView.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 8),
+            scrollView.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -8),
             scrollView.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 10),
             scrollView.bottomAnchor.constraint(equalTo: countLabel.topAnchor, constant: -8),
 
@@ -273,12 +241,6 @@ final class WorkspaceWindowsPanelController: NSWindowController {
 }
 
 extension WorkspaceWindowsPanelController: NSWindowDelegate {
-    /// 幅が変わって入る枚数が変われば並べ直す。変わらないなら触らない。
-    func windowDidResize(_ notification: Notification) {
-        guard columnCount != columnsInUse else { return }
-        rebuildGrid()
-    }
-
     /// 閉じたら、仮に前へ出したものを戻しておく。
     func windowWillClose(_ notification: Notification) {
         onEndPreview?()
@@ -287,8 +249,7 @@ extension WorkspaceWindowsPanelController: NSWindowDelegate {
 
 /// スクロールの中身を上から積むための入れ物。
 ///
-/// `NSScrollView`の座標は下が原点なので、そのまま入れるとカードが下端から
-/// 生える。
-private final class FlippedClipContainer: NSView {
+/// `NSScrollView`の座標は下が原点なので、そのまま入れると行が下端から生える。
+private final class FlippedListContainer: NSView {
     override var isFlipped: Bool { true }
 }

@@ -31,7 +31,7 @@ final class EdgeTabAccordionController: NSObject {
     }
 
     private let panel: EdgeTabPanel
-    private let container = AccordionBackgroundView()
+    private let container = EdgePanelBackgroundView()
     private let tableView = AccordionTableView()
     private let scrollView = NSScrollView()
     private let preferences: WorkspacePreferences
@@ -568,64 +568,6 @@ extension EdgeTabAccordionController: NSTableViewDataSource, NSTableViewDelegate
             return nil
         }
     }
-}
-
-/// 背景と、帯に接する辺の角を落とす器。
-@MainActor
-private final class AccordionBackgroundView: NSView {
-    var onHoverChanged: ((Bool) -> Void)?
-    var edge: WorkspaceScreenEdge = .right {
-        didSet { needsDisplay = true }
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        let rect = bounds.insetBy(dx: 0.5, dy: 0.5)
-        let radius: CGFloat = 10
-        let path = NSBezierPath()
-        switch edge {
-        case .right:
-            path.move(to: NSPoint(x: rect.maxX, y: rect.minY))
-            path.appendArc(
-                withCenter: NSPoint(x: rect.minX + radius, y: rect.minY + radius),
-                radius: radius, startAngle: 270, endAngle: 180, clockwise: true
-            )
-            path.appendArc(
-                withCenter: NSPoint(x: rect.minX + radius, y: rect.maxY - radius),
-                radius: radius, startAngle: 180, endAngle: 90, clockwise: true
-            )
-            path.line(to: NSPoint(x: rect.maxX, y: rect.maxY))
-        case .left:
-            path.move(to: NSPoint(x: rect.minX, y: rect.minY))
-            path.appendArc(
-                withCenter: NSPoint(x: rect.maxX - radius, y: rect.minY + radius),
-                radius: radius, startAngle: 270, endAngle: 0, clockwise: false
-            )
-            path.appendArc(
-                withCenter: NSPoint(x: rect.maxX - radius, y: rect.maxY - radius),
-                radius: radius, startAngle: 0, endAngle: 90, clockwise: false
-            )
-            path.line(to: NSPoint(x: rect.minX, y: rect.maxY))
-        }
-        path.close()
-        IntegratedPanelTheme.background.setFill()
-        path.fill()
-        IntegratedPanelTheme.border.setStroke()
-        path.lineWidth = 1
-        path.stroke()
-    }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-            owner: self
-        ))
-    }
-
-    override func mouseEntered(with event: NSEvent) { onHoverChanged?(true) }
-    override func mouseExited(with event: NSEvent) { onHoverChanged?(false) }
 }
 
 /// 右クリックとドラッグの開始・終了を知らせる表。

@@ -20,10 +20,18 @@ final class EdgeTabsController {
     var onOpenDirectory: ((URL) -> Void)?
     /// そのフォルダのTerminalセッションを前面に出す（無ければ開始する）。
     var onRevealTerminal: ((URL) -> Void)?
-    /// ウインドウの一覧を開く。
+    /// 独立した一覧のウインドウを開く（メニューから呼ぶ経路）。
     var onShowWindows: (() -> Void)?
     /// いま見ているフォルダを袖に入れる。空の袖に出す「＋」から呼ぶ。
     var onAddCurrentFolder: (() -> Void)?
+    /// 袖から広げる一覧に出す中身。
+    var windowRowsProvider: (() -> [WorkspaceWindowsPanelController.Row])?
+    var onSelectWindow: ((ObjectIdentifier) -> Void)?
+    var onCloseWindow: ((ObjectIdentifier) -> Void)?
+    /// 行に触れているあいだ、そのウインドウを仮に前へ出す／戻す。
+    var onPreviewWindow: ((ObjectIdentifier) -> Void)?
+    var onBeginPreviewWindows: (() -> Void)?
+    var onEndPreviewWindows: (() -> Void)?
     /// いま開いているウインドウの配置。袖の先頭に俯瞰として描く。
     var windowsLayoutProvider: (() -> EdgeWindowsTabButton.Layout)?
 
@@ -56,6 +64,8 @@ final class EdgeTabsController {
     private let popover: EdgeTabPopoverController
     /// 袖に入れた全フォルダを縦積みで見せるほう。設定でこちらを使う。
     private let accordion: EdgeTabAccordionController
+    /// 袖から広げるウインドウの一覧。別ウインドウを立てない。
+    private let windowsList = EdgeWindowsListController()
     private var tabs = WorkspaceEdgeTabs()
     private var isEnabled = false
     private var edge: WorkspaceScreenEdge = .right
@@ -126,6 +136,27 @@ final class EdgeTabsController {
             self?.hidePopover()
             self?.hideStripsIfAutoHiding()
         }
+        windowsList.onHoverChanged = { [weak self] isInside in
+            guard let self else { return }
+            if isInside { self.cancelClose() } else { self.scheduleClose() }
+        }
+        windowsList.onRequestDismiss = { [weak self] in
+            self?.hidePopover()
+            self?.hideStripsIfAutoHiding()
+        }
+        windowsList.onSelect = { [weak self] id in
+            self?.hidePopover()
+            self?.onSelectWindow?(id)
+        }
+        windowsList.onClose = { [weak self] id in
+            guard let self else { return }
+            self.onCloseWindow?(id)
+            // 閉じた1枚を残した一覧は、次に押した行が別のウインドウになる。
+            self.windowsList.refresh(rows: self.windowRowsProvider?() ?? [])
+        }
+        windowsList.onPreview = { [weak self] id in self?.onPreviewWindow?(id) }
+        windowsList.onBeginPreview = { [weak self] in self?.onBeginPreviewWindows?() }
+        windowsList.onEndPreview = { [weak self] in self?.onEndPreviewWindows?() }
         reload()
         startPointerFollow()
         // スクリーンの抜き差しや解像度変更で、帯の要る枚数と位置が変わる。
@@ -367,15 +398,24 @@ final class EdgeTabsController {
         }
         strip.windowsTab?.removeFromSuperview()
         let windowsTab = EdgeWindowsTabButton(edge: strip.edge)
-        windowsTab.onPress = { [weak self] in self?.onShowWindows?() }
-        windowsTab.onHoverChanged = { [weak self] isInside in
-            guard let self else { return }
+        windowsTab.onPress = { [weak self, weak strip] in
+            guard let self, let strip else { return }
+            self.cancelOpen()
+            self.cancelClose()
+            if self.windowsList.isPresented {
+                self.hidePopover()
+            } else {
+                self.showWindowsList(in: strip)
+            }
+        }
+        windowsTab.onHoverChanged = { [weak self, weak strip] isInside in
+            guard let self, let strip else { return }
             if isInside {
                 self.cancelClose()
                 if let id = screen.displayID { self.stripHoverChanged(true, on: id) }
                 // フォルダのタブと同じで、触れれば開く。ここだけ押さないと
                 // 開かないのでは、袖の中で振る舞いが割れる。
-                if self.preferences.edgeTabsOpensOnHover { self.scheduleShowWindows() }
+                if self.preferences.edgeTabsOpensOnHover { self.scheduleShowWindows(in: strip) }
             } else {
                 self.cancelOpen()
                 self.scheduleClose()
@@ -429,12 +469,14 @@ final class EdgeTabsController {
             strip.tabs.append(tab)
         }
 
-        // フォルダが1つも入っていないとき、袖は俯瞰タブだけになる。触れても
-        // ウインドウの一覧が出るだけで、フォルダの入れ方はどこにも書かれていない
-        // ——「触っても何も起きない」に見える。入れるための的をその場に出す。
+        // 足すための的は常に袖に置く。
+        //
+        // 空のときだけ出していたが、それでは1つ入れた時点で消えてしまい、2つ目を
+        // 足す道が`⌃⌘E`しか無くなる——袖にフォルダが1つきりで止まるのはこれが
+        // 理由だった。上限まで埋まったときだけ引っ込める。
         strip.addTab?.removeFromSuperview()
         strip.addTab = nil
-        guard tabs.isEmpty else { return }
+        guard !tabs.isFull else { return }
         let add = EdgeActionTabButton(
             symbol: "plus",
             tooltip: "いま見ているフォルダを袖に入れる（⌃⌘E）",
@@ -629,14 +671,35 @@ final class EdgeTabsController {
     }
 
     /// 俯瞰に触れてしばらくしたら、ウインドウの一覧を出す。
-    private func scheduleShowWindows() {
+    private func scheduleShowWindows(in strip: Strip) {
         cancelClose()
         openTask?.cancel()
-        openTask = Task { [weak self] in
+        openTask = Task { [weak self, weak strip] in
             try? await Task.sleep(for: Self.openDelay)
-            guard !Task.isCancelled, let self else { return }
-            self.onShowWindows?()
+            guard !Task.isCancelled, let self, let strip else { return }
+            self.showWindowsList(in: strip)
         }
+    }
+
+    /// フォルダの一覧と同じ場所へ、開いているウインドウを縦に並べて出す。
+    ///
+    /// 以前は別ウインドウの一覧を立てていた。フォルダは袖から広がるのにウインドウ
+    /// だけ別のウインドウが出るのでは袖の中で振る舞いが割れるうえ、一覧そのものが
+    /// 「開いているウインドウ」を1枚増やしてしまう。
+    private func showWindowsList(in strip: Strip) {
+        guard let windowsTab = strip.windowsTab,
+              let screen = strip.panel.screen ?? NSScreen.main else { return }
+        // フォルダの一覧とは同時に出さない。同じ場所へ重なる。
+        popover.dismiss()
+        accordion.dismiss()
+        windowsList.present(
+            rows: windowRowsProvider?() ?? [],
+            anchor: strip.panel.convertToScreen(windowsTab.frame),
+            edge: strip.edge,
+            visibleFrame: screen.visibleFrame,
+            screenID: screen.displayID,
+            relativeTo: strip.panel
+        )
     }
 
     private func cancelOpen() {
@@ -676,6 +739,7 @@ final class EdgeTabsController {
         }
         if popover.isPresented, popover.frame.contains(mouse) { return true }
         if accordion.isPresented, accordion.frame.contains(mouse) { return true }
+        if windowsList.isPresented, windowsList.frame.contains(mouse) { return true }
         return false
     }
 
@@ -696,6 +760,8 @@ final class EdgeTabsController {
               let screen = panel.screen ?? NSScreen.main else { return }
         let anchor = panel.convertToScreen(tab.frame)
         let tabEdge = strips.values.first { $0.tabs.contains(tab) }?.edge ?? edge
+        // ウインドウの一覧とは同じ場所へ出る。片方を開くならもう片方は畳む。
+        windowsList.dismiss()
         if preferences.edgeTabsUsesAccordion {
             // すでに同じ画面で開いているなら、開き直さずその中で寄せる。縦積みには
             // 袖の全フォルダが載っているので、目的の見出しはもう画面にある——
@@ -731,11 +797,12 @@ final class EdgeTabsController {
         cancelClose()
         popover.dismiss()
         accordion.dismiss()
+        windowsList.dismiss()
     }
 
     /// いま一覧が開いているか（どちらの形でも）。
     private var isListPresented: Bool {
-        popover.isPresented || accordion.isPresented
+        popover.isPresented || accordion.isPresented || windowsList.isPresented
     }
 
     // MARK: - タブのメニュー
