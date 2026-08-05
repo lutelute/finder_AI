@@ -149,9 +149,15 @@ struct WorkspacePreferences {
         nonmutating set { defaults.set(newValue.storedPaths, forKey: Key.edgeTabs) }
     }
 
-    /// 既定はオフ。画面に常駐するUIを、選んでいない人の視界に勝手に置かない。
+    /// 袖を出すか。既定はオン。
+    ///
+    /// フォルダを入れていなくても、開いているウインドウの俯瞰が先頭に出る。
+    /// 「常に縁にある」ことが前提の機能なので、既定で在るほうが筋が通る。
     var edgeTabsEnabled: Bool {
-        get { defaults.bool(forKey: Key.edgeTabsEnabled) }
+        get {
+            guard defaults.object(forKey: Key.edgeTabsEnabled) != nil else { return true }
+            return defaults.bool(forKey: Key.edgeTabsEnabled)
+        }
         nonmutating set { defaults.set(newValue, forKey: Key.edgeTabsEnabled) }
     }
 

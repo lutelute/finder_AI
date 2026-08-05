@@ -23,6 +23,18 @@ final class WorkspaceAppCoordinator {
         controller.onOpenDirectory = { [weak self] url in
             self?.revealDirectory(url)
         }
+        controller.onShowWindows = { [weak self] in
+            self?.showWindowsPanel()
+        }
+        controller.windowsLayoutProvider = { [weak self] in
+            guard let self else { return .init(screens: [], windows: [], frontmost: nil) }
+            let front = self.lastKeyWorkspaceWindow
+            return .init(
+                screens: NSScreen.screens.map(\.frame),
+                windows: self.windows.compactMap { $0.window?.frame },
+                frontmost: self.windows.first { $0.window === front }?.window?.frame
+            )
+        }
         controller.onRevealTerminal = { [weak self] url in
             guard let self else { return }
             let target = self.frontmostWindow ?? self.windows.first ?? self.workspace
@@ -92,6 +104,7 @@ final class WorkspaceAppCoordinator {
                       self.windows.contains(where: { $0.window === key }) else { return }
                 self.lastKeyWorkspaceWindow = key
                 self.windowsPanel?.refreshIfVisible()
+                self.edgeTabs.refreshWindowsOverview()
             }
         }
         activationObserver = NotificationCenter.default.addObserver(
@@ -164,6 +177,7 @@ final class WorkspaceAppCoordinator {
             self.windows.removeAll { $0 === controller }
             self.captureSnapshot()
             self.windowsPanel?.refreshIfVisible()
+            self.edgeTabs.refreshWindowsOverview()
         }
         controller.onDirectoryChanged = { [weak self] in
             self?.captureSnapshot()
@@ -178,6 +192,7 @@ final class WorkspaceAppCoordinator {
         captureSnapshot()
         refreshWindowTitles()
         windowsPanel?.refreshIfVisible()
+        edgeTabs.refreshWindowsOverview()
         return controller
     }
 

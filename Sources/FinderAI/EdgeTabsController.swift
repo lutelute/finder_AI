@@ -20,6 +20,10 @@ final class EdgeTabsController {
     var onOpenDirectory: ((URL) -> Void)?
     /// そのフォルダのTerminalセッションを前面に出す（無ければ開始する）。
     var onRevealTerminal: ((URL) -> Void)?
+    /// ウインドウの一覧を開く。
+    var onShowWindows: (() -> Void)?
+    /// いま開いているウインドウの配置。袖の先頭に俯瞰として描く。
+    var windowsLayoutProvider: (() -> EdgeWindowsTabButton.Layout)?
 
     private let preferences: WorkspacePreferences
     /// 縁のタブに実行中の印を出すためだけに見る。セッションを触りはしない。
@@ -32,6 +36,8 @@ final class EdgeTabsController {
         let panel: EdgeTabPanel
         let container = NSView()
         var tabs: [EdgeTabButton] = []
+        /// ウインドウの俯瞰。フォルダを1つも入れていなくても、これだけは出る。
+        var windowsTab: EdgeWindowsTabButton?
         var isHidden = false
         /// この帯が貼り付いている縁。カーソルのいる側へ移るので、画面ごとに違う。
         var edge: WorkspaceScreenEdge = .right
@@ -157,7 +163,12 @@ final class EdgeTabsController {
         rebuildStrips()
     }
 
-    var isVisible: Bool { isEnabled && !tabs.isEmpty }
+    /// 袖を出すか。
+    ///
+    /// フォルダを1つも入れていなくても出す——ウインドウの俯瞰が先頭にあるので、
+    /// 空の袖にも見るものがある。「常に縁にある」ことがこの機能の前提で、
+    /// 中身が空だから消える、では手を伸ばす先が無くなる。
+    var isVisible: Bool { isEnabled }
     var isAutoHiding: Bool { autoHide }
     var currentEdge: WorkspaceScreenEdge { edge }
     var isEnabledSetting: Bool { isEnabled }
@@ -302,6 +313,7 @@ final class EdgeTabsController {
         buildTabs(in: strip, on: screen)
         layout(strip, on: screen)
         refreshSessionBadges()
+        refreshWindowsOverview()
     }
 
     /// その画面で帯を置ける縁。設定した側が通路なら、反対の外向きの縁へ回す。
@@ -335,6 +347,21 @@ final class EdgeTabsController {
     private func buildTabs(in strip: Strip, on screen: NSScreen) {
         strip.tabs.forEach { $0.removeFromSuperview() }
         strip.tabs = []
+        strip.windowsTab?.removeFromSuperview()
+        let windowsTab = EdgeWindowsTabButton(edge: strip.edge)
+        windowsTab.onPress = { [weak self] in self?.onShowWindows?() }
+        windowsTab.onHoverChanged = { [weak self] isInside in
+            guard let self else { return }
+            if isInside {
+                self.cancelClose()
+                if let id = screen.displayID { self.stripHoverChanged(true, on: id) }
+            } else {
+                self.scheduleClose()
+                if let id = screen.displayID { self.stripHoverChanged(false, on: id) }
+            }
+        }
+        strip.container.addSubview(windowsTab)
+        strip.windowsTab = windowsTab
         for url in tabs.urls {
             let tab = EdgeTabButton(url: url, edge: strip.edge)
             let screenID = screen.displayID
@@ -383,7 +410,7 @@ final class EdgeTabsController {
 
     private func layout(_ strip: Strip, on screen: NSScreen) {
         guard let resting = EdgeTabPlacement.stripFrame(
-            tabCount: strip.tabs.count,
+            tabCount: strip.tabs.count + 1,
             edge: strip.edge,
             visibleFrame: screen.visibleFrame
         ) else {
@@ -402,6 +429,16 @@ final class EdgeTabsController {
 
     private func layoutTabs(in strip: Strip, within resting: CGRect) {
         var y = resting.height
+        if let windowsTab = strip.windowsTab {
+            y -= EdgeTabPlacement.tabHeight
+            windowsTab.frame = NSRect(
+                x: 0,
+                y: y,
+                width: EdgeTabPlacement.tabWidth,
+                height: EdgeTabPlacement.tabHeight
+            )
+            y -= EdgeTabPlacement.tabSpacing
+        }
         for tab in strip.tabs {
             y -= EdgeTabPlacement.tabHeight
             tab.frame = NSRect(
@@ -411,6 +448,14 @@ final class EdgeTabsController {
                 height: EdgeTabPlacement.tabHeight
             )
             y -= EdgeTabPlacement.tabSpacing
+        }
+    }
+
+    /// ウインドウの配置を描き直す。増減や移動のたびに呼ばれる。
+    func refreshWindowsOverview() {
+        guard let layout = windowsLayoutProvider?() else { return }
+        for strip in strips.values {
+            strip.windowsTab?.layout = layout
         }
     }
 
@@ -464,7 +509,7 @@ final class EdgeTabsController {
     private func slide(_ strip: Strip, on screen: NSScreen, hidden: Bool) {
         guard hidden != strip.isHidden,
               let resting = EdgeTabPlacement.stripFrame(
-                  tabCount: strip.tabs.count,
+                  tabCount: strip.tabs.count + 1,
                   edge: strip.edge,
                   visibleFrame: screen.visibleFrame
               ) else { return }
