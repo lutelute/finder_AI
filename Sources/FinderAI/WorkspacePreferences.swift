@@ -104,10 +104,16 @@ struct WorkspacePreferences {
         nonmutating set { defaults.set(newValue, forKey: Key.edgeTabsUsesFinderWindows) }
     }
 
-    /// タブに触れただけで開くか。既定はオフ——クリックで開く方が、通りすがりに
-    /// 勝手に開かれない。触れるだけで開いてほしい人が選ぶ。
+    /// タブに触れただけで開くか。既定はオン。
+    ///
+    /// 袖は「手を伸ばしてすぐ中を見る」ための場所で、そこで一拍クリックを挟むと
+    /// 覗くのに手間がかかる。通りすがりに開かないための間（`openDelay`）は別に
+    /// 設けてあるので、触れただけで開いても邪魔になりにくい。
     var edgeTabsOpensOnHover: Bool {
-        get { defaults.bool(forKey: Key.edgeTabsOpensOnHover) }
+        get {
+            guard defaults.object(forKey: Key.edgeTabsOpensOnHover) != nil else { return true }
+            return defaults.bool(forKey: Key.edgeTabsOpensOnHover)
+        }
         nonmutating set { defaults.set(newValue, forKey: Key.edgeTabsOpensOnHover) }
     }
 

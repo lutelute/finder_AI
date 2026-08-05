@@ -63,7 +63,7 @@ final class EdgeTabsController {
     /// マウスが通り過ぎただけで開かないための滞留時間と、タブとポップアップの
     /// あいだをカーソルが渡る猶予。どちらも無いと、この種のUIは「触ってもいない
     /// のに開く」「渡ろうとすると消える」のどちらかになる。
-    private static let openDelay = Duration.milliseconds(300)
+    private static let openDelay = Duration.milliseconds(200)
     private static let closeDelay = Duration.milliseconds(400)
     private var openTask: Task<Void, Never>?
     private var closeTask: Task<Void, Never>?

@@ -151,7 +151,7 @@ final class SettingsWindowController: NSWindowController {
         edgeTabsHoverCheckbox.title = "マウスを乗せるだけで開く"
         edgeTabsHoverCheckbox.target = self
         edgeTabsHoverCheckbox.action = #selector(toggleEdgeTabsHover)
-        edgeTabsHoverCaption.stringValue = "オフのときはクリックで開きます。タブの⌃クリックでリスト／アイコン表示と並び順、⌘クリックで上の階層を辿れます。"
+        edgeTabsHoverCaption.stringValue = "触れて0.2秒で開きます。オフのときはクリックで開きます。タブの⌃クリックでリスト／アイコン表示と並び順、⌘クリックで上の階層を辿れます。"
 
         edgeTabsFollowCheckbox.title = "カーソルのいる側へ移す"
         edgeTabsFollowCheckbox.target = self
