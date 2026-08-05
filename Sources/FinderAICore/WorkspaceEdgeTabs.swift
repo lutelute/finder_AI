@@ -137,7 +137,12 @@ public enum EdgeTabPlacement {
     /// 幅は「プレビューが読める」ことから決めている。300ptだとサムネイルが小さく、
     /// 中身を確かめるという用が足りない。
     public static let popoverWidth: CGFloat = 380
-    public static let popoverMinimumHeight: CGFloat = 200
+    /// これ以上は縮めない高さ。
+    ///
+    /// 中身が少ないときにここまで引き伸ばすのではなく、あくまで下限。プレビューを
+    /// 抱える一覧では余裕が要るが、行だけを積む画面では中身の高さがそのまま
+    /// 出るほうがいい——5行しかないのに200ptの箱が開くと、下半分が空く。
+    public static let popoverMinimumHeight: CGFloat = 72
     public static let popoverMaximumHeight: CGFloat = 640
 
     public static func stripSize(tabCount: Int) -> CGSize {

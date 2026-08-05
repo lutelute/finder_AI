@@ -204,7 +204,16 @@ final class EdgeTabAccordionController: NSObject {
             expanded.insert(url)
             load(url)
         }
+        // 開いた見出しを選んだままにする。行が増減すると番号がずれるので、
+        // 位置ではなくフォルダで選び直す——開くたびに選択が別の行へ飛ぶと、
+        // 続けてキーで操作できない。
         rebuildRows()
+        if let index = rows.firstIndex(where: {
+            if case .folder(let u, _, _) = $0 { return u == url }
+            return false
+        }) {
+            tableView.selectRowIndexes([index], byExtendingSelection: false)
+        }
     }
 
     private func load(_ url: URL) {

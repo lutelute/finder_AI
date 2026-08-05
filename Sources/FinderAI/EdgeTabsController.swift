@@ -209,19 +209,15 @@ final class EdgeTabsController {
             return
         }
 
-        // 出しっぱなしなら、どのモニタにも置く。作業している画面に無いのでは
-        // 「常に手の届く場所」にならない。
-        var hosts = NSScreen.screens
-        if autoHide {
-            // 隠すときだけ、隣に別のモニタが接している縁を避ける。そこは画面の端
-            // ではなくカーソルが行き来する通路で、隠れた帯を置くと隣の画面へ移る
-            // たびに触れて出入りし、掴もうとすると逃げる。出したままなら起きない。
-            let outer = hosts.filter { Self.isOuterEdge($0, edge: edge) }
-            // どの画面も内側を向く置き方（縦に積む、など）では、それでも1本は要る。
-            hosts = outer.isEmpty
-                ? [NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
-                    ?? NSScreen.main].compactMap { $0 }
-                : outer
+        // どのモニタにも置く。作業している画面に無いのでは「常に手の届く場所」に
+        // ならない。ただし両側とも隣と接している画面（並びの真ん中）は飛ばす——
+        // そこに置くと、隣の画面の帯と同じ場所に重なる。
+        var hosts = NSScreen.screens.filter {
+            Self.isOuterEdge($0, edge: .right) || Self.isOuterEdge($0, edge: .left)
+        }
+        if hosts.isEmpty {
+            hosts = [NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
+                ?? NSScreen.main].compactMap { $0 }
         }
 
         var live: Set<CGDirectDisplayID> = []
@@ -235,7 +231,8 @@ final class EdgeTabsController {
                 strips[id] = created
                 return created
             }()
-            if !preferences.edgeTabsFollowsPointer { strip.edge = edge }
+            // 設定した縁が通路（隣と接する側）なら、その画面では外を向いた縁へ置く。
+            strip.edge = Self.placement(preferred: edge, on: screen)
             buildTabs(in: strip, on: screen)
             layout(strip, on: screen)
         }
@@ -272,15 +269,32 @@ final class EdgeTabsController {
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }),
               let id = screen.displayID,
               let strip = strips[id] else { return }
-        // 画面の真ん中で往復しないよう、中央には触らない帯を設ける。
-        let deadZone = screen.frame.width * 0.08
+        // 隣のモニタと接している縁へは移さない。
+        //
+        // そこは画面の端ではなく通路で、両側の画面から寄せると同じ場所に2本が
+        // 重なる。実際、3画面で使うと境界に2本並び、設定した縁も無視された形に
+        // なった。カーソルに寄せるのは、その画面が外を向いている縁だけ。
+        let canGoRight = Self.isOuterEdge(screen, edge: .right)
+        let canGoLeft = Self.isOuterEdge(screen, edge: .left)
+        guard canGoRight || canGoLeft else { return }
         let wanted: WorkspaceScreenEdge
-        if mouse.x > screen.frame.midX + deadZone {
-            wanted = .right
-        } else if mouse.x < screen.frame.midX - deadZone {
-            wanted = .left
+        if canGoRight, canGoLeft {
+            // 両側が外を向いている画面でだけ、カーソルの側を選ぶ。
+            //
+            // ただし縁の近くまで来たときだけ。画面の真ん中を横切っただけで
+            // 反対側へ飛ぶと、作業中ずっと視界の端で帯がワープすることになる
+            // （実際にそうなった）。取りに行こうとしたときにそこに在ればいい。
+            let reach = min(max(screen.frame.width * 0.2, 160), 420)
+            if mouse.x > screen.frame.maxX - reach {
+                wanted = .right
+            } else if mouse.x < screen.frame.minX + reach {
+                wanted = .left
+            } else {
+                return
+            }
         } else {
-            return
+            // 片側しか外を向いていないなら、選ぶ余地はない。
+            wanted = canGoRight ? .right : .left
         }
         guard strip.edge != wanted else { return }
         strip.edge = wanted
@@ -288,6 +302,16 @@ final class EdgeTabsController {
         buildTabs(in: strip, on: screen)
         layout(strip, on: screen)
         refreshSessionBadges()
+    }
+
+    /// その画面で帯を置ける縁。設定した側が通路なら、反対の外向きの縁へ回す。
+    static func placement(
+        preferred: WorkspaceScreenEdge,
+        on screen: NSScreen
+    ) -> WorkspaceScreenEdge {
+        if isOuterEdge(screen, edge: preferred) { return preferred }
+        if isOuterEdge(screen, edge: preferred.opposite) { return preferred.opposite }
+        return preferred
     }
 
     /// その縁が外を向いているか（隣に別のモニタが接していないか）。

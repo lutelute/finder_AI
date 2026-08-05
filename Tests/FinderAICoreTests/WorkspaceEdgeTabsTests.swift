@@ -178,6 +178,7 @@ struct EdgeTabPlacementTests {
         )
         #expect(tall.height <= EdgeTabPlacement.popoverMaximumHeight)
 
+        // 中身が少なければ縮む。下限より下には行かない。
         let short = EdgeTabPlacement.popoverFrame(
             anchor: CGRect(x: 1410, y: 400, width: 30, height: 58),
             preferredHeight: 10,
@@ -185,6 +186,15 @@ struct EdgeTabPlacementTests {
             visibleFrame: screen
         )
         #expect(short.height == EdgeTabPlacement.popoverMinimumHeight)
+        // 200pt分の中身があるならそのまま出る（下限に引き上げられて余白が
+        // 生まれることはない）。
+        let fitted = EdgeTabPlacement.popoverFrame(
+            anchor: CGRect(x: 1410, y: 400, width: 30, height: 58),
+            preferredHeight: 136,
+            edge: .right,
+            visibleFrame: screen
+        )
+        #expect(fitted.height == 136)
     }
 
     /// 画面より縦に長い帯は出しようがない。無理に出さず、出さないと答える。

@@ -21,9 +21,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.30.0</string>
+	<string>1.30.3</string>
 	<key>CFBundleVersion</key>
-	<string>70</string>
+	<string>73</string>
 	<key>FinderAIGitCommit</key>
 	<string>source</string>
 	<key>LSApplicationCategoryType</key>

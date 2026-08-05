@@ -508,11 +508,11 @@ final class EdgeTabPopoverController: NSObject {
         panel.setFrame(
             EdgeTabPlacement.popoverFrame(
                 anchor: anchor,
-                preferredHeight: EdgeTabPlacement.popoverHeight(
+                preferredHeight: max(200, EdgeTabPlacement.popoverHeight(
                     rowCount: preferredRowCount,
                     rowHeight: Self.rowHeight,
                     chrome: Self.chromeHeight + previewHeightConstraint.constant
-                ),
+                )),
                 edge: edge,
                 visibleFrame: visibleFrame
             ),
