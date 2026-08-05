@@ -49,6 +49,17 @@ struct WorkspacePreferences {
         static let edgeTabsUsesFinderWindows = "workspace.edgeTabsUsesFinderWindows"
         static let restoresWindows = "workspace.restoresWindows"
         static let edgeTabsFollowsPointer = "workspace.edgeTabsFollowsPointer"
+        static let edgeTabsAccordion = "workspace.edgeTabsAccordion"
+    }
+
+    /// 袖を開いたとき、入れてある全フォルダを縦積みで見せるか。
+    /// 既定はオン——フォルダをまたいで見比べたり、あいだで物を動かしたりできる。
+    var edgeTabsUsesAccordion: Bool {
+        get {
+            guard defaults.object(forKey: Key.edgeTabsAccordion) != nil else { return true }
+            return defaults.bool(forKey: Key.edgeTabsAccordion)
+        }
+        nonmutating set { defaults.set(newValue, forKey: Key.edgeTabsAccordion) }
     }
 
     /// 帯を、その画面でカーソルがいる側（右半分なら右端、左半分なら左端）へ

@@ -44,6 +44,8 @@ final class EdgeTabsController {
 
     private var strips: [CGDirectDisplayID: Strip] = [:]
     private let popover: EdgeTabPopoverController
+    /// 袖に入れた全フォルダを縦積みで見せるほう。設定でこちらを使う。
+    private let accordion: EdgeTabAccordionController
     private var tabs = WorkspaceEdgeTabs()
     private var isEnabled = false
     private var edge: WorkspaceScreenEdge = .right
@@ -73,6 +75,7 @@ final class EdgeTabsController {
         self.preferences = preferences
         self.sessionManager = sessionManager
         popover = EdgeTabPopoverController(preferences: preferences)
+        accordion = EdgeTabAccordionController(preferences: preferences)
         popover.onOpenDirectory = { [weak self] url in
             self?.hidePopover()
             self?.onOpenDirectory?(url)
@@ -93,6 +96,23 @@ final class EdgeTabsController {
             if isDragging { self.revealAllStrips() }
         }
         popover.onRequestDismiss = { [weak self] in
+            self?.hidePopover()
+            self?.hideStripsIfAutoHiding()
+        }
+        accordion.onOpenDirectory = { [weak self] url in
+            self?.hidePopover()
+            self?.onOpenDirectory?(url)
+        }
+        accordion.onHoverChanged = { [weak self] isInside in
+            guard let self else { return }
+            if isInside { self.cancelClose() } else { self.scheduleClose() }
+        }
+        accordion.onDraggingChanged = { [weak self] isDragging in
+            guard let self else { return }
+            self.isDraggingFromPopover = isDragging
+            if isDragging { self.revealAllStrips() }
+        }
+        accordion.onRequestDismiss = { [weak self] in
             self?.hidePopover()
             self?.hideStripsIfAutoHiding()
         }
@@ -247,7 +267,7 @@ final class EdgeTabsController {
         // 反対側へ飛ぶ。
         guard NSEvent.pressedMouseButtons == 0,
               !isDraggingFromPopover,
-              !popover.isPresented else { return }
+              !isListPresented else { return }
         let mouse = NSEvent.mouseLocation
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }),
               let id = screen.displayID,
@@ -412,7 +432,7 @@ final class EdgeTabsController {
                 self.scheduleHideStrips()
                 return
             }
-            guard !self.cursorIsOverPanels, !self.popover.isPresented else { return }
+            guard !self.cursorIsOverPanels, !self.isListPresented else { return }
             self.hideStripsIfAutoHiding()
         }
     }
@@ -501,6 +521,7 @@ final class EdgeTabsController {
             if strip.panel.frame.contains(mouse) { return true }
         }
         if popover.isPresented, popover.frame.contains(mouse) { return true }
+        if accordion.isPresented, accordion.frame.contains(mouse) { return true }
         return false
     }
 
@@ -508,7 +529,8 @@ final class EdgeTabsController {
     private func togglePopover(for tab: EdgeTabButton) {
         cancelOpen()
         cancelClose()
-        if popover.isPresented, popover.presentedRoot == tab.url {
+        let openedRoot = accordion.isPresented ? accordion.presentedRoot : popover.presentedRoot
+        if isListPresented, openedRoot == tab.url {
             hidePopover()
             return
         }
@@ -520,6 +542,19 @@ final class EdgeTabsController {
               let screen = panel.screen ?? NSScreen.main else { return }
         let anchor = panel.convertToScreen(tab.frame)
         let tabEdge = strips.values.first { $0.tabs.contains(tab) }?.edge ?? edge
+        if preferences.edgeTabsUsesAccordion {
+            // 袖に入れた全フォルダを縦積みで出す。押されたものはその場で開く。
+            accordion.present(
+                roots: tabs.urls,
+                focus: tab.url,
+                anchor: anchor,
+                edge: tabEdge,
+                visibleFrame: screen.visibleFrame,
+                screenID: screen.displayID,
+                relativeTo: panel
+            )
+            return
+        }
         popover.present(
             directory: tab.url,
             anchor: anchor,
@@ -534,6 +569,12 @@ final class EdgeTabsController {
         cancelOpen()
         cancelClose()
         popover.dismiss()
+        accordion.dismiss()
+    }
+
+    /// いま一覧が開いているか（どちらの形でも）。
+    private var isListPresented: Bool {
+        popover.isPresented || accordion.isPresented
     }
 
     // MARK: - タブのメニュー
