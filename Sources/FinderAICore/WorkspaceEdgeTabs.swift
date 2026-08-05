@@ -131,7 +131,9 @@ public enum EdgeTabPlacement {
     /// タブ1枚の大きさ。細長い帯で、掴む的として小さすぎない幅。
     public static let tabWidth: CGFloat = 30
     public static let tabHeight: CGFloat = 58
-    public static let tabSpacing: CGFloat = 2
+    /// タブどうしは詰めて置く。あいだを空けると、そこだけ触れても反応しない
+    /// 帯になり、袖のどこに当たったかで結果が変わる。
+    public static let tabSpacing: CGFloat = 0
     /// 展開したポップアップ。
     ///
     /// 幅は「プレビューが読める」ことから決めている。300ptだとサムネイルが小さく、

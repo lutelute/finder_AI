@@ -25,6 +25,7 @@ final class EdgeTabAccordionController: NSObject {
     private enum Row {
         case folder(url: URL, depth: Int, isExpanded: Bool)
         case item(WorkspaceItem, depth: Int)
+        case loading(depth: Int)
         case empty(depth: Int)
         case denied(depth: Int)
     }
@@ -144,9 +145,28 @@ final class EdgeTabAccordionController: NSObject {
         scrollToFocus()
     }
 
+    /// 開いたまま、別のフォルダへ寄せる。
+    ///
+    /// 袖の別のタブに触れたときに使う。畳んであれば開き、その見出しまで送る。
+    /// パネルの位置は動かさない——触れるたびに箱ごと動くと、読んでいる最中の
+    /// 一覧が飛ぶ。
+    func moveFocus(to url: URL) {
+        guard isPresented else { return }
+        presentedRoot = url
+        if expanded.contains(url) {
+            scrollToFocus()
+        } else {
+            expanded.insert(url)
+            load(url)
+            rebuildRows()
+            scrollToFocus()
+        }
+    }
+
     func dismiss() {
         loadTasks.values.forEach { $0.cancel() }
         loadTasks = [:]
+        loading.removeAll()
         panel.parent?.removeChildWindow(panel)
         panel.orderOut(nil)
         presentedRoot = nil
@@ -183,7 +203,13 @@ final class EdgeTabAccordionController: NSObject {
             rows.append(.denied(depth: depth + 1))
             return
         }
-        guard let contents = children[url] else { return }
+        // 読んでいる最中も1行置く。何も置かずに畳んだ見出しだけを出すと、下限まで
+        // 縮んだ箱が一瞬（読めないフォルダでは永く）現れ、触れても何も起きないように
+        // 見える——実際にそう見えていた。
+        guard let contents = children[url] else {
+            rows.append(.loading(depth: depth + 1))
+            return
+        }
         guard !contents.isEmpty else {
             rows.append(.empty(depth: depth + 1))
             return
@@ -226,8 +252,13 @@ final class EdgeTabAccordionController: NSObject {
             let result: [WorkspaceItem]? = await Task.detached(priority: .userInitiated) {
                 try? WorkspaceDirectoryListing.contents(of: url)
             }.value
-            guard !Task.isCancelled, let self else { return }
+            guard let self else { return }
+            // 取り消されても読み込み中の印は必ず外す。ここを`Task.isCancelled`の
+            // 後ろに置いていたせいで、途中で閉じたフォルダは`loading`に残り続け、
+            // 次に開こうとしても入口の`guard`で弾かれて二度と読まれなかった。
+            // 袖は追従で動くたびに閉じるので、一度掴まると恒久的に空箱になる。
             self.loading.remove(url)
+            guard !Task.isCancelled else { return }
             if let result {
                 self.children[url] = sort.sorted(result, ascending: ascending)
             } else {
@@ -425,12 +456,14 @@ extension EdgeTabAccordionController: NSTableViewDataSource, NSTableViewDelegate
                 icon.heightAnchor.constraint(equalToConstant: 15)
             ])
             pin(stack, in: cell, depth: depth + 1)
-        case .empty(let depth), .denied(let depth):
-            let isDenied: Bool
-            if case .denied = rows[row] { isDenied = true } else { isDenied = false }
-            let label = NSTextField(labelWithString: isDenied
-                ? "読み取れません（アクセス許可を確認）"
-                : "項目がありません")
+        case .loading(let depth), .empty(let depth), .denied(let depth):
+            let text: String
+            switch rows[row] {
+            case .denied: text = "読み取れません（アクセス許可を確認）"
+            case .loading: text = "読み込み中…"
+            default: text = "項目がありません"
+            }
+            let label = NSTextField(labelWithString: text)
             label.font = .systemFont(ofSize: 11)
             label.textColor = IntegratedPanelTheme.secondaryText
             stack.setViews([label], in: .leading)

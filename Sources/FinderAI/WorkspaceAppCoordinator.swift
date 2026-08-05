@@ -26,6 +26,9 @@ final class WorkspaceAppCoordinator {
         controller.onShowWindows = { [weak self] in
             self?.showWindowsPanel()
         }
+        controller.onAddCurrentFolder = { [weak self] in
+            self?.toggleEdgeTabForCurrentFolder()
+        }
         controller.windowsLayoutProvider = { [weak self] in
             guard let self else { return .init(screens: [], windows: [], frontmost: nil) }
             let front = self.lastKeyWorkspaceWindow

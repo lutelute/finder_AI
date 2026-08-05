@@ -22,6 +22,8 @@ final class EdgeTabsController {
     var onRevealTerminal: ((URL) -> Void)?
     /// ウインドウの一覧を開く。
     var onShowWindows: (() -> Void)?
+    /// いま見ているフォルダを袖に入れる。空の袖に出す「＋」から呼ぶ。
+    var onAddCurrentFolder: (() -> Void)?
     /// いま開いているウインドウの配置。袖の先頭に俯瞰として描く。
     var windowsLayoutProvider: (() -> EdgeWindowsTabButton.Layout)?
 
@@ -34,10 +36,12 @@ final class EdgeTabsController {
     @MainActor
     private final class Strip {
         let panel: EdgeTabPanel
-        let container = NSView()
+        let container = EdgeStripHoverView()
         var tabs: [EdgeTabButton] = []
         /// ウインドウの俯瞰。フォルダを1つも入れていなくても、これだけは出る。
         var windowsTab: EdgeWindowsTabButton?
+        /// フォルダが1つも入っていないときだけ出る、入れるための的。
+        var addTab: EdgeActionTabButton?
         var isHidden = false
         /// この帯が貼り付いている縁。カーソルのいる側へ移るので、画面ごとに違う。
         var edge: WorkspaceScreenEdge = .right
@@ -344,6 +348,23 @@ final class EdgeTabsController {
     private func buildTabs(in strip: Strip, on screen: NSScreen) {
         strip.tabs.forEach { $0.removeFromSuperview() }
         strip.tabs = []
+        // 板そのものを受け口にする。タブ1枚ずつを狙わせない。
+        strip.container.onHoverChanged = { [weak self, weak strip] isInside in
+            guard let self, let strip else { return }
+            let screenID = screen.displayID
+            if isInside {
+                self.cancelClose()
+                if let screenID { self.stripHoverChanged(true, on: screenID) }
+                if self.preferences.edgeTabsOpensOnHover { self.scheduleOpenNearest(in: strip) }
+            } else {
+                // 板の上に載っているタブへ移っただけでも「外れた」が飛ぶ。通知を
+                // そのまま信じると、触れた直後に自分で取り消してリストが開かない。
+                guard !self.cursorIsOverPanels else { return }
+                self.cancelOpen()
+                self.scheduleClose()
+                if let screenID { self.stripHoverChanged(false, on: screenID) }
+            }
+        }
         strip.windowsTab?.removeFromSuperview()
         let windowsTab = EdgeWindowsTabButton(edge: strip.edge)
         windowsTab.onPress = { [weak self] in self?.onShowWindows?() }
@@ -407,11 +428,36 @@ final class EdgeTabsController {
             strip.container.addSubview(tab)
             strip.tabs.append(tab)
         }
+
+        // フォルダが1つも入っていないとき、袖は俯瞰タブだけになる。触れても
+        // ウインドウの一覧が出るだけで、フォルダの入れ方はどこにも書かれていない
+        // ——「触っても何も起きない」に見える。入れるための的をその場に出す。
+        strip.addTab?.removeFromSuperview()
+        strip.addTab = nil
+        guard tabs.isEmpty else { return }
+        let add = EdgeActionTabButton(
+            symbol: "plus",
+            tooltip: "いま見ているフォルダを袖に入れる（⌃⌘E）",
+            edge: strip.edge
+        )
+        add.onPress = { [weak self] in self?.onAddCurrentFolder?() }
+        add.onHoverChanged = { [weak self] isInside in
+            guard let self, let id = screen.displayID else { return }
+            if isInside {
+                self.cancelClose()
+                self.stripHoverChanged(true, on: id)
+            } else {
+                self.scheduleClose()
+                self.stripHoverChanged(false, on: id)
+            }
+        }
+        strip.container.addSubview(add)
+        strip.addTab = add
     }
 
     private func layout(_ strip: Strip, on screen: NSScreen) {
         guard let resting = EdgeTabPlacement.stripFrame(
-            tabCount: strip.tabs.count + 1,
+            tabCount: strip.tabs.count + 1 + (strip.addTab == nil ? 0 : 1),
             edge: strip.edge,
             visibleFrame: screen.visibleFrame
         ) else {
@@ -449,6 +495,15 @@ final class EdgeTabsController {
                 height: EdgeTabPlacement.tabHeight
             )
             y -= EdgeTabPlacement.tabSpacing
+        }
+        if let addTab = strip.addTab {
+            y -= EdgeTabPlacement.tabHeight
+            addTab.frame = NSRect(
+                x: 0,
+                y: y,
+                width: EdgeTabPlacement.tabWidth,
+                height: EdgeTabPlacement.tabHeight
+            )
         }
     }
 
@@ -555,6 +610,24 @@ final class EdgeTabsController {
         }
     }
 
+    /// 袖に触れたら、カーソルのいる高さに最も近いフォルダを開く。
+    ///
+    /// どのタブに当たったかを問わないので、端へ寄せるだけでリストが広がる。
+    /// 俯瞰のタブに乗っているあいだだけは、そちらの受け持ちに譲る。
+    private func scheduleOpenNearest(in strip: Strip) {
+        let mouse = NSEvent.mouseLocation
+        if let windowsTab = strip.windowsTab,
+           strip.panel.convertToScreen(windowsTab.frame).contains(mouse) {
+            return
+        }
+        guard let nearest = strip.tabs.min(by: { lhs, rhs in
+            let left = strip.panel.convertToScreen(lhs.frame).midY
+            let right = strip.panel.convertToScreen(rhs.frame).midY
+            return abs(left - mouse.y) < abs(right - mouse.y)
+        }) else { return }
+        scheduleOpen(for: nearest)
+    }
+
     /// 俯瞰に触れてしばらくしたら、ウインドウの一覧を出す。
     private func scheduleShowWindows() {
         cancelClose()
@@ -624,6 +697,13 @@ final class EdgeTabsController {
         let anchor = panel.convertToScreen(tab.frame)
         let tabEdge = strips.values.first { $0.tabs.contains(tab) }?.edge ?? edge
         if preferences.edgeTabsUsesAccordion {
+            // すでに同じ画面で開いているなら、開き直さずその中で寄せる。縦積みには
+            // 袖の全フォルダが載っているので、目的の見出しはもう画面にある——
+            // 出し直すと一度消えて開き直り、読んでいる途中の場所を見失う。
+            if accordion.isPresented, accordion.presentedScreenID == screen.displayID {
+                accordion.moveFocus(to: tab.url)
+                return
+            }
             // 袖に入れた全フォルダを縦積みで出す。押されたものはその場で開く。
             accordion.present(
                 roots: tabs.urls,

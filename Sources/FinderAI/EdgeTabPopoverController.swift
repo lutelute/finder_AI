@@ -456,7 +456,10 @@ final class EdgeTabPopoverController: NSObject {
             return true
         }
         switch event.keyCode {
-        case 51, 117 where event.modifierFlags.contains(.command): // ⌘⌫ / ⌘delete
+        case 51, 117: // ⌘⌫ / ⌘⌦
+            // `case 51, 117 where …`と書くと、条件は117にしか掛からない。⌘を
+            // 押していない素の⌫でもゴミ箱へ入っていた——Finderは何もしない。
+            guard event.modifierFlags.contains(.command) else { return false }
             trashContextItem()
             return true
         case 53: // esc
