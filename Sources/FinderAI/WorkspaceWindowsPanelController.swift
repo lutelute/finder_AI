@@ -6,10 +6,13 @@ import FinderAICore
 /// 何十枚も開いて使われるので、ウインドウメニューの並びだけでは足りない——
 /// あちらはタイトルしか出ず、同じ名前のフォルダが並ぶと選びようがない。
 ///
-/// 難しいのは「同じフォルダを何枚も開く」場合で、そのときは名前もパスも実行中の
-/// 数まで揃う。フォルダ由来の情報をいくら並べても見分けられないので、
-/// 「画面のどこに、どの大きさで置いてあるか」と「閉じても詰まらない通し番号」を
-/// 手がかりにする。読む順は フォルダ → 置き場所 → 番号。
+/// 縦1列のリストから、カードを並べる形へ作り替えた。リストは1行につき
+/// 「主画面・中央 1180×792」のような同じ文言が並ぶだけで、同じ場所に重ねて
+/// 使っているときは何枚あっても一字一句同じになる。読む手がかりを増やすより、
+/// フォルダの絵を大きく出して目で分けるほうが早い。
+///
+/// 触れているあいだは、そのウインドウが実際に前へ出る。開くまで中身が分から
+/// ないのでは、どれか当てる作業が残ったままになる。
 @MainActor
 final class WorkspaceWindowsPanelController: NSWindowController {
     /// 一覧に出す1枚分。表示に必要なことだけを写して持つ。
@@ -22,46 +25,49 @@ final class WorkspaceWindowsPanelController: NSWindowController {
         let path: String
         let runningSessions: Int
         let isFrontmost: Bool
-        /// 置き場所。図と言葉の両方で出す。
+        /// 置き場所。カードの下に短く添える。
         let windowFrame: CGRect
         let screenFrame: CGRect
         let screenName: String
         let sizeText: String
     }
 
-    /// 表に並ぶもの。同じフォルダが複数あるときだけ、見出しでまとめる。
-    private enum Entry {
-        case group(path: String, name: String, count: Int)
-        case window(Row)
-    }
-
     var rowsProvider: (() -> [Row])?
     var onSelect: ((ObjectIdentifier) -> Void)?
     var onClose: ((ObjectIdentifier) -> Void)?
     var onOpenNew: (() -> Void)?
+    /// 触れているあいだ、そのウインドウを仮に前へ出す。
+    var onPreview: ((ObjectIdentifier) -> Void)?
+    /// 仮に出したものを元の並びへ戻す。
+    var onEndPreview: (() -> Void)?
 
-    private let tableView = WindowsTableView()
+    private let scrollView = NSScrollView()
+    private let grid = NSStackView()
     private let searchField = NSSearchField()
     private let countLabel = NSTextField(labelWithString: "")
     private var rows: [Row] = []
-    private var entries: [Entry] = []
+    private var filtered: [Row] = []
+    private var columnsInUse = 0
 
-    private static let rowHeight: CGFloat = 52
-    private static let groupHeight: CGFloat = 30
+    private static let gap: CGFloat = 10
+    private static let sideInset: CGFloat = 14
+    /// タイトルバー・検索欄・枚数表示・余白。中身に合わせて高さを決めるときの分。
+    private static let chrome: CGFloat = 116
 
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 680, height: 520),
+            contentRect: NSRect(x: 0, y: 0, width: 580, height: 360),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "ウインドウ"
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 520, height: 340)
-        // 置いた場所と大きさを覚える。開くたびに真ん中へ戻ると、置き直しが要る。
+        window.minSize = NSSize(width: 380, height: 240)
+        // 置いた場所を覚える。開くたびに真ん中へ戻ると、置き直しが要る。
         window.setFrameAutosaveName("FinderAIWindowsPanel")
         super.init(window: window)
+        window.delegate = self
         buildContent(in: window)
     }
 
@@ -71,6 +77,7 @@ final class WorkspaceWindowsPanelController: NSWindowController {
 
     func show() {
         reload()
+        fitHeightToContent()
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -90,7 +97,7 @@ final class WorkspaceWindowsPanelController: NSWindowController {
         let query = searchField.stringValue.trimmingCharacters(in: .whitespaces)
         // 空白区切りは全部を満たすもの（AND）。「finder 右」のように絞れる。
         let terms = query.split(separator: " ").map(String.init)
-        let matched = terms.isEmpty ? rows : rows.filter { row in
+        filtered = terms.isEmpty ? rows : rows.filter { row in
             terms.allSatisfy { term in
                 row.name.localizedCaseInsensitiveContains(term)
                     || row.path.localizedCaseInsensitiveContains(term)
@@ -100,33 +107,96 @@ final class WorkspaceWindowsPanelController: NSWindowController {
                         .localizedCaseInsensitiveContains(term)
             }
         }
-        entries = Self.buildEntries(from: matched)
-        tableView.reloadData()
+        columnsInUse = 0
+        rebuildGrid()
         countLabel.stringValue = rows.isEmpty
             ? "開いているウインドウはありません"
-            : (matched.count == rows.count
+            : (filtered.count == rows.count
                 ? "\(rows.count)枚"
-                : "\(matched.count) / \(rows.count)枚")
+                : "\(filtered.count) / \(rows.count)枚")
     }
 
-    /// 同じフォルダが2枚以上あるときだけ見出しでまとめる。
-    ///
-    /// 全部に見出しを付けると縦に間延びして、かえって読みにくい。単独のものは
-    /// そのまま1行で出す。
-    private static func buildEntries(from rows: [Row]) -> [Entry] {
-        var counts: [String: Int] = [:]
-        for row in rows { counts[row.path, default: 0] += 1 }
-        var result: [Entry] = []
-        var emitted: Set<String> = []
-        for row in rows {
-            let count = counts[row.path] ?? 1
-            if count > 1, !emitted.contains(row.path) {
-                emitted.insert(row.path)
-                result.append(.group(path: row.parent, name: row.name, count: count))
-            }
-            result.append(.window(row))
+    // MARK: - 並べる
+
+    /// いまの幅に何枚入るか。
+    private var columnCount: Int {
+        let available = scrollView.frame.width - Self.gap
+        let step = WorkspaceWindowCardView.width + Self.gap
+        return max(1, Int((available) / step))
+    }
+
+    private func rebuildGrid() {
+        let columns = columnCount
+        columnsInUse = columns
+        grid.arrangedSubviews.forEach {
+            grid.removeArrangedSubview($0)
+            $0.removeFromSuperview()
         }
-        return result
+        var line: NSStackView?
+        for (index, row) in filtered.enumerated() {
+            if index % columns == 0 {
+                let stack = NSStackView()
+                stack.orientation = .horizontal
+                stack.alignment = .top
+                stack.spacing = Self.gap
+                grid.addArrangedSubview(stack)
+                line = stack
+            }
+            line?.addArrangedSubview(makeCard(row))
+        }
+    }
+
+    private func makeCard(_ row: Row) -> WorkspaceWindowCardView {
+        let region = WorkspaceScreenRegion.describe(window: row.windowFrame, on: row.screenFrame)
+        // 添えるのは置き場所ではなく、ひとつ上のフォルダ名。同じ画面に重ねて
+        // 使っていると「主画面・中央」が全枚数ぶん並ぶだけで区別に使えない。
+        // どこにあるかは、触れれば実際に前へ出るので目で分かる。
+        let parentName = (row.parent as NSString).lastPathComponent
+        let card = WorkspaceWindowCardView(
+            icon: NSWorkspace.shared.icon(forFile: row.path),
+            name: row.name,
+            place: parentName.isEmpty ? row.parent : parentName,
+            serial: row.serial,
+            runningSessions: row.runningSessions,
+            isFrontmost: row.isFrontmost
+        )
+        card.toolTip = "\(row.path)\n\(row.screenName)・\(region)　\(row.sizeText)"
+        card.onHoverChanged = { [weak self] isInside in
+            guard let self else { return }
+            if isInside {
+                self.onPreview?(row.id)
+            } else {
+                self.onEndPreview?()
+            }
+        }
+        card.onPress = { [weak self] in
+            self?.onSelect?(row.id)
+        }
+        // 閉じる相手は行番号ではなくウインドウそのもので指す。絞り込みや並びが
+        // 変わったときに別のウインドウを閉じないため。
+        card.onClose = { [weak self] in
+            self?.onClose?(row.id)
+            self?.reload()
+        }
+        return card
+    }
+
+    /// 中身の段数に高さを合わせる。
+    ///
+    /// 固定の高さだと、3枚しか開いていないときに下の3分の2が空く。
+    private func fitHeightToContent() {
+        guard let window else { return }
+        let columns = max(1, columnCount)
+        let lines = max(1, Int(ceil(Double(filtered.count) / Double(columns))))
+        let content = CGFloat(lines) * WorkspaceWindowCardView.height
+            + CGFloat(max(0, lines - 1)) * Self.gap
+        let wanted = min(content + Self.chrome, (window.screen ?? NSScreen.main)?.visibleFrame.height ?? 700)
+        var frame = window.frame
+        let delta = wanted - frame.height
+        guard abs(delta) > 1 else { return }
+        frame.origin.y -= delta
+        frame.size.height = wanted
+        window.setFrame(frame, display: true)
     }
 
     private func buildContent(in window: NSWindow) {
@@ -146,21 +216,26 @@ final class WorkspaceWindowsPanelController: NSWindowController {
         openNew.bezelStyle = .rounded
         openNew.controlSize = .small
 
-        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("window"))
-        column.resizingMask = .autoresizingMask
-        tableView.addTableColumn(column)
-        tableView.headerView = nil
-        tableView.style = .plain
-        tableView.dataSource = self
-        tableView.delegate = self
-        tableView.target = self
-        // 前に出すのが主目的なので、シングルクリックで済ませる。
-        tableView.action = #selector(activateSelection)
+        grid.orientation = .vertical
+        grid.alignment = .leading
+        grid.spacing = Self.gap
+        grid.edgeInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
 
-        let scrollView = NSScrollView()
-        scrollView.documentView = tableView
+        let flipped = FlippedClipContainer()
+        flipped.translatesAutoresizingMaskIntoConstraints = false
+        flipped.addSubview(grid)
+        grid.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            grid.leadingAnchor.constraint(equalTo: flipped.leadingAnchor),
+            grid.trailingAnchor.constraint(lessThanOrEqualTo: flipped.trailingAnchor),
+            grid.topAnchor.constraint(equalTo: flipped.topAnchor),
+            grid.bottomAnchor.constraint(equalTo: flipped.bottomAnchor)
+        ])
+
+        scrollView.documentView = flipped
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = false
 
         let header = NSStackView(views: [searchField, openNew])
         header.orientation = .horizontal
@@ -171,18 +246,18 @@ final class WorkspaceWindowsPanelController: NSWindowController {
             content.addSubview($0)
         }
         NSLayoutConstraint.activate([
-            header.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14),
-            header.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14),
+            header.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: Self.sideInset),
+            header.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -Self.sideInset),
             header.topAnchor.constraint(equalTo: content.topAnchor, constant: 14),
 
-            // 表は端まで使う。`.plain`にして自前の余白だけにした——`.inset`との
-            // 二重の余白で、小さいパネルでは横幅が足りなくなる。
-            scrollView.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 8),
-            scrollView.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -8),
+            scrollView.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: Self.sideInset),
+            scrollView.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -Self.sideInset),
             scrollView.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 10),
             scrollView.bottomAnchor.constraint(equalTo: countLabel.topAnchor, constant: -8),
 
-            countLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14),
+            flipped.widthAnchor.constraint(equalTo: scrollView.widthAnchor),
+
+            countLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: Self.sideInset),
             countLabel.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12)
         ])
     }
@@ -195,187 +270,25 @@ final class WorkspaceWindowsPanelController: NSWindowController {
         onOpenNew?()
         reload()
     }
+}
 
-    @objc private func activateSelection() {
-        let index = tableView.clickedRow >= 0 ? tableView.clickedRow : tableView.selectedRow
-        guard entries.indices.contains(index), case .window(let row) = entries[index] else { return }
-        onSelect?(row.id)
+extension WorkspaceWindowsPanelController: NSWindowDelegate {
+    /// 幅が変わって入る枚数が変われば並べ直す。変わらないなら触らない。
+    func windowDidResize(_ notification: Notification) {
+        guard columnCount != columnsInUse else { return }
+        rebuildGrid()
     }
 
-    /// 閉じる対象は、行番号ではなくウインドウそのもので指す。
-    ///
-    /// 行番号を持たせると、絞り込みや並びが変わったときに別のウインドウを
-    /// 閉じてしまう。
-    @objc private func closeFromButton(_ sender: WindowCloseButton) {
-        guard let id = sender.windowID else { return }
-        onClose?(id)
-        reload()
+    /// 閉じたら、仮に前へ出したものを戻しておく。
+    func windowWillClose(_ notification: Notification) {
+        onEndPreview?()
     }
 }
 
-extension WorkspaceWindowsPanelController: NSTableViewDataSource, NSTableViewDelegate {
-    func numberOfRows(in tableView: NSTableView) -> Int { entries.count }
-
-    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        guard entries.indices.contains(row) else { return Self.rowHeight }
-        if case .group = entries[row] { return Self.groupHeight }
-        return Self.rowHeight
-    }
-
-    func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool {
-        guard entries.indices.contains(row) else { return false }
-        if case .group = entries[row] { return true }
-        return false
-    }
-
-    func tableView(
-        _ tableView: NSTableView,
-        shouldSelectRow row: Int
-    ) -> Bool {
-        !self.tableView(tableView, isGroupRow: row)
-    }
-
-    func tableView(
-        _ tableView: NSTableView,
-        viewFor tableColumn: NSTableColumn?,
-        row: Int
-    ) -> NSView? {
-        guard entries.indices.contains(row) else { return nil }
-        switch entries[row] {
-        case .group(let path, let name, let count):
-            return makeGroupView(name: name, path: path, count: count)
-        case .window(let entry):
-            return makeRowView(entry)
-        }
-    }
-
-    private func makeGroupView(name: String, path: String, count: Int) -> NSView {
-        let cell = NSTableCellView()
-        let icon = NSImageView(image: NSImage(
-            systemSymbolName: "folder.fill",
-            accessibilityDescription: nil
-        ) ?? NSImage())
-        icon.contentTintColor = .secondaryLabelColor
-        let title = NSTextField(labelWithString: name)
-        title.font = .systemFont(ofSize: 12, weight: .semibold)
-        let where_ = NSTextField(labelWithString: path)
-        where_.font = .systemFont(ofSize: 11)
-        where_.textColor = .secondaryLabelColor
-        where_.lineBreakMode = .byTruncatingMiddle
-        let badge = NSTextField(labelWithString: "\(count)枚")
-        badge.font = .systemFont(ofSize: 11)
-        badge.textColor = .secondaryLabelColor
-
-        let stack = NSStackView(views: [icon, title, where_, NSView(), badge])
-        stack.orientation = .horizontal
-        stack.alignment = .centerY
-        stack.spacing = 6
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        cell.addSubview(stack)
-        NSLayoutConstraint.activate([
-            icon.widthAnchor.constraint(equalToConstant: 13),
-            stack.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 8),
-            stack.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -10),
-            stack.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
-        ])
-        return cell
-    }
-
-    private func makeRowView(_ entry: Row) -> NSView {
-        let cell = NSTableCellView()
-
-        // 前面は左端の帯で示す。太字だけでは差が小さすぎて拾えない。
-        let marker = NSView()
-        marker.wantsLayer = true
-        marker.layer?.backgroundColor = entry.isFrontmost
-            ? NSColor.controlAccentColor.cgColor
-            : NSColor.clear.cgColor
-        marker.layer?.cornerRadius = 1.5
-
-        let serial = NSTextField(labelWithString: "#\(entry.serial)")
-        serial.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
-        serial.textColor = entry.isFrontmost ? .controlAccentColor : .secondaryLabelColor
-        serial.alignment = .center
-
-        let map = WorkspaceScreenMapView()
-        map.screenFrame = entry.screenFrame
-        map.windowFrame = entry.windowFrame
-        map.isFrontmost = entry.isFrontmost
-        map.toolTip = "\(entry.screenName)・\(entry.sizeText)"
-
-        let name = NSTextField(labelWithString: entry.name)
-        name.font = .systemFont(ofSize: 13, weight: entry.isFrontmost ? .semibold : .regular)
-        name.lineBreakMode = .byTruncatingMiddle
-
-        let region = WorkspaceScreenRegion.describe(
-            window: entry.windowFrame,
-            on: entry.screenFrame
-        )
-        var details = ["\(entry.screenName)・\(region)", entry.sizeText]
-        if entry.runningSessions > 0 { details.append("実行中\(entry.runningSessions)") }
-        let detail = NSTextField(labelWithString: details.joined(separator: "  "))
-        detail.font = .systemFont(ofSize: 11)
-        detail.textColor = .secondaryLabelColor
-        detail.lineBreakMode = .byTruncatingTail
-
-        let labels = NSStackView(views: [name, detail])
-        labels.orientation = .vertical
-        labels.alignment = .leading
-        labels.spacing = 2
-
-        let close = WindowCloseButton()
-        close.windowID = entry.id
-        close.title = ""
-        close.isBordered = false
-        close.image = NSImage(systemSymbolName: "xmark.circle", accessibilityDescription: "閉じる")
-        close.contentTintColor = .tertiaryLabelColor
-        close.toolTip = "このウインドウを閉じる"
-        close.target = self
-        close.action = #selector(closeFromButton(_:))
-
-        let stack = NSStackView(views: [serial, map, labels, NSView(), close])
-        stack.orientation = .horizontal
-        stack.alignment = .centerY
-        stack.spacing = 10
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        [marker, stack].forEach {
-            $0.translatesAutoresizingMaskIntoConstraints = false
-            cell.addSubview($0)
-        }
-        NSLayoutConstraint.activate([
-            marker.leadingAnchor.constraint(equalTo: cell.leadingAnchor),
-            marker.widthAnchor.constraint(equalToConstant: 3),
-            marker.topAnchor.constraint(equalTo: cell.topAnchor, constant: 6),
-            marker.bottomAnchor.constraint(equalTo: cell.bottomAnchor, constant: -6),
-
-            serial.widthAnchor.constraint(equalToConstant: 30),
-            map.widthAnchor.constraint(equalToConstant: 42),
-            map.heightAnchor.constraint(equalToConstant: 28),
-            close.widthAnchor.constraint(equalToConstant: 24),
-            close.heightAnchor.constraint(equalToConstant: 24),
-
-            stack.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 10),
-            stack.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
-            stack.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
-        ])
-        return cell
-    }
-}
-
-/// 閉じる対象をウインドウそのもので持つボタン。
-@MainActor
-final class WindowCloseButton: NSButton {
-    var windowID: ObjectIdentifier?
-}
-
-/// returnでも前に出せるようにする表。
-@MainActor
-private final class WindowsTableView: NSTableView {
-    override func keyDown(with event: NSEvent) {
-        if event.keyCode == 36 || event.keyCode == 76 {
-            sendAction(action, to: target)
-            return
-        }
-        super.keyDown(with: event)
-    }
+/// スクロールの中身を上から積むための入れ物。
+///
+/// `NSScrollView`の座標は下が原点なので、そのまま入れるとカードが下端から
+/// 生える。
+private final class FlippedClipContainer: NSView {
+    override var isFlipped: Bool { true }
 }

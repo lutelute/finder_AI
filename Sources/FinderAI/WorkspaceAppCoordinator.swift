@@ -60,6 +60,8 @@ final class WorkspaceAppCoordinator {
     /// 前面の判定に`NSApp.keyWindow`をそのまま使うと、一覧パネル自身がkeyに
     /// なった瞬間、どの行も「前面ではない」ことになる。
     private weak var lastKeyWorkspaceWindow: NSWindow?
+    /// 一覧のカードに触れて仮に前へ出す前、手元にいたウインドウ。離れたら戻す。
+    private weak var previewRestoreTarget: NSWindow?
 
     /// Terminal sessions are keyed by folder and kind across the whole app, so two
     /// windows on the same folder share one shell rather than racing to spawn a
@@ -452,15 +454,43 @@ final class WorkspaceAppCoordinator {
             let panel = WorkspaceWindowsPanelController()
             panel.rowsProvider = { [weak self] in self?.windowRows() ?? [] }
             panel.onSelect = { [weak self] id in
+                // 押したら確定。戻す先は忘れる。
+                self?.previewRestoreTarget = nil
                 self?.windows.first { ObjectIdentifier($0) == id }?.show()
             }
             panel.onClose = { [weak self] id in
                 self?.windows.first { ObjectIdentifier($0) == id }?.window?.performClose(nil)
             }
             panel.onOpenNew = { [weak self] in self?.newWindow() }
+            panel.onPreview = { [weak self] id in self?.previewWindow(id) }
+            panel.onEndPreview = { [weak self] in self?.endWindowPreview() }
             windowsPanel = panel
         }
         windowsPanel?.show()
+    }
+
+    /// 一覧のカードに触れているあいだ、そのウインドウを仮に前へ出す。
+    ///
+    /// カードには名前と置き場所しか書けない。同じフォルダを何枚も開いていると
+    /// それでも足りず、結局どれか当てる作業が残る——中身を見せてしまうのが早い。
+    /// 「仮に」なので、離れれば元の並びへ戻す。
+    private func previewWindow(_ id: ObjectIdentifier) {
+        guard let target = windows.first(where: { ObjectIdentifier($0) == id })?.window else { return }
+        if previewRestoreTarget == nil {
+            previewRestoreTarget = lastKeyWorkspaceWindow ?? NSApp.keyWindow
+        }
+        target.orderFront(nil)
+        // 一覧そのものは上に残す。前に出した拍子に隠れると、次のカードへ移れない。
+        windowsPanel?.window?.orderFront(nil)
+    }
+
+    private func endWindowPreview() {
+        guard let restore = previewRestoreTarget else { return }
+        previewRestoreTarget = nil
+        // 閉じたウインドウを戻そうとしない。
+        guard restore.isVisible else { return }
+        restore.orderFront(nil)
+        windowsPanel?.window?.orderFront(nil)
     }
 
     private func windowRows() -> [WorkspaceWindowsPanelController.Row] {
