@@ -25,6 +25,10 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     private let sessionManager: any TerminalSessionManaging
     private var rootController: NSViewController!
 
+    /// このウインドウの通し番号。閉じても詰め直さないので、セッション中ずっと
+    /// 同じ番号を指す——並び替えで動く番号は覚えられない。
+    let serial: Int
+
     var onClose: (() -> Void)?
     var onManageTerminalSessions: (() -> Void)? {
         didSet { terminal.onManageSessions = onManageTerminalSessions }
@@ -38,8 +42,10 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         sessionManager: any TerminalSessionManaging,
         initialDirectory: URL,
         preferences: WorkspacePreferences = WorkspacePreferences(),
-        restoresFrame: Bool = true
+        restoresFrame: Bool = true,
+        serial: Int = 0
     ) {
+        self.serial = serial
         self.preferences = preferences
         self.restoresFrame = restoresFrame
         self.sessionManager = sessionManager

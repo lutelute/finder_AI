@@ -38,6 +38,13 @@ final class WorkspaceAppCoordinator {
     private var restartRequired = false
     /// 終了処理に入ったか。入ったら構成のスナップショットを凍結する。
     private var isTerminating = false
+    /// ウインドウに振る通し番号。閉じても詰め直さない。
+    private var nextWindowSerial = 1
+    /// 最後にkeyだったワークスペースのウインドウ。
+    ///
+    /// 前面の判定に`NSApp.keyWindow`をそのまま使うと、一覧パネル自身がkeyに
+    /// なった瞬間、どの行も「前面ではない」ことになる。
+    private weak var lastKeyWorkspaceWindow: NSWindow?
 
     /// Terminal sessions are keyed by folder and kind across the whole app, so two
     /// windows on the same folder share one shell rather than racing to spawn a
@@ -72,6 +79,21 @@ final class WorkspaceAppCoordinator {
         restoreLastDirectory()
         refreshInstallationIndicator()
 
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                // ワークスペースのウインドウだけを覚える。一覧パネルや設定が
+                // keyになった瞬間に「どれも前面ではない」ことにしないため。
+                guard let key = NSApp.keyWindow,
+                      self.windows.contains(where: { $0.window === key }) else { return }
+                self.lastKeyWorkspaceWindow = key
+                self.windowsPanel?.refreshIfVisible()
+            }
+        }
         activationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil,
@@ -133,8 +155,10 @@ final class WorkspaceAppCoordinator {
             preferences: preferences,
             // Only the first window restores the saved frame; the rest cascade off
             // it, or they would all stack on the same rectangle.
-            restoresFrame: windows.isEmpty
+            restoresFrame: windows.isEmpty,
+            serial: nextWindowSerial
         )
+        nextWindowSerial += 1
         controller.onClose = { [weak self, weak controller] in
             guard let self, let controller else { return }
             self.windows.removeAll { $0 === controller }
@@ -422,31 +446,37 @@ final class WorkspaceAppCoordinator {
     }
 
     private func windowRows() -> [WorkspaceWindowsPanelController.Row] {
-        let key = NSApp.keyWindow
-        // 同じフォルダを何枚も開くのはふつうにあるので、その場合は何枚目かを添える。
-        // 名前もパスも同じ行が並ぶと、一覧の意味がなくなる。
-        var seen: [String: Int] = [:]
-        return windows.enumerated().map { index, controller in
+        // 一覧パネルがkeyになっても、直前まで前にいたウインドウを前面として扱う。
+        let front = lastKeyWorkspaceWindow ?? NSApp.keyWindow
+        return windows.map { controller in
             let directory = controller.displayedDirectory
-            let path = directory.path(percentEncoded: false)
-            seen[path, default: 0] += 1
-            let duplicate = windows.filter {
-                $0.displayedDirectory.path(percentEncoded: false) == path
-            }.count > 1
+            let frame = controller.window?.frame ?? .zero
+            let screen = controller.window?.screen ?? NSScreen.main
             let baseName = directory.lastPathComponent.isEmpty
                 ? directory.path
                 : directory.lastPathComponent
             return .init(
                 id: ObjectIdentifier(controller),
-                index: index + 1,
-                name: duplicate ? "\(baseName)（\(seen[path] ?? 1)枚目）" : baseName,
+                serial: controller.serial,
+                name: baseName,
                 parent: directory.deletingLastPathComponent().path(percentEncoded: false),
                 path: directory.path(percentEncoded: false),
                 runningSessions: sessionManager.sessions(for: directory)
                     .filter(\.isRunning).count,
-                isFrontmost: controller.window === key
+                isFrontmost: controller.window === front,
+                windowFrame: frame,
+                screenFrame: screen?.visibleFrame ?? .zero,
+                screenName: Self.screenName(for: screen),
+                sizeText: "\(Int(frame.width))×\(Int(frame.height))"
             )
         }
+    }
+
+    /// 「主画面」「外部1」のように、どのモニタかを短く言う。
+    private static func screenName(for screen: NSScreen?) -> String {
+        guard let screen else { return "画面" }
+        guard let index = NSScreen.screens.firstIndex(of: screen) else { return "画面" }
+        return index == 0 ? "主画面" : "外部\(index)"
     }
 
     /// いま見ているフォルダを画面の縁に置く／外す。
