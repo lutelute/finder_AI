@@ -12,6 +12,7 @@ final class WorkspaceAppCoordinator {
     private var windows: [WorkspaceWindowController] = []
     private var lastCapturedSnapshot: WorkspaceRestorationSnapshot?
     private var sessionsPanel: TerminalSessionsPanelController?
+    private var windowsPanel: WorkspaceWindowsPanelController?
     private var settingsWindow: SettingsWindowController?
     /// 画面の縁のタブ。ウインドウに属さないので、セッション同様アプリ全体で1つ。
     private lazy var edgeTabs: EdgeTabsController = {
@@ -138,10 +139,12 @@ final class WorkspaceAppCoordinator {
             guard let self, let controller else { return }
             self.windows.removeAll { $0 === controller }
             self.captureSnapshot()
+            self.windowsPanel?.refreshIfVisible()
         }
         controller.onDirectoryChanged = { [weak self] in
             self?.captureSnapshot()
             self?.refreshWindowTitles()
+            self?.windowsPanel?.refreshIfVisible()
         }
         controller.onManageTerminalSessions = { [weak self] in
             self?.showTerminalSessionsPanel()
@@ -150,6 +153,7 @@ final class WorkspaceAppCoordinator {
         applyInstallationIndicator(to: controller)
         captureSnapshot()
         refreshWindowTitles()
+        windowsPanel?.refreshIfVisible()
         return controller
     }
 
@@ -397,6 +401,52 @@ final class WorkspaceAppCoordinator {
             sessionsPanel = panel
         }
         sessionsPanel?.show()
+    }
+
+    /// 開いているウインドウの一覧。何十枚も開くので、ウインドウメニューの並び
+    /// だけでは足りない——あちらはタイトルしか出ず、同名フォルダが並ぶと選べない。
+    @objc func showWindowsPanel() {
+        if windowsPanel == nil {
+            let panel = WorkspaceWindowsPanelController()
+            panel.rowsProvider = { [weak self] in self?.windowRows() ?? [] }
+            panel.onSelect = { [weak self] id in
+                self?.windows.first { ObjectIdentifier($0) == id }?.show()
+            }
+            panel.onClose = { [weak self] id in
+                self?.windows.first { ObjectIdentifier($0) == id }?.window?.performClose(nil)
+            }
+            panel.onOpenNew = { [weak self] in self?.newWindow() }
+            windowsPanel = panel
+        }
+        windowsPanel?.show()
+    }
+
+    private func windowRows() -> [WorkspaceWindowsPanelController.Row] {
+        let key = NSApp.keyWindow
+        // 同じフォルダを何枚も開くのはふつうにあるので、その場合は何枚目かを添える。
+        // 名前もパスも同じ行が並ぶと、一覧の意味がなくなる。
+        var seen: [String: Int] = [:]
+        return windows.enumerated().map { index, controller in
+            let directory = controller.displayedDirectory
+            let path = directory.path(percentEncoded: false)
+            seen[path, default: 0] += 1
+            let duplicate = windows.filter {
+                $0.displayedDirectory.path(percentEncoded: false) == path
+            }.count > 1
+            let baseName = directory.lastPathComponent.isEmpty
+                ? directory.path
+                : directory.lastPathComponent
+            return .init(
+                id: ObjectIdentifier(controller),
+                index: index + 1,
+                name: duplicate ? "\(baseName)（\(seen[path] ?? 1)枚目）" : baseName,
+                parent: directory.deletingLastPathComponent().path(percentEncoded: false),
+                path: directory.path(percentEncoded: false),
+                runningSessions: sessionManager.sessions(for: directory)
+                    .filter(\.isRunning).count,
+                isFrontmost: controller.window === key
+            )
+        }
     }
 
     /// いま見ているフォルダを画面の縁に置く／外す。
@@ -764,6 +814,15 @@ final class WorkspaceAppCoordinator {
         windowMenu.addItem(NSMenuItem(title: "閉じる", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"))
         windowMenu.addItem(.separator())
         windowMenu.addItem(NSMenuItem(title: "すべてを手前に移動", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: ""))
+        let windowList = NSMenuItem(
+            title: "ウインドウの一覧…",
+            action: #selector(WorkspaceAppCoordinator.showWindowsPanel),
+            keyEquivalent: "w"
+        )
+        // ⌘⌥WはmacOSが「すべてを閉じる」に使う。奪うと閉じるほうが効かなくなる。
+        windowList.keyEquivalentModifierMask = [.command, .control]
+        windowList.target = coordinator
+        windowMenu.addItem(windowList)
         // 開いているウインドウをAppKitがここへ並べる（`configureMainMenu`で
         // `windowsMenu`に繋いである）。20枚まで開ける作りなので、「どれがどれか」
         // を辿れる場所として要る。

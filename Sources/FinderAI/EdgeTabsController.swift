@@ -33,6 +33,8 @@ final class EdgeTabsController {
         let container = NSView()
         var tabs: [EdgeTabButton] = []
         var isHidden = false
+        /// この帯が貼り付いている縁。カーソルのいる側へ移るので、画面ごとに違う。
+        var edge: WorkspaceScreenEdge = .right
 
         init(panel: EdgeTabPanel) {
             self.panel = panel
@@ -49,6 +51,9 @@ final class EdgeTabsController {
     private var autoHide = false
 
     private var hideTask: Task<Void, Never>?
+    /// カーソルのいる側へ帯を移すための見張り。
+    private var pointerFollowTask: Task<Void, Never>?
+    private static let pointerFollowInterval = Duration.milliseconds(350)
     private static let slideDuration = 0.16
     /// ポップアップから何かを掴んでいる最中。掴んだまま土台が消えると置けない。
     private var isDraggingFromPopover = false
@@ -92,6 +97,7 @@ final class EdgeTabsController {
             self?.hideStripsIfAutoHiding()
         }
         reload()
+        startPointerFollow()
         // スクリーンの抜き差しや解像度変更で、帯の要る枚数と位置が変わる。
         NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
@@ -118,6 +124,7 @@ final class EdgeTabsController {
             NotificationCenter.default.removeObserver(sessionsObserver)
         }
         hideTask?.cancel()
+        pointerFollowTask?.cancel()
     }
 
     // MARK: - 状態
@@ -182,17 +189,19 @@ final class EdgeTabsController {
             return
         }
 
-        // 隣に別のモニタが接している縁には出さない。そこは画面の端ではなく、
-        // モニタ間をカーソルが行き来する通路。帯を置くと、隣の画面へ移るたびに
-        // 触れて出たり引っ込んだりして、掴もうとすると逃げる。
-        var hosts = NSScreen.screens.filter { Self.isOuterEdge($0, edge: edge) }
-        // どの画面も内側を向く置き方（縦に積む、など）では、それでも1本は要る。
-        // マウスのいる画面——無ければ主画面——に出す。
-        if hosts.isEmpty {
-            let fallback = NSScreen.screens.first {
-                $0.frame.contains(NSEvent.mouseLocation)
-            } ?? NSScreen.main
-            hosts = [fallback].compactMap { $0 }
+        // 出しっぱなしなら、どのモニタにも置く。作業している画面に無いのでは
+        // 「常に手の届く場所」にならない。
+        var hosts = NSScreen.screens
+        if autoHide {
+            // 隠すときだけ、隣に別のモニタが接している縁を避ける。そこは画面の端
+            // ではなくカーソルが行き来する通路で、隠れた帯を置くと隣の画面へ移る
+            // たびに触れて出入りし、掴もうとすると逃げる。出したままなら起きない。
+            let outer = hosts.filter { Self.isOuterEdge($0, edge: edge) }
+            // どの画面も内側を向く置き方（縦に積む、など）では、それでも1本は要る。
+            hosts = outer.isEmpty
+                ? [NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
+                    ?? NSScreen.main].compactMap { $0 }
+                : outer
         }
 
         var live: Set<CGDirectDisplayID> = []
@@ -202,9 +211,11 @@ final class EdgeTabsController {
             let strip = strips[id] ?? {
                 let created = Strip(panel: EdgeTabPanel())
                 created.isHidden = autoHide
+                created.edge = edge
                 strips[id] = created
                 return created
             }()
+            if !preferences.edgeTabsFollowsPointer { strip.edge = edge }
             buildTabs(in: strip, on: screen)
             layout(strip, on: screen)
         }
@@ -212,6 +223,50 @@ final class EdgeTabsController {
             strip.panel.orderOut(nil)
             strips.removeValue(forKey: id)
         }
+        refreshSessionBadges()
+    }
+
+    /// カーソルのいる側へ帯を移す。
+    ///
+    /// 右半分にいるなら右端、左半分なら左端。手のある側に出ているほうが近い。
+    /// 画面をまたいだときも、移った先の画面でその判断をやり直す。
+    private func startPointerFollow() {
+        pointerFollowTask?.cancel()
+        pointerFollowTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: Self.pointerFollowInterval)
+                guard !Task.isCancelled, let self else { return }
+                self.followPointer()
+            }
+        }
+    }
+
+    private func followPointer() {
+        guard isVisible, preferences.edgeTabsFollowsPointer else { return }
+        // 掴んでいる最中と、一覧を開いている最中は動かさない。狙っているものが
+        // 反対側へ飛ぶ。
+        guard NSEvent.pressedMouseButtons == 0,
+              !isDraggingFromPopover,
+              !popover.isPresented else { return }
+        let mouse = NSEvent.mouseLocation
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }),
+              let id = screen.displayID,
+              let strip = strips[id] else { return }
+        // 画面の真ん中で往復しないよう、中央には触らない帯を設ける。
+        let deadZone = screen.frame.width * 0.08
+        let wanted: WorkspaceScreenEdge
+        if mouse.x > screen.frame.midX + deadZone {
+            wanted = .right
+        } else if mouse.x < screen.frame.midX - deadZone {
+            wanted = .left
+        } else {
+            return
+        }
+        guard strip.edge != wanted else { return }
+        strip.edge = wanted
+        // 角の落とし方が左右で変わるので、タブごと作り直す。
+        buildTabs(in: strip, on: screen)
+        layout(strip, on: screen)
         refreshSessionBadges()
     }
 
@@ -237,7 +292,7 @@ final class EdgeTabsController {
         strip.tabs.forEach { $0.removeFromSuperview() }
         strip.tabs = []
         for url in tabs.urls {
-            let tab = EdgeTabButton(url: url, edge: edge)
+            let tab = EdgeTabButton(url: url, edge: strip.edge)
             let screenID = screen.displayID
             tab.onHoverChanged = { [weak self, weak tab] isInside in
                 guard let self, let tab else { return }
@@ -285,7 +340,7 @@ final class EdgeTabsController {
     private func layout(_ strip: Strip, on screen: NSScreen) {
         guard let resting = EdgeTabPlacement.stripFrame(
             tabCount: strip.tabs.count,
-            edge: edge,
+            edge: strip.edge,
             visibleFrame: screen.visibleFrame
         ) else {
             strip.panel.orderOut(nil)
@@ -293,7 +348,7 @@ final class EdgeTabsController {
         }
         strip.panel.setFrame(
             strip.isHidden
-                ? EdgeTabPlacement.hiddenStripFrame(visible: resting, edge: edge)
+                ? EdgeTabPlacement.hiddenStripFrame(visible: resting, edge: strip.edge)
                 : resting,
             display: true
         )
@@ -366,14 +421,14 @@ final class EdgeTabsController {
         guard hidden != strip.isHidden,
               let resting = EdgeTabPlacement.stripFrame(
                   tabCount: strip.tabs.count,
-                  edge: edge,
+                  edge: strip.edge,
                   visibleFrame: screen.visibleFrame
               ) else { return }
         strip.isHidden = hidden
         // 出す位置が変わるので、タブも新しい枠に合わせて置き直す。
         layoutTabs(in: strip, within: resting)
         let target = hidden
-            ? EdgeTabPlacement.hiddenStripFrame(visible: resting, edge: edge)
+            ? EdgeTabPlacement.hiddenStripFrame(visible: resting, edge: strip.edge)
             : resting
         strip.panel.orderFrontRegardless()
         NSAnimationContext.runAnimationGroup { context in
@@ -464,10 +519,11 @@ final class EdgeTabsController {
         guard let panel = tab.window as? EdgeTabPanel,
               let screen = panel.screen ?? NSScreen.main else { return }
         let anchor = panel.convertToScreen(tab.frame)
+        let tabEdge = strips.values.first { $0.tabs.contains(tab) }?.edge ?? edge
         popover.present(
             directory: tab.url,
             anchor: anchor,
-            edge: edge,
+            edge: tabEdge,
             visibleFrame: screen.visibleFrame,
             screenID: screen.displayID,
             relativeTo: panel

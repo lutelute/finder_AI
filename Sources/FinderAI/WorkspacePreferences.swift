@@ -48,6 +48,17 @@ struct WorkspacePreferences {
         static let edgeTabsPreview = "workspace.edgeTabsPreview"
         static let edgeTabsUsesFinderWindows = "workspace.edgeTabsUsesFinderWindows"
         static let restoresWindows = "workspace.restoresWindows"
+        static let edgeTabsFollowsPointer = "workspace.edgeTabsFollowsPointer"
+    }
+
+    /// 帯を、その画面でカーソルがいる側（右半分なら右端、左半分なら左端）へ
+    /// 移すか。既定はオン——手のある側に出ているほうが近い。
+    var edgeTabsFollowsPointer: Bool {
+        get {
+            guard defaults.object(forKey: Key.edgeTabsFollowsPointer) != nil else { return true }
+            return defaults.bool(forKey: Key.edgeTabsFollowsPointer)
+        }
+        nonmutating set { defaults.set(newValue, forKey: Key.edgeTabsFollowsPointer) }
     }
 
     /// 前回開いていたウインドウを、起動時にそのまま開き直すか。既定はオン。

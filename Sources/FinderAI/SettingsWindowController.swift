@@ -39,6 +39,8 @@ final class SettingsWindowController: NSWindowController {
     private let edgeTabsAutoHideCaption = NSTextField(wrappingLabelWithString: "")
     private let edgeTabsHoverCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let edgeTabsHoverCaption = NSTextField(wrappingLabelWithString: "")
+    private let edgeTabsFollowCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    private let edgeTabsFollowCaption = NSTextField(wrappingLabelWithString: "")
     private let edgeTabsPreviewCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let edgeTabsFinderCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let edgeTabsFinderCaption = NSTextField(wrappingLabelWithString: "")
@@ -88,6 +90,7 @@ final class SettingsWindowController: NSWindowController {
         edgeTabsAutoHideCheckbox.state = preferences.edgeTabsAutoHide ? .on : .off
         // タブが1つも無ければ、左右も自動的に隠すも効きようがない。
         edgeTabsHoverCheckbox.state = preferences.edgeTabsOpensOnHover ? .on : .off
+        edgeTabsFollowCheckbox.state = preferences.edgeTabsFollowsPointer ? .on : .off
         edgeTabsPreviewCheckbox.state = preferences.edgeTabsShowsPreview ? .on : .off
         edgeTabsFinderCheckbox.state = preferences.edgeTabsUsesFinderWindows ? .on : .off
         let hasTabs = !preferences.edgeTabs.isEmpty
@@ -95,6 +98,7 @@ final class SettingsWindowController: NSWindowController {
         edgeTabsAutoHideCheckbox.isEnabled = hasTabs
         edgeTabsHoverCheckbox.isEnabled = hasTabs
         edgeTabsPreviewCheckbox.isEnabled = hasTabs
+        edgeTabsFollowCheckbox.isEnabled = hasTabs
         edgeTabsFinderCheckbox.isEnabled = hasTabs
         rebuildEdgeTabsList()
 
@@ -149,6 +153,11 @@ final class SettingsWindowController: NSWindowController {
         edgeTabsHoverCheckbox.action = #selector(toggleEdgeTabsHover)
         edgeTabsHoverCaption.stringValue = "オフのときはクリックで開きます。タブの⌃クリックでリスト／アイコン表示と並び順、⌘クリックで上の階層を辿れます。"
 
+        edgeTabsFollowCheckbox.title = "カーソルのいる側へ移す"
+        edgeTabsFollowCheckbox.target = self
+        edgeTabsFollowCheckbox.action = #selector(toggleEdgeTabsFollow)
+        edgeTabsFollowCaption.stringValue = "その画面でカーソルが右半分にいるときは右端、左半分なら左端へ帯を移します。手のある側に出ているほうが近いためです。オフにすると上で選んだ縁に固定します。"
+
         edgeTabsPreviewCheckbox.title = "選んだものを一覧の下でプレビュー"
         edgeTabsPreviewCheckbox.target = self
         edgeTabsPreviewCheckbox.action = #selector(toggleEdgeTabsPreview)
@@ -177,6 +186,7 @@ final class SettingsWindowController: NSWindowController {
             loggingCaption,
             edgeTabsCaption,
             edgeTabsHoverCaption,
+            edgeTabsFollowCaption,
             edgeTabsAutoHideCaption,
             edgeTabsFinderCaption,
             commitLabel,
@@ -224,6 +234,7 @@ final class SettingsWindowController: NSWindowController {
             edgeTabsTitle,
             edgeTabsCheckbox, indented(edgeTabsCaption),
             indented(sideRow),
+            indented(edgeTabsFollowCheckbox), indented(edgeTabsFollowCaption),
             indented(edgeTabsHoverCheckbox), indented(edgeTabsHoverCaption),
             indented(edgeTabsPreviewCheckbox),
             indented(edgeTabsAutoHideCheckbox), indented(edgeTabsAutoHideCaption),
@@ -345,6 +356,11 @@ final class SettingsWindowController: NSWindowController {
 
     @objc private func toggleEdgeTabsHover() {
         preferences.edgeTabsOpensOnHover = edgeTabsHoverCheckbox.state == .on
+        onEdgeTabsChanged?()
+    }
+
+    @objc private func toggleEdgeTabsFollow() {
+        preferences.edgeTabsFollowsPointer = edgeTabsFollowCheckbox.state == .on
         onEdgeTabsChanged?()
     }
 
