@@ -17,12 +17,35 @@ private final class SessionTabButton: NSButton {
     }
 }
 
+/// ヘッダーの空き地は、パネルを畳んだり広げたりするための的でもある。
+///
+/// シングルクリックは畳んでいるときだけ開く側に倒す。開いている状態でうっかり
+/// 触っただけで作業中のターミナルが消えるのは事故で、閉じるのはchevronか⌘Jという
+/// 明示的な操作に任せたほうがいい。ダブルクリックはいつでも段階を巡る。
+@MainActor
+private final class PanelHeaderView: NSView {
+    var onSingleClick: (() -> Void)?
+    var onDoubleClick: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        switch event.clickCount {
+        case 1: onSingleClick?()
+        case 2: onDoubleClick?()
+        default: break
+        }
+    }
+}
+
 @MainActor
 final class DrawerContentViewController: NSViewController {
     var onToggle: (() -> Void)?
     var onResizeDelta: ((CGFloat) -> Void)?
     var onManageSessions: (() -> Void)?
     var onOpenDirectory: ((URL) -> Void)?
+    /// 下辺と右辺を入れ替える。
+    var onTogglePlacement: (() -> Void)?
+    /// ヘッダーのダブルクリック。畳む→半分→最大の巡回はウインドウ側が持つ。
+    var onCycleSnap: (() -> Void)?
 
     private let sessionManager: any TerminalSessionManaging
     /// The folder the browser is showing. There is no drawer-level "fixed"
@@ -33,7 +56,13 @@ final class DrawerContentViewController: NSViewController {
     private var visibleSessions: [any ManagedTerminalSession] = []
     private var activeSession: (any ManagedTerminalSession)?
     private var expanded = false
+    private var edge: TerminalPanelEdge = .bottom
     private var bodyLayoutConstraints: [NSLayoutConstraint] = []
+    /// 辺と開閉で総取り替えになる骨格。張り替えの単位で持っておかないと、
+    /// 古い制約が残ったまま新しいものを足して衝突する。
+    private var edgeLayoutConstraints: [NSLayoutConstraint] = []
+    /// 右辺でタブの2段目を出しているか。セッションの増減で必要／不要が変わる。
+    private var showsTabRow = false
     private var mountedSessionID: UUID?
 
     /// The tab strip is rebuilt from scratch on every reload; this is what the
@@ -41,16 +70,34 @@ final class DrawerContentViewController: NSViewController {
     private var renderedTabs: [DrawerSessionTab] = []
 
     private let resizeHandle = ResizeHandleView()
-    private let topBorder = NSView()
-    private let header = NSView()
+    /// パネルとブラウザの境目。下辺なら上に、右辺なら左に出る。
+    private let edgeBorder = NSView()
+    private let header = PanelHeaderView()
+    private let primaryRow = NSStackView()
+    /// 右辺では横幅が足りないので、タブだけを2段目に降ろす。タブは常時可視が
+    /// この画面の約束で、幅の都合で最初に潰れてよいものではない。
+    private let tabRow = NSStackView()
     private let toggleButton = NSButton()
     private let divider = NSView()
     private let directoryImage = NSImageView()
     private let pathLabel = NSTextField(labelWithString: "Finder")
     private let sessionTabs = NSStackView()
+    private let placementButton = NSButton()
     private let manageSessionsButton = NSButton()
     private let newSessionButton = NSButton()
     private let closeButton = NSButton()
+
+    /// 右辺で畳んだときの34pt幅の縦ストリップ。横並びのヘッダーは入らないので、
+    /// アイコンだけの別の並びに差し替える。
+    /// 辺で緩める2本。右辺ではラベルを畳んでボタンを詰め、パスに幅を譲る。
+    private var toggleWidthConstraint: NSLayoutConstraint!
+    private var pathWidthConstraint: NSLayoutConstraint!
+
+    private let stripStack = NSStackView()
+    private let stripToggleButton = NSButton()
+    private let stripStatusIcon = NSImageView()
+    private let stripBadge = NSTextField(labelWithString: "")
+    private let stripPlacementButton = NSButton()
 
     private let bodyView = NSView()
     private let terminalContainer = NSView()
@@ -96,32 +143,150 @@ final class DrawerContentViewController: NSViewController {
         configureHeader()
         configureBody()
 
-        [bodyView, header, topBorder, resizeHandle].forEach {
+        [bodyView, header, edgeBorder, resizeHandle].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview($0)
         }
-        NSLayoutConstraint.activate([
-            topBorder.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            topBorder.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            topBorder.topAnchor.constraint(equalTo: root.topAnchor),
-            topBorder.heightAnchor.constraint(equalToConstant: 1),
-
-            resizeHandle.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            resizeHandle.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            resizeHandle.topAnchor.constraint(equalTo: root.topAnchor),
-            resizeHandle.heightAnchor.constraint(equalToConstant: 5),
-
-            header.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            header.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            header.topAnchor.constraint(equalTo: topBorder.bottomAnchor),
-            header.heightAnchor.constraint(equalToConstant: PanelPlacement.collapsedHeight - 1),
-
-            bodyView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            bodyView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            bodyView.topAnchor.constraint(equalTo: header.bottomAnchor),
-            bodyView.bottomAnchor.constraint(equalTo: root.bottomAnchor)
-        ])
         setExpanded(false)
+    }
+
+    /// パネルがどちらの辺に付いているかを伝える。並べ替えと制約の張り替えだけで、
+    /// 走っているセッションには一切触らない。
+    func setEdge(_ edge: TerminalPanelEdge) {
+        guard self.edge != edge else { return }
+        self.edge = edge
+        guard isViewLoaded else { return }
+        applyEdgeLayout()
+    }
+
+    private func applyEdgeLayout() {
+        guard isViewLoaded else { return }
+        let root = view
+        let isStrip = edge == .right && !expanded
+
+        moveSessionTabs(toTabRow: edge == .right)
+        resizeHandle.axis = edge == .bottom ? .vertical : .horizontal
+        // セッションが1つも無いのに2段目だけ残ると、ヘッダーに空の帯ができる。
+        showsTabRow = edge == .right && !isStrip && !visibleSessions.isEmpty
+
+        NSLayoutConstraint.deactivate(edgeLayoutConstraints)
+        // 使わない並びは隠すのではなく階層から外す。隠しただけでは位置が決まらず、
+        // 中身の固有サイズと潰しの制約がぶつかる。
+        mount(primaryRow, !isStrip)
+        mount(tabRow, showsTabRow)
+        mount(stripStack, isStrip)
+
+        var constraints: [NSLayoutConstraint] = []
+        let rowHeight = TerminalPanelLayout.collapsedThickness - 1
+        let rowInset: (leading: CGFloat, trailing: CGFloat) = (8, -6)
+
+        switch edge {
+        case .bottom:
+            constraints += [
+                edgeBorder.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+                edgeBorder.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+                edgeBorder.topAnchor.constraint(equalTo: root.topAnchor),
+                edgeBorder.heightAnchor.constraint(equalToConstant: 1),
+
+                resizeHandle.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+                resizeHandle.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+                resizeHandle.topAnchor.constraint(equalTo: root.topAnchor),
+                resizeHandle.heightAnchor.constraint(equalToConstant: 5),
+
+                header.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+                header.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+                header.topAnchor.constraint(equalTo: edgeBorder.bottomAnchor),
+                header.heightAnchor.constraint(equalToConstant: rowHeight),
+
+                bodyView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+                bodyView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+                bodyView.topAnchor.constraint(equalTo: header.bottomAnchor),
+                bodyView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+
+                primaryRow.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: rowInset.leading),
+                primaryRow.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: rowInset.trailing),
+                primaryRow.topAnchor.constraint(equalTo: header.topAnchor),
+                primaryRow.bottomAnchor.constraint(equalTo: header.bottomAnchor)
+            ]
+        case .right:
+            constraints += [
+                edgeBorder.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+                edgeBorder.topAnchor.constraint(equalTo: root.topAnchor),
+                edgeBorder.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+                edgeBorder.widthAnchor.constraint(equalToConstant: 1),
+
+                resizeHandle.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+                resizeHandle.topAnchor.constraint(equalTo: root.topAnchor),
+                resizeHandle.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+                resizeHandle.widthAnchor.constraint(equalToConstant: 5),
+
+                header.leadingAnchor.constraint(equalTo: edgeBorder.trailingAnchor),
+                header.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+                header.topAnchor.constraint(equalTo: root.topAnchor),
+
+                bodyView.leadingAnchor.constraint(equalTo: edgeBorder.trailingAnchor),
+                bodyView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+                bodyView.topAnchor.constraint(equalTo: header.bottomAnchor),
+                bodyView.bottomAnchor.constraint(equalTo: root.bottomAnchor)
+            ]
+            if isStrip {
+                // 畳んだ縦ストリップは中身の高さでよい。バッジが出たり消えたりする
+                // ので固定値にはしない。
+                constraints += [
+                    stripStack.topAnchor.constraint(equalTo: header.topAnchor, constant: 8),
+                    stripStack.bottomAnchor.constraint(equalTo: header.bottomAnchor, constant: -8),
+                    stripStack.centerXAnchor.constraint(equalTo: header.centerXAnchor)
+                ]
+            } else {
+                constraints += [
+                    header.heightAnchor.constraint(
+                        equalToConstant: showsTabRow ? rowHeight * 2 - 4 : rowHeight
+                    ),
+                    primaryRow.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: rowInset.leading),
+                    primaryRow.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: rowInset.trailing),
+                    primaryRow.topAnchor.constraint(equalTo: header.topAnchor),
+                    primaryRow.heightAnchor.constraint(equalToConstant: rowHeight)
+                ]
+                if showsTabRow {
+                    constraints += [
+                        tabRow.topAnchor.constraint(equalTo: primaryRow.bottomAnchor),
+                        tabRow.bottomAnchor.constraint(equalTo: header.bottomAnchor),
+                        tabRow.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: rowInset.leading),
+                        tabRow.trailingAnchor.constraint(
+                            lessThanOrEqualTo: header.trailingAnchor,
+                            constant: rowInset.trailing
+                        )
+                    ]
+                }
+            }
+        }
+
+        NSLayoutConstraint.activate(constraints)
+        edgeLayoutConstraints = constraints
+        updateToggleButton()
+        updatePlacementButtons()
+    }
+
+    private func mount(_ row: NSView, _ shouldMount: Bool) {
+        if shouldMount {
+            guard row.superview !== header else { return }
+            header.addSubview(row)
+        } else {
+            row.removeFromSuperview()
+        }
+    }
+
+    /// タブの並びは1つしかないので、段を変えるときは親ごと引っ越す。
+    private func moveSessionTabs(toTabRow: Bool) {
+        let destination = toTabRow ? tabRow : primaryRow
+        guard sessionTabs.superview !== destination else { return }
+        sessionTabs.removeFromSuperview()
+        if toTabRow {
+            tabRow.addArrangedSubview(sessionTabs)
+        } else {
+            // 右端のアイコン群より内側、スペーサーの直後に戻す。
+            primaryRow.insertArrangedSubview(sessionTabs, at: primaryRow.arrangedSubviews.count - 4)
+        }
     }
 
     func setDirectory(_ url: URL) {
@@ -155,14 +320,20 @@ final class DrawerContentViewController: NSViewController {
             bodyView.isHidden = true
         }
         resizeHandle.isHidden = !expanded
-        updateToggleButton()
+        applyEdgeLayout()
     }
 
     private func configureHeader() {
         header.wantsLayer = true
         header.layer?.backgroundColor = IntegratedPanelTheme.header.cgColor
-        topBorder.wantsLayer = true
-        topBorder.layer?.backgroundColor = IntegratedPanelTheme.border.cgColor
+        // 畳んでいるときだけ開く。開いているときのシングルクリックは何もしない。
+        header.onSingleClick = { [weak self] in
+            guard let self, !self.expanded else { return }
+            self.onToggle?()
+        }
+        header.onDoubleClick = { [weak self] in self?.onCycleSnap?() }
+        edgeBorder.wantsLayer = true
+        edgeBorder.layer?.backgroundColor = IntegratedPanelTheme.border.cgColor
 
         toggleButton.isBordered = false
         toggleButton.font = .systemFont(ofSize: 11, weight: .semibold)
@@ -171,7 +342,7 @@ final class DrawerContentViewController: NSViewController {
         toggleButton.contentTintColor = IntegratedPanelTheme.text
         toggleButton.target = self
         toggleButton.action = #selector(toggle)
-        toggleButton.toolTip = "Terminalパネルを開く／隠す（⌘J）"
+        toggleButton.toolTip = "Terminalパネルを開く／隠す（⌘J）— ダブルクリックで大きさを切り替え"
 
         divider.wantsLayer = true
         divider.layer?.backgroundColor = IntegratedPanelTheme.border.cgColor
@@ -193,6 +364,14 @@ final class DrawerContentViewController: NSViewController {
         sessionTabs.alignment = .centerY
         sessionTabs.spacing = 2
         sessionTabs.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+
+        configureIconButton(
+            placementButton,
+            symbol: "rectangle.rightthird.inset.filled",
+            accessibilityLabel: "Terminalを右／下に切り替え"
+        )
+        placementButton.target = self
+        placementButton.action = #selector(togglePlacement)
 
         configureIconButton(
             manageSessionsButton,
@@ -218,45 +397,104 @@ final class DrawerContentViewController: NSViewController {
         closeButton.target = self
         closeButton.action = #selector(closeSession)
 
+        configureStrip()
+
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let headerStack = NSStackView(views: [
-            toggleButton,
-            divider,
-            directoryImage,
-            pathLabel,
-            spacer,
-            sessionTabs,
-            manageSessionsButton,
-            newSessionButton,
-            closeButton
-        ])
-        headerStack.orientation = .horizontal
-        headerStack.alignment = .centerY
-        headerStack.spacing = 8
-        headerStack.translatesAutoresizingMaskIntoConstraints = false
-        header.addSubview(headerStack)
+        primaryRow.setViews(
+            [
+                toggleButton,
+                divider,
+                directoryImage,
+                pathLabel,
+                spacer,
+                sessionTabs,
+                placementButton,
+                manageSessionsButton,
+                newSessionButton,
+                closeButton
+            ],
+            in: .leading
+        )
+        primaryRow.orientation = .horizontal
+        primaryRow.alignment = .centerY
+        primaryRow.spacing = 8
+
+        tabRow.orientation = .horizontal
+        tabRow.alignment = .centerY
+        tabRow.spacing = 8
+
+        // 行そのものは`applyEdgeLayout`が辺ごとに載せ替える。ここで置くのは、
+        // どの辺でも変わらない中身のサイズだけ。
+        [primaryRow, tabRow, stripStack].forEach {
+            $0.translatesAutoresizingMaskIntoConstraints = false
+        }
+        toggleWidthConstraint = toggleButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 92)
+        pathWidthConstraint = pathLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 260)
         NSLayoutConstraint.activate([
-            headerStack.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 8),
-            headerStack.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -6),
-            headerStack.topAnchor.constraint(equalTo: header.topAnchor),
-            headerStack.bottomAnchor.constraint(equalTo: header.bottomAnchor),
-            toggleButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 92),
+            toggleWidthConstraint,
             divider.widthAnchor.constraint(equalToConstant: 1),
             divider.heightAnchor.constraint(equalToConstant: 16),
             directoryImage.widthAnchor.constraint(equalToConstant: 14),
             directoryImage.heightAnchor.constraint(equalToConstant: 14),
-            pathLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 260),
-            manageSessionsButton.widthAnchor.constraint(equalToConstant: 26),
-            manageSessionsButton.heightAnchor.constraint(equalToConstant: 26),
-            newSessionButton.widthAnchor.constraint(equalToConstant: 26),
-            newSessionButton.heightAnchor.constraint(equalToConstant: 26),
-            closeButton.widthAnchor.constraint(equalToConstant: 26),
-            closeButton.heightAnchor.constraint(equalToConstant: 26)
+            pathWidthConstraint
         ])
+        for button in [placementButton, manageSessionsButton, newSessionButton, closeButton] {
+            NSLayoutConstraint.activate([
+                button.widthAnchor.constraint(equalToConstant: 26),
+                button.heightAnchor.constraint(equalToConstant: 26)
+            ])
+        }
 
         resizeHandle.onDragDelta = { [weak self] delta in self?.onResizeDelta?(delta) }
         updateDirectoryPresentation()
+    }
+
+    private func configureStrip() {
+        configureIconButton(
+            stripToggleButton,
+            symbol: "chevron.left",
+            accessibilityLabel: "Terminalパネルを開く"
+        )
+        stripToggleButton.contentTintColor = IntegratedPanelTheme.text
+        stripToggleButton.target = self
+        stripToggleButton.action = #selector(toggle)
+        stripToggleButton.toolTip = "Terminalパネルを開く（⌘J）"
+
+        stripStatusIcon.image = NSImage(
+            systemSymbolName: "terminal",
+            accessibilityDescription: "Terminal"
+        )
+        stripStatusIcon.contentTintColor = IntegratedPanelTheme.secondaryText
+        stripStatusIcon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
+
+        // 畳んだ縦ストリップからは、走っているセッションの存在だけは見えていないと
+        // 「隠れているあいだに何が動いているか」がまるごと消える。
+        stripBadge.font = .monospacedDigitSystemFont(ofSize: 10, weight: .semibold)
+        stripBadge.textColor = IntegratedPanelTheme.accent
+        stripBadge.alignment = .center
+
+        configureIconButton(
+            stripPlacementButton,
+            symbol: "rectangle.bottomthird.inset.filled",
+            accessibilityLabel: "Terminalを下に戻す"
+        )
+        stripPlacementButton.target = self
+        stripPlacementButton.action = #selector(togglePlacement)
+
+        stripStack.orientation = .vertical
+        stripStack.alignment = .centerX
+        stripStack.spacing = 6
+        [stripToggleButton, stripStatusIcon, stripBadge, stripPlacementButton]
+            .forEach(stripStack.addArrangedSubview)
+        NSLayoutConstraint.activate([
+            stripToggleButton.widthAnchor.constraint(equalToConstant: 22),
+            stripToggleButton.heightAnchor.constraint(equalToConstant: 22),
+            stripStatusIcon.widthAnchor.constraint(equalToConstant: 16),
+            stripStatusIcon.heightAnchor.constraint(equalToConstant: 16),
+            stripPlacementButton.widthAnchor.constraint(equalToConstant: 22),
+            stripPlacementButton.heightAnchor.constraint(equalToConstant: 22)
+        ])
     }
 
     private func updateDirectoryPresentation() {
@@ -347,11 +585,33 @@ final class DrawerContentViewController: NSViewController {
     }
 
     private func updateToggleButton() {
-        toggleButton.title = "TERMINAL"
+        // 右辺は幅がそのままパネルの厚みなので、ラベルの92ptはパスとタブから
+        // 奪うには大きすぎる。矢印は「閉じる向き」を指す。
+        let compact = edge == .right
+        toggleButton.title = compact ? "" : "TERMINAL"
+        toggleWidthConstraint?.constant = compact ? 22 : 92
+        pathWidthConstraint?.constant = compact ? 200 : 260
+        let symbol: String
+        switch (edge, expanded) {
+        case (.bottom, true): symbol = "chevron.down"
+        case (.bottom, false): symbol = "chevron.up"
+        case (.right, true): symbol = "chevron.right"
+        case (.right, false): symbol = "chevron.left"
+        }
         toggleButton.image = NSImage(
-            systemSymbolName: expanded ? "chevron.down" : "chevron.up",
+            systemSymbolName: symbol,
             accessibilityDescription: expanded ? "隠す" : "開く"
         )
+    }
+
+    private func updatePlacementButtons() {
+        let symbol = edge == .bottom
+            ? "rectangle.rightthird.inset.filled"
+            : "rectangle.bottomthird.inset.filled"
+        let label = edge == .bottom ? "Terminalを右に移動（⌘⌥J）" : "Terminalを下に移動（⌘⌥J）"
+        placementButton.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        placementButton.toolTip = label
+        stripPlacementButton.toolTip = label
     }
 
     private func reloadSessions(prefer preferred: (any ManagedTerminalSession)? = nil) {
@@ -415,6 +675,10 @@ final class DrawerContentViewController: NSViewController {
             renderedTabs = rows
         }
         sessionTabs.isHidden = visibleSessions.isEmpty
+        // 右辺ではタブが2段目そのもの。増減で段の要否が変わったときだけ組み直す。
+        if showsTabRow != (edge == .right && expanded && !visibleSessions.isEmpty) {
+            applyEdgeLayout()
+        }
         // The folder icon echoes the same cue for the place itself.
         let currentFolderHasLiveSession = directoryURL.map {
             sessionManager.sessions(for: $0).contains(where: \.isRunning)
@@ -427,6 +691,14 @@ final class DrawerContentViewController: NSViewController {
         manageSessionsButton.toolTip = runningCount == 0
             ? "すべてのTerminalセッションを管理（⌘⌥T）"
             : "Terminalセッションを管理 — 実行中\(runningCount)件（⌘⌥T）"
+        stripBadge.stringValue = runningCount == 0 ? "" : "\(runningCount)"
+        stripBadge.isHidden = runningCount == 0
+        stripStatusIcon.contentTintColor = runningCount == 0
+            ? IntegratedPanelTheme.secondaryText
+            : IntegratedPanelTheme.accent
+        stripStatusIcon.toolTip = runningCount == 0
+            ? "実行中のセッションはありません"
+            : "実行中\(runningCount)件"
         newSessionButton.isEnabled = directoryURL != nil
         newSessionButton.toolTip = "現在のFinderフォルダで新しいTerminalセッション"
         codexButton.isEnabled = sessionManager.canStart(.codex)
@@ -496,6 +768,10 @@ final class DrawerContentViewController: NSViewController {
 
     @objc private func toggle() {
         onToggle?()
+    }
+
+    @objc private func togglePlacement() {
+        onTogglePlacement?()
     }
 
     @objc private func showNewSessionMenu() {

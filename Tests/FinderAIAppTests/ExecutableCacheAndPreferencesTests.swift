@@ -100,8 +100,31 @@ struct WorkspacePreferencesTests {
         #expect(preferences.sortAscending)
         #expect(!preferences.showHiddenFiles)
         #expect(preferences.terminalHeight == 300)
+        #expect(preferences.terminalWidth == 420)
+        #expect(preferences.terminalEdge == .bottom)
         #expect(!preferences.terminalExpanded)
         #expect(preferences.lastDirectory == nil)
+    }
+
+    /// 下と右で覚える寸法は別のキー。行き来しても互いを上書きしない。
+    @Test("each edge remembers its own thickness")
+    func edgeThicknessesAreIndependent() throws {
+        let preferences = WorkspacePreferences(defaults: try makeDefaults())
+        preferences.setTerminalThickness(240, for: .bottom)
+        preferences.setTerminalThickness(500, for: .right)
+
+        #expect(preferences.terminalThickness(for: .bottom) == 240)
+        #expect(preferences.terminalThickness(for: .right) == 500)
+
+        preferences.terminalEdge = .right
+        #expect(preferences.terminalEdge == .right)
+    }
+
+    @Test("a stored edge that no longer parses falls back to the bottom")
+    func unknownEdgeFallsBack() throws {
+        let defaults = try makeDefaults()
+        defaults.set("diagonal", forKey: "workspace.terminalEdge")
+        #expect(WorkspacePreferences(defaults: defaults).terminalEdge == .bottom)
     }
 
     @Test("values survive a round-trip")
@@ -145,6 +168,10 @@ struct WorkspacePreferencesTests {
         #expect(preferences.terminalHeight == 600)
         preferences.terminalHeight = 1
         #expect(preferences.terminalHeight == 160)
+        preferences.terminalWidth = 5_000
+        #expect(preferences.terminalWidth == 720)
+        preferences.terminalWidth = 1
+        #expect(preferences.terminalWidth == 280)
     }
 
     @Test("last directory resolves back to the same folder")

@@ -24,6 +24,8 @@ struct WorkspacePreferences {
         static let sortAscending = "workspace.sortAscending"
         static let showHiddenFiles = "workspace.showHiddenFiles"
         static let terminalHeight = "workspace.terminalHeight"
+        static let terminalWidth = "workspace.terminalWidth"
+        static let terminalEdge = "workspace.terminalEdge"
         static let terminalExpanded = "workspace.terminalExpanded"
         static let lastDirectory = "workspace.lastDirectory"
         static let pins = "workspace.pins"
@@ -35,6 +37,110 @@ struct WorkspacePreferences {
         static let secondDirectory = "workspace.secondDirectory"
         static let persistentSessions = "workspace.persistentSessions"
         static let sessionLogging = "workspace.sessionLogging"
+        static let edgeTabs = "workspace.edgeTabs"
+        static let edgeTabsEnabled = "workspace.edgeTabsEnabled"
+        static let edgeTabsEdge = "workspace.edgeTabsEdge"
+        static let edgeTabsAutoHide = "workspace.edgeTabsAutoHide"
+        static let edgeTabsOpensOnHover = "workspace.edgeTabsOpensOnHover"
+        static let edgeTabsIconView = "workspace.edgeTabsIconView"
+        static let edgeTabsSortColumn = "workspace.edgeTabsSortColumn"
+        static let edgeTabsSortAscending = "workspace.edgeTabsSortAscending"
+        static let edgeTabsPreview = "workspace.edgeTabsPreview"
+        static let edgeTabsUsesFinderWindows = "workspace.edgeTabsUsesFinderWindows"
+        static let restoresWindows = "workspace.restoresWindows"
+    }
+
+    /// 前回開いていたウインドウを、起動時にそのまま開き直すか。既定はオン。
+    ///
+    /// 何十枚も開いて使う道具なので、終了のたびに1枚へ戻るのは「閉じた覚えの
+    /// ないものが消える」に等しい。
+    var restoresWindows: Bool {
+        get {
+            guard defaults.object(forKey: Key.restoresWindows) != nil else { return true }
+            return defaults.bool(forKey: Key.restoresWindows)
+        }
+        nonmutating set { defaults.set(newValue, forKey: Key.restoresWindows) }
+    }
+
+    /// 選んだものの中身を一覧の下に見せるか。既定はオン——開くかどうかを、開く前に
+    /// 決められるのがこの画面の値打ちなので。
+    var edgeTabsShowsPreview: Bool {
+        get {
+            guard defaults.object(forKey: Key.edgeTabsPreview) != nil else { return true }
+            return defaults.bool(forKey: Key.edgeTabsPreview)
+        }
+        nonmutating set { defaults.set(newValue, forKey: Key.edgeTabsPreview) }
+    }
+
+    /// 「開く」で、macOS標準のFinderがすでに開いているウインドウも探すか。
+    /// 既定はオン。Finderを何枚も開いて使う人にとっては、そちらが本命の窓。
+    var edgeTabsUsesFinderWindows: Bool {
+        get {
+            guard defaults.object(forKey: Key.edgeTabsUsesFinderWindows) != nil else { return true }
+            return defaults.bool(forKey: Key.edgeTabsUsesFinderWindows)
+        }
+        nonmutating set { defaults.set(newValue, forKey: Key.edgeTabsUsesFinderWindows) }
+    }
+
+    /// タブに触れただけで開くか。既定はオフ——クリックで開く方が、通りすがりに
+    /// 勝手に開かれない。触れるだけで開いてほしい人が選ぶ。
+    var edgeTabsOpensOnHover: Bool {
+        get { defaults.bool(forKey: Key.edgeTabsOpensOnHover) }
+        nonmutating set { defaults.set(newValue, forKey: Key.edgeTabsOpensOnHover) }
+    }
+
+    /// 一覧をアイコンで並べるか、行で並べるか。
+    var edgeTabsUsesIconView: Bool {
+        get { defaults.bool(forKey: Key.edgeTabsIconView) }
+        nonmutating set { defaults.set(newValue, forKey: Key.edgeTabsIconView) }
+    }
+
+    var edgeTabsSort: WorkspaceEdgeTabSort {
+        get {
+            guard let raw = defaults.string(forKey: Key.edgeTabsSortColumn),
+                  let sort = WorkspaceEdgeTabSort(rawValue: raw) else { return .name }
+            return sort
+        }
+        nonmutating set { defaults.set(newValue.rawValue, forKey: Key.edgeTabsSortColumn) }
+    }
+
+    var edgeTabsSortAscending: Bool {
+        get {
+            guard defaults.object(forKey: Key.edgeTabsSortAscending) != nil else { return true }
+            return defaults.bool(forKey: Key.edgeTabsSortAscending)
+        }
+        nonmutating set { defaults.set(newValue, forKey: Key.edgeTabsSortAscending) }
+    }
+
+    // MARK: - Edge tabs
+
+    /// 画面端に出しっぱなしにするフォルダ。ピンと同じくパス文字列で持つ
+    /// （`lastDirectory`の経緯を参照——bookmarkの解決は起動経路で高くつく）。
+    var edgeTabs: WorkspaceEdgeTabs {
+        get { WorkspaceEdgeTabs(paths: defaults.stringArray(forKey: Key.edgeTabs) ?? []) }
+        nonmutating set { defaults.set(newValue.storedPaths, forKey: Key.edgeTabs) }
+    }
+
+    /// 既定はオフ。画面に常駐するUIを、選んでいない人の視界に勝手に置かない。
+    var edgeTabsEnabled: Bool {
+        get { defaults.bool(forKey: Key.edgeTabsEnabled) }
+        nonmutating set { defaults.set(newValue, forKey: Key.edgeTabsEnabled) }
+    }
+
+    /// 既定はオフ（常に見えている）。隠れているものは思い出せないので、
+    /// 「そこにある」から始めて、邪魔だと思った人が隠す。
+    var edgeTabsAutoHide: Bool {
+        get { defaults.bool(forKey: Key.edgeTabsAutoHide) }
+        nonmutating set { defaults.set(newValue, forKey: Key.edgeTabsAutoHide) }
+    }
+
+    var edgeTabsEdge: WorkspaceScreenEdge {
+        get {
+            guard let raw = defaults.string(forKey: Key.edgeTabsEdge),
+                  let edge = WorkspaceScreenEdge(rawValue: raw) else { return .right }
+            return edge
+        }
+        nonmutating set { defaults.set(newValue.rawValue, forKey: Key.edgeTabsEdge) }
     }
 
     // MARK: - Crash resilience
@@ -171,12 +277,46 @@ struct WorkspacePreferences {
     // MARK: - Terminal
 
     var terminalHeight: CGFloat {
-        get {
-            let stored = defaults.double(forKey: Key.terminalHeight)
-            guard stored > 0 else { return 300 }
-            return min(max(CGFloat(stored), 160), 600)
-        }
+        get { thickness(forKey: Key.terminalHeight, edge: .bottom) }
         nonmutating set { defaults.set(Double(newValue), forKey: Key.terminalHeight) }
+    }
+
+    /// 右辺に置いたときの幅。高さとは別のキーに持つ——下と右を行き来しても、
+    /// それぞれで決めた大きさがそのまま戻ってくるほうが「置き場所を変えた」だけの
+    /// 操作として素直だから。
+    var terminalWidth: CGFloat {
+        get { thickness(forKey: Key.terminalWidth, edge: .right) }
+        nonmutating set { defaults.set(Double(newValue), forKey: Key.terminalWidth) }
+    }
+
+    var terminalEdge: TerminalPanelEdge {
+        get {
+            guard let raw = defaults.string(forKey: Key.terminalEdge),
+                  let edge = TerminalPanelEdge(rawValue: raw) else { return .bottom }
+            return edge
+        }
+        nonmutating set { defaults.set(newValue.rawValue, forKey: Key.terminalEdge) }
+    }
+
+    /// 辺を意識せず読み書きするための入口。ウインドウ側はこちらだけを使う。
+    func terminalThickness(for edge: TerminalPanelEdge) -> CGFloat {
+        edge == .bottom ? terminalHeight : terminalWidth
+    }
+
+    func setTerminalThickness(_ value: CGFloat, for edge: TerminalPanelEdge) {
+        switch edge {
+        case .bottom: terminalHeight = value
+        case .right: terminalWidth = value
+        }
+    }
+
+    private func thickness(forKey key: String, edge: TerminalPanelEdge) -> CGFloat {
+        let stored = defaults.double(forKey: key)
+        guard stored > 0 else { return TerminalPanelLayout.defaultThickness(for: edge) }
+        return min(
+            max(CGFloat(stored), TerminalPanelLayout.minimumThickness(for: edge)),
+            TerminalPanelLayout.maximumThickness(for: edge)
+        )
     }
 
     var terminalExpanded: Bool {

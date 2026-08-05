@@ -14,9 +14,12 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     private let paneSplit = NSSplitView()
     private var splitEnabled = false
     private let terminal: DrawerContentViewController
-    private var terminalHeightConstraint: NSLayoutConstraint!
+    /// 下辺なら高さ、右辺なら幅。辺が変わるたびに別のアンカーで作り直す。
+    private var terminalSizeConstraint: NSLayoutConstraint!
+    private var edgeConstraints: [NSLayoutConstraint] = []
+    private var terminalEdge: TerminalPanelEdge = .bottom
     private var terminalExpanded = false
-    private var requestedTerminalHeight: CGFloat = 300
+    private var requestedTerminalThickness: CGFloat = 300
     private var positioned = false
     private let preferences: WorkspacePreferences
     private let sessionManager: any TerminalSessionManaging
@@ -89,52 +92,29 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         paneSplit.addArrangedSubview(leftPane.view)
         paneSplit.delegate = self
 
-        let browserView: NSView = paneSplit
-        let terminalView = terminal.view
-        [browserView, terminalView].forEach {
+        [paneSplit, terminal.view].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview($0)
         }
-        terminalHeightConstraint = terminalView.heightAnchor.constraint(
-            equalToConstant: PanelPlacement.collapsedHeight
-        )
-        // The terminal height must yield to the browser's minimum, otherwise a
-        // tall terminal in a short window silently eats the file list from the
-        // bottom up: the status bar and last rows get clipped out of view with
-        // nothing to stop it. Ranking the height below the minimum makes the
-        // terminal shrink instead of the list disappearing.
-        terminalHeightConstraint.priority = .defaultHigh
-        let browserMinimum = browserView.heightAnchor.constraint(
-            greaterThanOrEqualToConstant: Self.minimumBrowserHeight
-        )
-        browserMinimum.priority = .required
-
-        NSLayoutConstraint.activate([
-            browserView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            browserView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            browserView.topAnchor.constraint(equalTo: root.topAnchor),
-            browserView.bottomAnchor.constraint(equalTo: terminalView.topAnchor),
-            browserMinimum,
-            terminalView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            terminalView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            terminalView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            terminalHeightConstraint
-        ])
-        requestedTerminalHeight = preferences.terminalHeight
+        terminalEdge = preferences.terminalEdge
+        requestedTerminalThickness = preferences.terminalThickness(for: terminalEdge)
         terminalExpanded = preferences.terminalExpanded
-        terminalHeightConstraint.constant = terminalExpanded
-            ? requestedTerminalHeight
-            : PanelPlacement.collapsedHeight
+        // 辺はドロワーの内部レイアウトも決めるので、開閉より先に伝える。
+        terminal.setEdge(terminalEdge)
         terminal.setDirectory(initialDirectory)
         terminal.setExpanded(terminalExpanded)
+        installEdgeLayout()
 
         wire(leftPane)
         terminal.onToggle = { [weak self] in self?.toggleTerminal() }
         terminal.onResizeDelta = { [weak self] delta in self?.resizeTerminal(by: delta) }
+        terminal.onTogglePlacement = { [weak self] in self?.toggleTerminalEdge() }
+        terminal.onCycleSnap = { [weak self] in self?.cycleTerminalSize() }
         terminal.onOpenDirectory = { [weak self] url in
             self?.activePane.navigate(to: url)
         }
         window.setContentSize(NSSize(width: 1180, height: 760))
+        updateWindowMinimumSize()
 
         if preferences.splitEnabled { setSplitEnabled(true) }
     }
@@ -175,6 +155,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             window?.setFrameAutosaveName(Self.frameAutosaveName)
             positioned = true
         }
+        pullOntoScreen()
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -208,6 +189,25 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     var cascadeOrigin: NSPoint {
         guard let window else { return .zero }
         return window.cascadeTopLeft(from: NSPoint(x: window.frame.minX, y: window.frame.maxY))
+    }
+
+    /// 保存された位置が、いまのモニタ構成のどこにも無いことがある。
+    ///
+    /// 外部モニタを外す・並びを変えると、前回の座標は誰の画面でもない場所を指す。
+    /// ウインドウは開いているのに画面のどこにも見えず、Dockから開き直すまで
+    /// 戻ってこない——「表示できていない」という形で現れる（実際に起きた）。
+    private func pullOntoScreen() {
+        guard let window else { return }
+        let frame = window.frame
+        // 端がわずかに掛かっているだけでは「見えている」とは言えない。掴める
+        // だけの面積が画面に載っているかで判断する。
+        let visible = NSScreen.screens.contains { screen in
+            let overlap = screen.visibleFrame.intersection(frame)
+            guard !overlap.isNull else { return false }
+            return overlap.width >= 120 && overlap.height >= 80
+        }
+        guard !visible else { return }
+        window.center()
     }
 
     private static let frameAutosaveName = NSWindow.FrameAutosaveName("FinderAIWorkspaceWindow")
@@ -265,12 +265,78 @@ extension WorkspaceWindowController: NSSplitViewDelegate {
     }
 
     @objc func toggleTerminal() {
-        terminalExpanded.toggle()
-        preferences.terminalExpanded = terminalExpanded
-        terminal.setExpanded(terminalExpanded)
-        terminalHeightConstraint.constant = terminalExpanded
-            ? clampedTerminalHeight(requestedTerminalHeight)
-            : PanelPlacement.collapsedHeight
+        setTerminalExpanded(!terminalExpanded)
+    }
+
+    /// ⌘⌥J、ヘッダーの配置ボタン、設定ウインドウの共通の出口。
+    @objc func toggleTerminalEdge() {
+        setTerminalEdge(terminalEdge.opposite)
+    }
+
+    /// 設定ウインドウから、開いている全ウインドウへ同じ辺を配る。
+    func applyTerminalEdge(_ edge: TerminalPanelEdge) {
+        setTerminalEdge(edge)
+    }
+
+    /// このウインドウが見せているフォルダ。ウインドウ同士の見分けと、同じ場所を
+    /// 二重に開かないための照合に使う。
+    var displayedDirectory: URL { activePane.currentDirectory }
+
+    /// タイトルの出しかたはコーディネータが決める。同名フォルダを何枚も開いたとき、
+    /// どれがどれか分からなくなるのを避けるため、重なったときだけ親フォルダを添える。
+    func applyDisplayTitle(_ title: String, subtitle: String) {
+        window?.title = title
+        window?.subtitle = subtitle
+    }
+
+    /// ヘッダーのダブルクリック。畳む→半分→最大→畳む、と一段ずつ進む。
+    @objc func cycleTerminalSize() {
+        let next = TerminalPanelLayout.nextSnap(
+            currentThickness: terminalSizeConstraint.constant,
+            isExpanded: terminalExpanded,
+            edge: terminalEdge,
+            available: availableThickness,
+            browserMinimum: browserMinimumThickness
+        )
+        guard let thickness = TerminalPanelLayout.thickness(
+            for: next,
+            edge: terminalEdge,
+            available: availableThickness,
+            browserMinimum: browserMinimumThickness
+        ) else {
+            setTerminalExpanded(false)
+            return
+        }
+        setTerminalExpanded(true, thickness: thickness)
+    }
+
+    private func setTerminalExpanded(_ expanded: Bool, thickness: CGFloat? = nil) {
+        terminalExpanded = expanded
+        preferences.terminalExpanded = expanded
+        terminal.setExpanded(expanded)
+        if expanded, let thickness {
+            requestedTerminalThickness = clampedTerminalThickness(thickness)
+            preferences.setTerminalThickness(requestedTerminalThickness, for: terminalEdge)
+        }
+        terminalSizeConstraint.constant = expanded
+            ? clampedTerminalThickness(requestedTerminalThickness)
+            : TerminalPanelLayout.collapsedThickness
+        animateLayout()
+    }
+
+    private func setTerminalEdge(_ edge: TerminalPanelEdge) {
+        guard edge != terminalEdge else { return }
+        terminalEdge = edge
+        preferences.terminalEdge = edge
+        // 高さと幅は別に覚えてあるので、戻ってきたときは前回の大きさが復活する。
+        requestedTerminalThickness = preferences.terminalThickness(for: edge)
+        terminal.setEdge(edge)
+        updateWindowMinimumSize()
+        installEdgeLayout()
+        animateLayout()
+    }
+
+    private func animateLayout() {
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.16
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
@@ -278,8 +344,63 @@ extension WorkspaceWindowController: NSSplitViewDelegate {
         }
     }
 
-    var terminalPanelHeight: CGFloat { terminalHeightConstraint.constant }
+    /// 制約を辺ごとに丸ごと差し替える。高さと幅ではアンカーが違うので、
+    /// 定数の付け替えでは足りない。
+    private func installEdgeLayout() {
+        guard let root = rootController?.view else { return }
+        NSLayoutConstraint.deactivate(edgeConstraints)
+        let browserView: NSView = paneSplit
+        let terminalView = terminal.view
+        let size = terminalExpanded
+            ? clampedTerminalThickness(requestedTerminalThickness)
+            : TerminalPanelLayout.collapsedThickness
+
+        var constraints: [NSLayoutConstraint]
+        let browserMinimum: NSLayoutConstraint
+        switch terminalEdge {
+        case .bottom:
+            terminalSizeConstraint = terminalView.heightAnchor.constraint(equalToConstant: size)
+            browserMinimum = browserView.heightAnchor.constraint(
+                greaterThanOrEqualToConstant: Self.minimumBrowserHeight
+            )
+            constraints = [
+                browserView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+                browserView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+                browserView.topAnchor.constraint(equalTo: root.topAnchor),
+                browserView.bottomAnchor.constraint(equalTo: terminalView.topAnchor),
+                terminalView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+                terminalView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+                terminalView.bottomAnchor.constraint(equalTo: root.bottomAnchor)
+            ]
+        case .right:
+            terminalSizeConstraint = terminalView.widthAnchor.constraint(equalToConstant: size)
+            browserMinimum = browserView.widthAnchor.constraint(
+                greaterThanOrEqualToConstant: minimumBrowserWidth
+            )
+            constraints = [
+                browserView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+                browserView.topAnchor.constraint(equalTo: root.topAnchor),
+                browserView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+                browserView.trailingAnchor.constraint(equalTo: terminalView.leadingAnchor),
+                terminalView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+                terminalView.topAnchor.constraint(equalTo: root.topAnchor),
+                terminalView.bottomAnchor.constraint(equalTo: root.bottomAnchor)
+            ]
+        }
+        // The terminal must yield to the browser's minimum, otherwise a large
+        // terminal in a small window silently eats the file list: rows and the
+        // status bar get clipped out of view with nothing to stop it. Ranking the
+        // size below the minimum makes the terminal shrink instead.
+        terminalSizeConstraint.priority = .defaultHigh
+        browserMinimum.priority = .required
+        constraints.append(contentsOf: [browserMinimum, terminalSizeConstraint])
+        NSLayoutConstraint.activate(constraints)
+        edgeConstraints = constraints
+    }
+
+    var terminalPanelThickness: CGFloat { terminalSizeConstraint.constant }
     var isTerminalExpanded: Bool { terminalExpanded }
+    var terminalPanelEdge: TerminalPanelEdge { terminalEdge }
 
     func showTerminal() {
         guard !terminalExpanded else { return }
@@ -332,6 +453,12 @@ extension WorkspaceWindowController: NSSplitViewDelegate {
             terminal.setDirectory(leftPane.currentDirectory)
         }
         updatePaneHighlight()
+        // 2枚目のペインは右辺のターミナルと横幅を取り合う。下限が変わるので
+        // ウインドウの最小サイズと制約を引き直す。
+        if terminalEdge == .right {
+            updateWindowMinimumSize()
+            installEdgeLayout()
+        }
         window?.makeFirstResponder(activePane.view)
     }
 
@@ -353,33 +480,75 @@ extension WorkspaceWindowController: NSSplitViewDelegate {
 
     static let minimumBrowserHeight: CGFloat = 220
     static let minimumPaneWidth: CGFloat = 380
-    private static let minimumTerminalHeight: CGFloat = 160
-    private static let maximumTerminalHeight: CGFloat = 600
+    private static let baseWindowMinimumSize = NSSize(width: 820, height: 520)
 
-    /// The tallest terminal this window can show while the file list still keeps
-    /// its minimum. A height saved from a taller window, or a window shrunk after
-    /// the fact, would otherwise push the list's bottom out of sight.
-    func clampedTerminalHeight(_ proposed: CGFloat) -> CGFloat {
-        let available = window?.contentView?.bounds.height ?? 0
-        let ceiling = available > 0
-            ? min(Self.maximumTerminalHeight, available - Self.minimumBrowserHeight)
-            : Self.maximumTerminalHeight
-        // A window too short for both still has to produce a usable number.
-        guard ceiling > Self.minimumTerminalHeight else { return Self.minimumTerminalHeight }
-        return min(max(proposed, Self.minimumTerminalHeight), ceiling)
+    /// 分割中は2枚ぶんの読める幅が要る。右辺のターミナルはその残りを分け合う。
+    private var minimumBrowserWidth: CGFloat {
+        splitEnabled
+            ? Self.minimumPaneWidth * 2 + paneSplit.dividerThickness
+            : Self.minimumPaneWidth
+    }
+
+    private var browserMinimumThickness: CGFloat {
+        terminalEdge == .bottom ? Self.minimumBrowserHeight : minimumBrowserWidth
+    }
+
+    private var availableThickness: CGFloat {
+        let bounds = window?.contentView?.bounds ?? .zero
+        return terminalEdge == .bottom ? bounds.height : bounds.width
+    }
+
+    /// The largest terminal this window can show while the file list still keeps
+    /// its minimum. A size saved from a bigger window, or a window shrunk after
+    /// the fact, would otherwise push the list out of sight.
+    func clampedTerminalThickness(_ proposed: CGFloat) -> CGFloat {
+        TerminalPanelLayout.clamped(
+            proposed,
+            edge: terminalEdge,
+            available: availableThickness,
+            browserMinimum: browserMinimumThickness
+        )
+    }
+
+    /// 右辺に置くと、ブラウザとターミナルの下限が横方向で足し算になる。既定の
+    /// 最小幅のままだと両方の最小を同時に満たせず、どちらかが潰れる。
+    private func updateWindowMinimumSize() {
+        guard let window else { return }
+        let minimum: NSSize
+        switch terminalEdge {
+        case .bottom:
+            minimum = Self.baseWindowMinimumSize
+        case .right:
+            let needed = minimumBrowserWidth + TerminalPanelLayout.minimumThickness(for: .right)
+            minimum = NSSize(
+                width: max(Self.baseWindowMinimumSize.width, needed),
+                height: Self.baseWindowMinimumSize.height
+            )
+        }
+        window.minSize = minimum
+        // minSizeはこれから起きるリサイズにしか効かない。今が狭いなら広げる。
+        guard window.frame.width < minimum.width else { return }
+        var frame = window.frame
+        frame.size.width = minimum.width
+        window.setFrame(frame, display: true, animate: false)
     }
 
     private func resizeTerminal(by delta: CGFloat) {
         guard terminalExpanded else { return }
-        requestedTerminalHeight = clampedTerminalHeight(requestedTerminalHeight + delta)
-        terminalHeightConstraint.constant = requestedTerminalHeight
-        preferences.terminalHeight = requestedTerminalHeight
+        requestedTerminalThickness = clampedTerminalThickness(requestedTerminalThickness + delta)
+        terminalSizeConstraint.constant = requestedTerminalThickness
+        preferences.setTerminalThickness(requestedTerminalThickness, for: terminalEdge)
     }
 
-    /// Shrinking the window must not let a previously fine terminal height start
+    /// モニタの並びが変わったときに、コーディネータから呼ばれる。
+    func rescueOffscreenWindow() {
+        pullOntoScreen()
+    }
+
+    /// Shrinking the window must not let a previously fine terminal size start
     /// eating the list.
     func windowDidResize(_ notification: Notification) {
         guard terminalExpanded else { return }
-        terminalHeightConstraint.constant = clampedTerminalHeight(requestedTerminalHeight)
+        terminalSizeConstraint.constant = clampedTerminalThickness(requestedTerminalThickness)
     }
 }
