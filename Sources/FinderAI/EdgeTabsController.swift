@@ -292,17 +292,14 @@ final class EdgeTabsController {
         if canGoRight, canGoLeft {
             // 両側が外を向いている画面でだけ、カーソルの側を選ぶ。
             //
-            // ただし縁の近くまで来たときだけ。画面の真ん中を横切っただけで
-            // 反対側へ飛ぶと、作業中ずっと視界の端で帯がワープすることになる
-            // （実際にそうなった）。取りに行こうとしたときにそこに在ればいい。
-            let reach = min(max(screen.frame.width * 0.2, 160), 420)
-            if mouse.x > screen.frame.maxX - reach {
-                wanted = .right
-            } else if mouse.x < screen.frame.minX + reach {
-                wanted = .left
-            } else {
-                return
-            }
+            // カーソルのいる側へ素直に移る。ただし中央をまたぐ瞬間に往復しない
+            // よう、移った先から戻るには中央より少し先まで行く必要がある
+            // （行きと帰りで境目をずらす）。
+            let hysteresis = screen.frame.width * 0.06
+            let boundary = strip.edge == .right
+                ? screen.frame.midX - hysteresis
+                : screen.frame.midX + hysteresis
+            wanted = mouse.x >= boundary ? .right : .left
         } else {
             // 片側しか外を向いていないなら、選ぶ余地はない。
             wanted = canGoRight ? .right : .left
@@ -355,7 +352,11 @@ final class EdgeTabsController {
             if isInside {
                 self.cancelClose()
                 if let id = screen.displayID { self.stripHoverChanged(true, on: id) }
+                // フォルダのタブと同じで、触れれば開く。ここだけ押さないと
+                // 開かないのでは、袖の中で振る舞いが割れる。
+                if self.preferences.edgeTabsOpensOnHover { self.scheduleShowWindows() }
             } else {
+                self.cancelOpen()
                 self.scheduleClose()
                 if let id = screen.displayID { self.stripHoverChanged(false, on: id) }
             }
@@ -551,6 +552,17 @@ final class EdgeTabsController {
             try? await Task.sleep(for: Self.openDelay)
             guard !Task.isCancelled, let self, let tab else { return }
             self.showPopover(for: tab)
+        }
+    }
+
+    /// 俯瞰に触れてしばらくしたら、ウインドウの一覧を出す。
+    private func scheduleShowWindows() {
+        cancelClose()
+        openTask?.cancel()
+        openTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.openDelay)
+            guard !Task.isCancelled, let self else { return }
+            self.onShowWindows?()
         }
     }
 
