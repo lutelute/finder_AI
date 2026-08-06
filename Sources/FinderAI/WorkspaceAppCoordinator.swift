@@ -31,8 +31,8 @@ final class WorkspaceAppCoordinator {
         }
         controller.windowRowsProvider = { [weak self] in self?.windowRows() ?? [] }
         controller.onSelectWindow = { [weak self] id in
-            // 押したら確定。戻す先は忘れる。
-            self?.previewRestoreTarget = nil
+            // 押したら確定。覚えた重なりは捨てる。
+            self?.previewRestoreOrder = []
             self?.windows.first { ObjectIdentifier($0) == id }?.show()
         }
         controller.onCloseWindow = { [weak self] id in
@@ -72,8 +72,8 @@ final class WorkspaceAppCoordinator {
     /// 前面の判定に`NSApp.keyWindow`をそのまま使うと、一覧パネル自身がkeyに
     /// なった瞬間、どの行も「前面ではない」ことになる。
     private weak var lastKeyWorkspaceWindow: NSWindow?
-    /// 一覧のカードに触れて仮に前へ出す前、手元にいたウインドウ。離れたら戻す。
-    private weak var previewRestoreTarget: NSWindow?
+    /// 一覧を開いた時点の重なり（前面から順）。畳んだらこの順へ並べ直す。
+    private var previewRestoreOrder: [NSWindow] = []
 
 
     /// Terminal sessions are keyed by folder and kind across the whole app, so two
@@ -467,8 +467,8 @@ final class WorkspaceAppCoordinator {
             let panel = WorkspaceWindowsPanelController()
             panel.rowsProvider = { [weak self] in self?.windowRows() ?? [] }
             panel.onSelect = { [weak self] id in
-                // 押したら確定。戻す先は忘れる。
-                self?.previewRestoreTarget = nil
+                // 押したら確定。覚えた重なりは捨てる。
+                self?.previewRestoreOrder = []
                 self?.windows.first { ObjectIdentifier($0) == id }?.show()
             }
             panel.onClose = { [weak self] id in
@@ -499,31 +499,56 @@ final class WorkspaceAppCoordinator {
         raiseWindowsPanelIfVisible()
     }
 
-    /// 一覧を開いた。いまの前後関係を覚えておく。
+    /// 一覧を開いた。いまの重なりをそっくり覚えておく。
     ///
-    /// 行ごとに覚えて行ごとに戻す作りにしていたが、隣へ移る一瞬の「入った」と
-    /// 「離れた」は順序が決まっておらず、片方が落ちることさえある。実測でも
-    /// 戻る先が1手ずれた。覚えるのは開いたときの1回だけにする。
+    /// 覚えるのは開いたときの1回だけ。行ごとに覚えて行ごとに戻す作りにしていた
+    /// が、隣へ移る一瞬の「入った」と「離れた」は順序が決まっておらず、片方が
+    /// 落ちることさえある——実測でも戻る先が1手ずれた。
     private func beginWindowPreview() {
-        // 戻る先は「最後に手を触れていたウインドウ」。
-        //
-        // `NSApp.orderedWindows`の前後関係は、このアプリが前面にいないあいだ
-        // 更新されず、実際の重なりと食い違う——袖は非アクティブのまま使うので
-        // まさにその状況で、戻したはずが別の1枚が前に出ていた。
-        previewRestoreTarget = lastKeyWorkspaceWindow
-            ?? NSApp.orderedWindows.first { candidate in
-                windows.contains { $0.window === candidate }
-            }
+        previewRestoreOrder = orderedWorkspaceWindows()
     }
 
-    /// 一覧を畳んだ。覚えた前後関係へ戻す。押して確定した場合は戻さない。
+
+    /// 一覧を畳んだ。覚えた重なりへ並べ直す。押して確定した場合は戻さない。
+    ///
+    /// 前へ出した1枚を背面まで戻す。手元の1枚を前に出すだけだと、覗いた1枚が
+    /// 2番目に残る——見ただけのものが並びに残るなら、それは「仮に」ではない。
     private func endWindowPreview() {
-        guard let restore = previewRestoreTarget else { return }
-        previewRestoreTarget = nil
-        // 閉じたウインドウを戻そうとしない。
-        guard restore.isVisible else { return }
-        restore.orderFrontRegardless()
+        let order = previewRestoreOrder
+        previewRestoreOrder = []
+        guard order.count > 1 else { return }
+        // 前から順に「ひとつ前の下」へ置き直す。背面から`orderFront`で積むと、
+        // 他のアプリのウインドウまで全部またいで手前に出てしまう——戻したはず
+        // が、覗く前より前に出ている状態になる。直すのは相互の前後だけ。
+        for index in 1..<order.count {
+            let above = order[index - 1]
+            let below = order[index]
+            guard above.isVisible, below.isVisible else { continue }
+            below.order(.below, relativeTo: above.windowNumber)
+        }
         raiseWindowsPanelIfVisible()
+    }
+
+    /// いま画面に出ている順（前面から）に、このアプリのウインドウを並べる。
+    ///
+    /// `NSApp.orderedWindows`の前後関係は、このアプリが前面にいないあいだ
+    /// 更新されない。袖は非アクティブのまま使うのでまさにその状況で、実測でも
+    /// 実際の重なりと食い違った。並びはウインドウサーバーに訊く。
+    private func orderedWorkspaceWindows() -> [NSWindow] {
+        guard let info = CGWindowListCopyWindowInfo(
+            .optionOnScreenOnly,
+            kCGNullWindowID
+        ) as? [[String: Any]] else { return [] }
+        var byNumber: [Int: NSWindow] = [:]
+        for controller in windows {
+            guard let window = controller.window else { continue }
+            byNumber[Int(window.windowNumber)] = window
+        }
+        let result = info.compactMap { entry -> NSWindow? in
+            guard let number = entry[kCGWindowNumber as String] as? Int else { return nil }
+            return byNumber[number]
+        }
+        return result
     }
 
     /// 開いているときだけ前に戻す。閉じている一覧を開いてしまわない。
