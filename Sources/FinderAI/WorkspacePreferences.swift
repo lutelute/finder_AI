@@ -50,6 +50,20 @@ struct WorkspacePreferences {
         static let restoresWindows = "workspace.restoresWindows"
         static let edgeTabsFollowsPointer = "workspace.edgeTabsFollowsPointer"
         static let edgeTabsAccordion = "workspace.edgeTabsAccordion"
+        static let windowPeek = "workspace.windowPeek"
+    }
+
+    /// ウインドウの一覧で、行に触れたときの見せ方。
+    ///
+    /// 既定は枠。前面へ浮かせるのがいちばん確かだが、そのあいだ他のアプリを
+    /// 覆う——覗くたびに画面が切り替わるのは、探しているあいだずっと続く。
+    var windowPeek: WorkspaceWindowPeek {
+        get {
+            guard let raw = defaults.string(forKey: Key.windowPeek),
+                  let mode = WorkspaceWindowPeek(rawValue: raw) else { return .outline }
+            return mode
+        }
+        nonmutating set { defaults.set(newValue.rawValue, forKey: Key.windowPeek) }
     }
 
     /// 袖を開いたとき、入れてある全フォルダを縦積みで見せるか。

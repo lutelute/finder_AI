@@ -73,6 +73,10 @@ final class WorkspaceAppCoordinator {
     private weak var lastKeyWorkspaceWindow: NSWindow?
     /// 覗いているあいだ浮かせている1枚。離れたら元の高さへ戻す。
     private weak var previewLifted: NSWindow?
+    private let peekOutline = WindowPeekOutline()
+    private let peekThumbnail = WindowPeekThumbnail()
+    /// 縮小を撮っている最中の仕事。次の行へ移ったら取り消す。
+    private var peekTask: Task<Void, Never>?
     /// 覗いているあいだの高さ。袖の一覧（`.floating`）より下、ふつうのウインドウ
     /// より上。一覧に隠れず、かといって一覧より前に出もしない。
     private static let previewLevel = NSWindow.Level(
@@ -495,25 +499,94 @@ final class WorkspaceAppCoordinator {
     /// 「仮に」なので、離れれば元の並びへ戻す。
     private func previewWindow(_ id: ObjectIdentifier) {
         guard let target = windows.first(where: { ObjectIdentifier($0) == id })?.window else { return }
-        if let lifted = previewLifted, lifted !== target {
-            lifted.level = .normal
+        clearWindowPeek()
+        switch preferences.windowPeek {
+        case .off:
+            return
+        case .lift:
+            target.level = Self.previewLevel
+            previewLifted = target
+        case .outline:
+            peekOutline.show(around: target.frame)
+        case .thumbnail:
+            let list = edgeTabs.presentedWindowsList
+            let panel = windowsPanel?.window
+            let anchor = list?.frame
+                ?? (panel?.isVisible == true ? panel?.frame : nil)
+                ?? target.frame
+            let edge = list?.edge ?? .right
+            let screen = (target.screen ?? NSScreen.main)?.visibleFrame ?? .zero
+            // 撮るのは非同期。返るころには別の行へ移っているかもしれないので、
+            // 次の覗きが始まったら取り消す。
+            peekTask?.cancel()
+            peekTask = Task { [weak self] in
+                let image = await WindowPeekThumbnail.snapshot(of: target)
+                guard !Task.isCancelled, let self else { return }
+                guard let image else {
+                    // 撮れないなら枠で代える。許可がないだけかもしれないし、
+                    // 覗いて何も起きないよりは場所が分かるほうがいい。
+                    self.peekOutline.show(around: target.frame)
+                    return
+                }
+                self.peekThumbnail.show(image, besides: anchor, edge: edge, on: screen)
+            }
         }
-        target.level = Self.previewLevel
-        previewLifted = target
         // 独立した一覧は上に残す。前に出した拍子に隠れると、次の行へ移れない。
         raiseWindowsPanelIfVisible()
     }
 
-    /// 覗くのをやめた。浮かせた1枚を元の高さへ戻す。
+    /// 覗くのをやめた。出していたものを引っ込め、浮かせた1枚を元の高さへ戻す。
     ///
-    /// 重なりそのものを操作する作りから改めた。`orderFront`で前に出すと戻し方が
-    /// 要るが、`order(.below:)`はこのアプリが前面にいないと効かず、覗いた1枚が
-    /// 最前面に残ったままになる。袖は非アクティブのまま使うので、その状況が常態
-    /// だった。高さを変えて戻すだけなら、同じ高さのウインドウどうしの前後関係は
-    /// 触らずに済む。
+    /// 重なりそのものを操作する作りから改めた経緯がある。`orderFront`で前に出すと
+    /// 戻し方が要るが、`order(.below:)`はこのアプリが前面にいないと効かない——
+    /// 袖は非アクティブのまま使うので、その状況が常態だった。
     private func endWindowPreview() {
+        clearWindowPeek()
+    }
+
+    private func clearWindowPeek() {
+        peekTask?.cancel()
+        peekTask = nil
         previewLifted?.level = .normal
         previewLifted = nil
+        peekOutline.hide()
+        peekThumbnail.hide()
+    }
+
+    var currentWindowPeek: WorkspaceWindowPeek { preferences.windowPeek }
+
+    private func refreshWindowPeekMenu() {
+        guard let submenu = NSApp.mainMenu?
+            .items.compactMap(\.submenu).first(where: { $0.title == "表示" })?
+            .items.first(where: { $0.submenu?.title == "ウインドウ一覧の覗き方" })?
+            .submenu else { return }
+        let current = preferences.windowPeek.rawValue
+        for item in submenu.items {
+            guard let raw = item.representedObject as? String else { continue }
+            item.state = raw == current ? .on : .off
+        }
+    }
+
+    /// 覗き方を選ぶ。縮小はここで許可を確かめる——覗いた拍子に許可を訊かれる
+    /// のは唐突なので、選んだ時点で1度だけ。
+    @objc func setWindowPeek(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let mode = WorkspaceWindowPeek(rawValue: raw) else { return }
+        if mode == .thumbnail, !WindowPeekThumbnail.isPermitted {
+            let granted = CGRequestScreenCaptureAccess()
+            if !granted {
+                let alert = NSAlert()
+                alert.messageText = "「画面収録」の許可が要ります"
+                alert.informativeText = """
+                システム設定 → プライバシーとセキュリティ → 画面収録 でFinderAIを許可すると、\
+                覗いた1枚の中身を縮小して出せます。許可するまでは枠で場所を示します。
+                """
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            }
+        }
+        preferences.windowPeek = mode
+        sender.menu?.items.forEach { $0.state = ($0 === sender) ? .on : .off }
     }
 
     /// 開いているときだけ前に戻す。閉じている一覧を開いてしまわない。
@@ -685,6 +758,9 @@ final class WorkspaceAppCoordinator {
         // Populates the window list and keeps the checkmark on the key window.
         NSApp.windowsMenu = main.items.compactMap(\.submenu).first { $0.title == "ウインドウ" }
         NSApp.mainMenu = main
+        // 印は組み上げたあとで付ける。`makeMainMenu`はテストのためにアプリの
+        // 状態へ触れない約束になっている。
+        refreshWindowPeekMenu()
     }
 
     /// Built without touching app state so the key-equivalent table can be
@@ -901,6 +977,25 @@ final class WorkspaceAppCoordinator {
         )
         edgeTabsAutoHide.target = coordinator
         viewMenu.addItem(edgeTabsAutoHide)
+
+        // 一覧の行に触れたとき、そのウインドウをどう見せるか。
+        //
+        // 前面へ浮かせるのがいちばん確かだが、探しているあいだじゅう他のアプリ
+        // が覆われる。覆わない出し方も要る、という話から選べるようにした。
+        let peekMenu = NSMenu(title: "ウインドウ一覧の覗き方")
+        for mode in WorkspaceWindowPeek.allCases {
+            let item = NSMenuItem(
+                title: mode.title,
+                action: #selector(WorkspaceAppCoordinator.setWindowPeek(_:)),
+                keyEquivalent: ""
+            )
+            item.target = coordinator
+            item.representedObject = mode.rawValue
+            peekMenu.addItem(item)
+        }
+        let peekItem = NSMenuItem(title: "ウインドウ一覧の覗き方", action: nil, keyEquivalent: "")
+        peekItem.submenu = peekMenu
+        viewMenu.addItem(peekItem)
         viewMenu.addItem(.separator())
         viewMenu.addItem(item("このフォルダを検索", action: #selector(WorkspaceBrowserViewController.focusSearchField), key: "f"))
         viewMenu.addItem(item("パスを入力…", action: #selector(WorkspaceBrowserViewController.beginPathEditing), key: "l"))

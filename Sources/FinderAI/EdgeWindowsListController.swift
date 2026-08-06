@@ -33,7 +33,8 @@ final class EdgeWindowsListController: NSObject {
     /// いま前へ出している行。同じ位置での連打を避けるために持つ。
     private var previewingRow: ObjectIdentifier?
 
-    private var edge: WorkspaceScreenEdge = .right
+    /// 出ている側。縮小を一覧の反対側へ置くために外から読む。
+    private(set) var edge: WorkspaceScreenEdge = .right
     private var anchor: CGRect = .zero
     private var visibleFrame: CGRect = .zero
 

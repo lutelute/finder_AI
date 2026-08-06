@@ -112,6 +112,31 @@ extension WorkspaceEdgeTabSort {
     }
 }
 
+/// 一覧の行に触れたとき、そのウインドウをどう見せるか。
+///
+/// 前面へ浮かせるのがいちばん確かだが、そのあいだ他のアプリを覆う。覆わずに
+/// 済ませたいときのために、示すだけ・見せるだけ・何もしない、を並べて選べる
+/// ようにしてある。
+public enum WorkspaceWindowPeek: String, CaseIterable, Sendable {
+    /// 位置に枠を重ねる。重なりには一切触らない。
+    case outline
+    /// 中身の縮小を一覧の横に出す。画面収録の許可が要る。
+    case thumbnail
+    /// 何もしない。押してはじめて前に出る。
+    case off
+    /// そのウインドウを前面へ浮かせる。
+    case lift
+
+    public var title: String {
+        switch self {
+        case .outline: "枠で場所を示す"
+        case .thumbnail: "縮小して中身を見せる"
+        case .off: "何もしない（押したときだけ）"
+        case .lift: "前面に浮かせる"
+        }
+    }
+}
+
 /// タブを出す画面の縁。
 public enum WorkspaceScreenEdge: String, CaseIterable, Sendable {
     case left

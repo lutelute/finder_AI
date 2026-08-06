@@ -798,6 +798,14 @@ final class EdgeTabsController {
         windowsList.dismiss()
     }
 
+    /// 袖から広げたウインドウの一覧が出ているなら、その位置と縁。
+    ///
+    /// 覗いた中身の縮小を、一覧に重ならない側へ置くために使う。
+    var presentedWindowsList: (frame: CGRect, edge: WorkspaceScreenEdge)? {
+        guard windowsList.isPresented else { return nil }
+        return (windowsList.frame, windowsList.edge)
+    }
+
     /// いま一覧が開いているか（どちらの形でも）。
     private var isListPresented: Bool {
         popover.isPresented || accordion.isPresented || windowsList.isPresented
