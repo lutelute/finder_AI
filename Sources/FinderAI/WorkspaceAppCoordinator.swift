@@ -31,15 +31,14 @@ final class WorkspaceAppCoordinator {
         }
         controller.windowRowsProvider = { [weak self] in self?.windowRows() ?? [] }
         controller.onSelectWindow = { [weak self] id in
-            // 押したら確定。覚えた重なりは捨てる。
-            self?.previewRestoreOrder = []
+            // 押したら確定。浮かせていたぶんを下ろしてから、正面に持ってくる。
+            self?.endWindowPreview()
             self?.windows.first { ObjectIdentifier($0) == id }?.show()
         }
         controller.onCloseWindow = { [weak self] id in
             self?.windows.first { ObjectIdentifier($0) == id }?.window?.performClose(nil)
         }
         controller.onPreviewWindow = { [weak self] id in self?.previewWindow(id) }
-        controller.onBeginPreviewWindows = { [weak self] in self?.beginWindowPreview() }
         controller.onEndPreviewWindows = { [weak self] in self?.endWindowPreview() }
         controller.windowsLayoutProvider = { [weak self] in
             guard let self else { return .init(screens: [], windows: [], frontmost: nil) }
@@ -72,8 +71,13 @@ final class WorkspaceAppCoordinator {
     /// 前面の判定に`NSApp.keyWindow`をそのまま使うと、一覧パネル自身がkeyに
     /// なった瞬間、どの行も「前面ではない」ことになる。
     private weak var lastKeyWorkspaceWindow: NSWindow?
-    /// 一覧を開いた時点の重なり（前面から順）。畳んだらこの順へ並べ直す。
-    private var previewRestoreOrder: [NSWindow] = []
+    /// 覗いているあいだ浮かせている1枚。離れたら元の高さへ戻す。
+    private weak var previewLifted: NSWindow?
+    /// 覗いているあいだの高さ。袖の一覧（`.floating`）より下、ふつうのウインドウ
+    /// より上。一覧に隠れず、かといって一覧より前に出もしない。
+    private static let previewLevel = NSWindow.Level(
+        rawValue: NSWindow.Level.floating.rawValue - 1
+    )
 
 
     /// Terminal sessions are keyed by folder and kind across the whole app, so two
@@ -121,6 +125,8 @@ final class WorkspaceAppCoordinator {
                 guard let key = NSApp.keyWindow,
                       self.windows.contains(where: { $0.window === key }) else { return }
                 self.lastKeyWorkspaceWindow = key
+                // 覗いていた1枚をそのまま使い始めたなら、浮かせたままにしない。
+                self.endWindowPreview()
                 self.windowsPanel?.refreshIfVisible()
                 self.edgeTabs.refreshWindowsOverview()
             }
@@ -467,8 +473,8 @@ final class WorkspaceAppCoordinator {
             let panel = WorkspaceWindowsPanelController()
             panel.rowsProvider = { [weak self] in self?.windowRows() ?? [] }
             panel.onSelect = { [weak self] id in
-                // 押したら確定。覚えた重なりは捨てる。
-                self?.previewRestoreOrder = []
+                // 押したら確定。浮かせていたぶんを下ろしてから、正面に持ってくる。
+                self?.endWindowPreview()
                 self?.windows.first { ObjectIdentifier($0) == id }?.show()
             }
             panel.onClose = { [weak self] id in
@@ -476,7 +482,6 @@ final class WorkspaceAppCoordinator {
             }
             panel.onOpenNew = { [weak self] in self?.newWindow() }
             panel.onPreview = { [weak self] id in self?.previewWindow(id) }
-            panel.onBeginPreview = { [weak self] in self?.beginWindowPreview() }
             panel.onEndPreview = { [weak self] in self?.endWindowPreview() }
             windowsPanel = panel
         }
@@ -490,65 +495,25 @@ final class WorkspaceAppCoordinator {
     /// 「仮に」なので、離れれば元の並びへ戻す。
     private func previewWindow(_ id: ObjectIdentifier) {
         guard let target = windows.first(where: { ObjectIdentifier($0) == id })?.window else { return }
-        // `orderFront`は、このアプリが前面にいないと効かない回がある。袖は
-        // 非アクティブのまま使うものなので、効いたり効かなかったりした——
-        // 実測で、触れても前に出ない行が並びの中に混ざった。
-        target.orderFrontRegardless()
+        if let lifted = previewLifted, lifted !== target {
+            lifted.level = .normal
+        }
+        target.level = Self.previewLevel
+        previewLifted = target
         // 独立した一覧は上に残す。前に出した拍子に隠れると、次の行へ移れない。
-        // 袖から広げた一覧は`.floating`なので、放っておいても隠れない。
         raiseWindowsPanelIfVisible()
     }
 
-    /// 一覧を開いた。いまの重なりをそっくり覚えておく。
+    /// 覗くのをやめた。浮かせた1枚を元の高さへ戻す。
     ///
-    /// 覚えるのは開いたときの1回だけ。行ごとに覚えて行ごとに戻す作りにしていた
-    /// が、隣へ移る一瞬の「入った」と「離れた」は順序が決まっておらず、片方が
-    /// 落ちることさえある——実測でも戻る先が1手ずれた。
-    private func beginWindowPreview() {
-        previewRestoreOrder = orderedWorkspaceWindows()
-    }
-
-
-    /// 一覧を畳んだ。覚えた重なりへ並べ直す。押して確定した場合は戻さない。
-    ///
-    /// 前へ出した1枚を背面まで戻す。手元の1枚を前に出すだけだと、覗いた1枚が
-    /// 2番目に残る——見ただけのものが並びに残るなら、それは「仮に」ではない。
+    /// 重なりそのものを操作する作りから改めた。`orderFront`で前に出すと戻し方が
+    /// 要るが、`order(.below:)`はこのアプリが前面にいないと効かず、覗いた1枚が
+    /// 最前面に残ったままになる。袖は非アクティブのまま使うので、その状況が常態
+    /// だった。高さを変えて戻すだけなら、同じ高さのウインドウどうしの前後関係は
+    /// 触らずに済む。
     private func endWindowPreview() {
-        let order = previewRestoreOrder
-        previewRestoreOrder = []
-        guard order.count > 1 else { return }
-        // 前から順に「ひとつ前の下」へ置き直す。背面から`orderFront`で積むと、
-        // 他のアプリのウインドウまで全部またいで手前に出てしまう——戻したはず
-        // が、覗く前より前に出ている状態になる。直すのは相互の前後だけ。
-        for index in 1..<order.count {
-            let above = order[index - 1]
-            let below = order[index]
-            guard above.isVisible, below.isVisible else { continue }
-            below.order(.below, relativeTo: above.windowNumber)
-        }
-        raiseWindowsPanelIfVisible()
-    }
-
-    /// いま画面に出ている順（前面から）に、このアプリのウインドウを並べる。
-    ///
-    /// `NSApp.orderedWindows`の前後関係は、このアプリが前面にいないあいだ
-    /// 更新されない。袖は非アクティブのまま使うのでまさにその状況で、実測でも
-    /// 実際の重なりと食い違った。並びはウインドウサーバーに訊く。
-    private func orderedWorkspaceWindows() -> [NSWindow] {
-        guard let info = CGWindowListCopyWindowInfo(
-            .optionOnScreenOnly,
-            kCGNullWindowID
-        ) as? [[String: Any]] else { return [] }
-        var byNumber: [Int: NSWindow] = [:]
-        for controller in windows {
-            guard let window = controller.window else { continue }
-            byNumber[Int(window.windowNumber)] = window
-        }
-        let result = info.compactMap { entry -> NSWindow? in
-            guard let number = entry[kCGWindowNumber as String] as? Int else { return nil }
-            return byNumber[number]
-        }
-        return result
+        previewLifted?.level = .normal
+        previewLifted = nil
     }
 
     /// 開いているときだけ前に戻す。閉じている一覧を開いてしまわない。

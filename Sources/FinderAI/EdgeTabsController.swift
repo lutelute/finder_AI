@@ -30,7 +30,6 @@ final class EdgeTabsController {
     var onCloseWindow: ((ObjectIdentifier) -> Void)?
     /// 行に触れているあいだ、そのウインドウを仮に前へ出す／戻す。
     var onPreviewWindow: ((ObjectIdentifier) -> Void)?
-    var onBeginPreviewWindows: (() -> Void)?
     var onEndPreviewWindows: (() -> Void)?
     /// いま開いているウインドウの配置。袖の先頭に俯瞰として描く。
     var windowsLayoutProvider: (() -> EdgeWindowsTabButton.Layout)?
@@ -155,7 +154,6 @@ final class EdgeTabsController {
             self.windowsList.refresh(rows: self.windowRowsProvider?() ?? [])
         }
         windowsList.onPreview = { [weak self] id in self?.onPreviewWindow?(id) }
-        windowsList.onBeginPreview = { [weak self] in self?.onBeginPreviewWindows?() }
         windowsList.onEndPreview = { [weak self] in self?.onEndPreviewWindows?() }
         reload()
         startPointerFollow()

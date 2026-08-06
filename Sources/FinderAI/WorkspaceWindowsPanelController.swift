@@ -34,9 +34,7 @@ final class WorkspaceWindowsPanelController: NSWindowController {
     /// 触れているあいだ、そのウインドウを仮に前へ出す。
     var onPreview: ((ObjectIdentifier) -> Void)?
     /// 仮に出したものを元の並びへ戻す。
-    /// 一覧を開いた。この時点の前後関係を覚えてもらう。
-    var onBeginPreview: (() -> Void)?
-    /// 一覧を閉じた。覚えた前後関係へ戻してもらう。
+    /// 一覧を閉じた。浮かせた1枚を下ろしてもらう。
     var onEndPreview: (() -> Void)?
 
     private let scrollView = NSScrollView()
@@ -74,7 +72,6 @@ final class WorkspaceWindowsPanelController: NSWindowController {
     func show() {
         reload()
         fitHeightToContent()
-        onBeginPreview?()
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

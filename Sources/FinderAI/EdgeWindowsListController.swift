@@ -15,9 +15,7 @@ final class EdgeWindowsListController: NSObject {
     var onSelect: ((ObjectIdentifier) -> Void)?
     var onClose: ((ObjectIdentifier) -> Void)?
     var onPreview: ((ObjectIdentifier) -> Void)?
-    /// 一覧を開いた。この時点の前後関係を覚えてもらう。
-    var onBeginPreview: (() -> Void)?
-    /// 一覧を畳んだ。覚えた前後関係へ戻してもらう。
+    /// 一覧を畳んだ。浮かせた1枚を下ろしてもらう。
     var onEndPreview: (() -> Void)?
     var onOpenNew: (() -> Void)?
     var onRequestDismiss: (() -> Void)?
@@ -124,8 +122,6 @@ final class EdgeWindowsListController: NSObject {
         presentedScreenID = screenID
         container.edge = edge
         rebuild()
-        // 眺めているあいだは触れた行が前へ出る。畳んだらここへ戻る。
-        onBeginPreview?()
 
         // 非アクティブなアプリでは`orderFront`も`makeKeyAndOrderFront`も前に
         // 出さない。
