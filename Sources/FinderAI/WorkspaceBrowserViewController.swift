@@ -474,6 +474,8 @@ final class WorkspaceBrowserViewController: NSViewController {
     private let forwardButton = NSButton()
     private let upButton = NSButton()
     private let refreshButton = NSButton()
+    /// この区画の明るさ。押すたびに システム → ライト → ダーク と巡る。
+    private let appearanceButton = NSButton()
     private let copyCDButton = NSButton()
     private let newFolderButton = NSButton()
     private let statusLabel = NSTextField(labelWithString: "")
@@ -516,8 +518,33 @@ final class WorkspaceBrowserViewController: NSViewController {
     var viewModeForTesting: WorkspaceViewMode { effectiveViewMode }
     var galleryIsVisibleForTesting: Bool { galleryScrollView?.isHidden == false }
 
+    private func configureAppearanceButton() {
+        configureNavigationButton(
+            appearanceButton,
+            symbol: preferences.browserAppearance.symbolName,
+            action: #selector(cycleAppearance),
+            label: "ファイル一覧の明るさ"
+        )
+        refreshAppearanceButton()
+    }
+
+    private func refreshAppearanceButton() {
+        let mode = preferences.browserAppearance
+        appearanceButton.image = NSImage(
+            systemSymbolName: mode.symbolName,
+            accessibilityDescription: "ファイル一覧の明るさ"
+        )
+        appearanceButton.toolTip = "ファイル一覧の明るさ：\(mode.title)（押すと切り替え）"
+    }
+
+    @objc private func cycleAppearance() {
+        preferences.browserAppearance = preferences.browserAppearance.next
+        NotificationCenter.default.post(name: .workspaceAppearanceDidChange, object: nil)
+    }
+
     /// 明るさを選び直したときに掛け替える。
     func applyAppearance() {
+        refreshAppearanceButton()
         view.appearance = preferences.browserAppearance.nsAppearance
         themePainter.appearance = view.appearance
         themePainter.repaint()
@@ -990,9 +1017,10 @@ final class WorkspaceBrowserViewController: NSViewController {
         // modes, two search scopes, and the search field on one row forces Auto
         // Layout to crush the address field at exactly the size where it matters
         // most. Navigation stays on top and search gets a dedicated compact row.
+        configureAppearanceButton()
         let navigationStack = NSStackView(views: [
             backButton, forwardButton, upButton, pathSlot, copyCDButton,
-            refreshButton, newFolderButton, viewModeControl
+            refreshButton, newFolderButton, appearanceButton, viewModeControl
         ])
         navigationStack.orientation = .horizontal
         navigationStack.alignment = .centerY

@@ -135,6 +135,19 @@ final class WorkspaceAppCoordinator {
                 self.edgeTabs.refreshWindowsOverview()
             }
         }
+        // 明るさのボタンはウインドウごとにあるので、押された1枚だけでなく
+        // 開いている全部へ配る。
+        NotificationCenter.default.addObserver(
+            forName: .workspaceAppearanceDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.windows.forEach { $0.applyAppearance() }
+                self.refreshAppearanceMenus()
+            }
+        }
         activationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil,

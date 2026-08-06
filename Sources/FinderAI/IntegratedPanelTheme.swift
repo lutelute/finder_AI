@@ -1,6 +1,11 @@
 import AppKit
 import FinderAICore
 
+extension Notification.Name {
+    /// 明るさを選び直した。開いている全部のウインドウへ配る。
+    static let workspaceAppearanceDidChange = Notification.Name("workspaceAppearanceDidChange")
+}
+
 /// 画面のどこであれ同じ意味の色を引くための一覧。
 ///
 /// 固定のダーク配色から、外観に追い付く色へ変えた。ファイル一覧とターミナルで

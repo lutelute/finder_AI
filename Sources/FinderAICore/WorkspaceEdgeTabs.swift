@@ -156,6 +156,25 @@ public enum WorkspaceAppearance: String, CaseIterable, Sendable {
         case .dark: "ダーク"
         }
     }
+
+    /// ボタンを押したときの次の状態。
+    public var next: WorkspaceAppearance {
+        switch self {
+        case .system: .light
+        case .light: .dark
+        case .dark: .system
+        }
+    }
+
+    /// いまどれかをボタンの絵で示す。3つを巡るので、押す前に今がどこかは
+    /// 見えていないと当てずっぽうになる。
+    public var symbolName: String {
+        switch self {
+        case .system: "circle.lefthalf.filled"
+        case .light: "sun.max"
+        case .dark: "moon"
+        }
+    }
 }
 
 /// タブを出す画面の縁。

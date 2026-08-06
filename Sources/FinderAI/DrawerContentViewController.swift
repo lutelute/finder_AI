@@ -50,6 +50,8 @@ final class DrawerContentViewController: NSViewController {
     private let sessionManager: any TerminalSessionManaging
     private let preferences: WorkspacePreferences
     private let themePainter = ThemedLayerPainter()
+    /// この区画の明るさ。押すたびに システム → ライト → ダーク と巡る。
+    private let appearanceButton = NSButton()
     /// The folder the browser is showing. There is no drawer-level "fixed"
     /// mode any more: whether a session moves with this is each session's own
     /// story — shells follow (and actually `cd`), AI sessions stay put, and a
@@ -136,8 +138,34 @@ final class DrawerContentViewController: NSViewController {
         fatalError("init(coder:) has not been implemented")
     }
 
+    private func configureAppearanceButton() {
+        appearanceButton.title = ""
+        appearanceButton.isBordered = false
+        appearanceButton.imagePosition = .imageOnly
+        appearanceButton.contentTintColor = IntegratedPanelTheme.text
+        appearanceButton.target = self
+        appearanceButton.action = #selector(cycleAppearance)
+        refreshAppearanceButton()
+    }
+
+    private func refreshAppearanceButton() {
+        let mode = preferences.terminalAppearance
+        appearanceButton.image = NSImage(
+            systemSymbolName: mode.symbolName,
+            accessibilityDescription: "ターミナルの明るさ"
+        )
+        appearanceButton.contentTintColor = IntegratedPanelTheme.text
+        appearanceButton.toolTip = "ターミナルの明るさ：\(mode.title)（押すと切り替え）"
+    }
+
+    @objc private func cycleAppearance() {
+        preferences.terminalAppearance = preferences.terminalAppearance.next
+        NotificationCenter.default.post(name: .workspaceAppearanceDidChange, object: nil)
+    }
+
     /// 明るさを選び直したときに掛け替える。
     func applyAppearance() {
+        refreshAppearanceButton()
         view.appearance = preferences.terminalAppearance.nsAppearance
         themePainter.appearance = view.appearance
         themePainter.repaint()
@@ -408,6 +436,7 @@ final class DrawerContentViewController: NSViewController {
         closeButton.action = #selector(closeSession)
 
         configureStrip()
+        configureAppearanceButton()
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -419,6 +448,7 @@ final class DrawerContentViewController: NSViewController {
                 pathLabel,
                 spacer,
                 sessionTabs,
+                appearanceButton,
                 placementButton,
                 manageSessionsButton,
                 newSessionButton,
