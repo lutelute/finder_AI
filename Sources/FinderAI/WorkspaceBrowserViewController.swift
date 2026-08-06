@@ -426,6 +426,7 @@ final class WorkspaceBrowserViewController: NSViewController {
     private let fileService = WorkspaceFileService()
     private let fileClipboard: WorkspaceFileClipboard
     private let preferences: WorkspacePreferences
+    private let themePainter = ThemedLayerPainter()
     private let watcher = DirectoryWatcher()
     private var allItems: [WorkspaceItem] = []
     private var displayedItems: [WorkspaceItem] = []
@@ -515,11 +516,20 @@ final class WorkspaceBrowserViewController: NSViewController {
     var viewModeForTesting: WorkspaceViewMode { effectiveViewMode }
     var galleryIsVisibleForTesting: Bool { galleryScrollView?.isHidden == false }
 
+    /// 明るさを選び直したときに掛け替える。
+    func applyAppearance() {
+        view.appearance = preferences.browserAppearance.nsAppearance
+        themePainter.appearance = view.appearance
+        themePainter.repaint()
+    }
+
     override func loadView() {
-        let root = NSView()
-        root.appearance = NSAppearance(named: .darkAqua)
-        root.wantsLayer = true
-        root.layer?.backgroundColor = IntegratedPanelTheme.background.cgColor
+        let root = ThemedRootView()
+        // ターミナルとは別に明るさを選べる。
+        root.appearance = preferences.browserAppearance.nsAppearance
+        themePainter.appearance = root.appearance
+        root.onAppearanceChanged = { [weak self] in self?.themePainter.repaint() }
+        themePainter.register(root) { IntegratedPanelTheme.background }
         view = root
 
         let split = splitView
@@ -642,13 +652,7 @@ final class WorkspaceBrowserViewController: NSViewController {
 
     private func makeSidebar() -> NSView {
         let root = NSView()
-        root.wantsLayer = true
-        root.layer?.backgroundColor = NSColor(
-            srgbRed: 37.0 / 255.0,
-            green: 37.0 / 255.0,
-            blue: 38.0 / 255.0,
-            alpha: 1
-        ).cgColor
+        themePainter.register(root) { IntegratedPanelTheme.sidebar }
 
         let title = NSTextField(labelWithString: "WORKSPACE")
         title.font = .systemFont(ofSize: 11, weight: .semibold)
@@ -685,8 +689,7 @@ final class WorkspaceBrowserViewController: NSViewController {
 
     private func makeBrowser() -> NSView {
         let root = NSView()
-        root.wantsLayer = true
-        root.layer?.backgroundColor = IntegratedPanelTheme.background.cgColor
+        themePainter.register(root) { IntegratedPanelTheme.background }
         let navigationBar = makeNavigationBar()
         let listScroll = makeFileTable()
         let galleryScroll = makeGalleryView()
@@ -783,8 +786,7 @@ final class WorkspaceBrowserViewController: NSViewController {
     /// froze the app on protected folders.
     private func makeRibbon() -> NSView {
         let bar = NSView()
-        bar.wantsLayer = true
-        bar.layer?.backgroundColor = IntegratedPanelTheme.header.cgColor
+        themePainter.register(bar) { IntegratedPanelTheme.header }
 
         ribbonPath.pathStyle = .standard
         ribbonPath.controlSize = .small
@@ -915,8 +917,7 @@ final class WorkspaceBrowserViewController: NSViewController {
 
     private func makeNavigationBar() -> NSView {
         let bar = NSView()
-        bar.wantsLayer = true
-        bar.layer?.backgroundColor = IntegratedPanelTheme.header.cgColor
+        themePainter.register(bar) { IntegratedPanelTheme.header }
         configureNavigationButton(backButton, symbol: "chevron.left", action: #selector(goBack), label: "戻る")
         configureNavigationButton(forwardButton, symbol: "chevron.right", action: #selector(goForward), label: "進む")
         configureNavigationButton(upButton, symbol: "arrow.up", action: #selector(goUp), label: "親フォルダ")
@@ -1155,8 +1156,7 @@ final class WorkspaceBrowserViewController: NSViewController {
 
     private func makeStatusBar() -> NSView {
         let bar = NSView()
-        bar.wantsLayer = true
-        bar.layer?.backgroundColor = IntegratedPanelTheme.header.cgColor
+        themePainter.register(bar) { IntegratedPanelTheme.header }
         statusLabel.font = .systemFont(ofSize: 10.5)
         statusLabel.textColor = IntegratedPanelTheme.secondaryText
         progress.style = .spinning

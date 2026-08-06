@@ -48,6 +48,8 @@ final class DrawerContentViewController: NSViewController {
     var onCycleSnap: (() -> Void)?
 
     private let sessionManager: any TerminalSessionManaging
+    private let preferences: WorkspacePreferences
+    private let themePainter = ThemedLayerPainter()
     /// The folder the browser is showing. There is no drawer-level "fixed"
     /// mode any more: whether a session moves with this is each session's own
     /// story — shells follow (and actually `cd`), AI sessions stay put, and a
@@ -109,7 +111,8 @@ final class DrawerContentViewController: NSViewController {
     // deinitでしか触らないため、managerのactivationObserverと同じ扱い。
     private nonisolated(unsafe) var sessionsObserver: (any NSObjectProtocol)?
 
-    init(sessionManager: any TerminalSessionManaging) {
+    init(sessionManager: any TerminalSessionManaging, preferences: WorkspacePreferences) {
+        self.preferences = preferences
         self.sessionManager = sessionManager
         super.init(nibName: nil, bundle: nil)
         // `onChange`はconsumerが1つしか持てず、複数ウインドウでは最後のドロワーが
@@ -133,11 +136,21 @@ final class DrawerContentViewController: NSViewController {
         fatalError("init(coder:) has not been implemented")
     }
 
+    /// 明るさを選び直したときに掛け替える。
+    func applyAppearance() {
+        view.appearance = preferences.terminalAppearance.nsAppearance
+        themePainter.appearance = view.appearance
+        themePainter.repaint()
+    }
+
     override func loadView() {
-        let root = NSView()
-        root.appearance = NSAppearance(named: .darkAqua)
-        root.wantsLayer = true
-        root.layer?.backgroundColor = IntegratedPanelTheme.background.cgColor
+        let root = ThemedRootView()
+        // ファイル一覧とは別に明るさを選べる。一覧は明るく、ターミナルは暗く、
+        // という組み合わせが要る。
+        root.appearance = preferences.terminalAppearance.nsAppearance
+        themePainter.appearance = root.appearance
+        root.onAppearanceChanged = { [weak self] in self?.themePainter.repaint() }
+        themePainter.register(root) { IntegratedPanelTheme.background }
         view = root
 
         configureHeader()
@@ -324,16 +337,14 @@ final class DrawerContentViewController: NSViewController {
     }
 
     private func configureHeader() {
-        header.wantsLayer = true
-        header.layer?.backgroundColor = IntegratedPanelTheme.header.cgColor
+        themePainter.register(header) { IntegratedPanelTheme.header }
         // 畳んでいるときだけ開く。開いているときのシングルクリックは何もしない。
         header.onSingleClick = { [weak self] in
             guard let self, !self.expanded else { return }
             self.onToggle?()
         }
         header.onDoubleClick = { [weak self] in self?.onCycleSnap?() }
-        edgeBorder.wantsLayer = true
-        edgeBorder.layer?.backgroundColor = IntegratedPanelTheme.border.cgColor
+        themePainter.register(edgeBorder) { IntegratedPanelTheme.border }
 
         toggleButton.isBordered = false
         toggleButton.font = .systemFont(ofSize: 11, weight: .semibold)
@@ -344,8 +355,7 @@ final class DrawerContentViewController: NSViewController {
         toggleButton.action = #selector(toggle)
         toggleButton.toolTip = "Terminalパネルを開く／隠す（⌘J）— ダブルクリックで大きさを切り替え"
 
-        divider.wantsLayer = true
-        divider.layer?.backgroundColor = IntegratedPanelTheme.border.cgColor
+        themePainter.register(divider) { IntegratedPanelTheme.border }
 
         directoryImage.image = NSImage(
             systemSymbolName: "folder.fill",
@@ -507,10 +517,8 @@ final class DrawerContentViewController: NSViewController {
     }
 
     private func configureBody() {
-        bodyView.wantsLayer = true
-        bodyView.layer?.backgroundColor = IntegratedPanelTheme.terminalBackground.cgColor
-        terminalContainer.wantsLayer = true
-        terminalContainer.layer?.backgroundColor = IntegratedPanelTheme.terminalBackground.cgColor
+        themePainter.register(bodyView) { IntegratedPanelTheme.terminalBackground }
+        themePainter.register(terminalContainer) { IntegratedPanelTheme.terminalBackground }
 
         let emptyIcon = NSImageView(image: NSImage(
             systemSymbolName: "terminal",

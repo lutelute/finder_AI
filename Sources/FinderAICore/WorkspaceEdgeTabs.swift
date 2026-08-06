@@ -140,6 +140,24 @@ public enum WorkspaceWindowPeek: String, CaseIterable, Sendable {
     }
 }
 
+/// 明るさの選び方。ファイル一覧とターミナルで別々に持つ。
+///
+/// 一覧は明るく、ターミナルは暗く——という組み合わせが要る。片方だけ変えたい
+/// のに両方変わってしまうと、どちらかを諦めることになる。
+public enum WorkspaceAppearance: String, CaseIterable, Sendable {
+    case system
+    case light
+    case dark
+
+    public var title: String {
+        switch self {
+        case .system: "システムに合わせる"
+        case .light: "ライト"
+        case .dark: "ダーク"
+        }
+    }
+}
+
 /// タブを出す画面の縁。
 public enum WorkspaceScreenEdge: String, CaseIterable, Sendable {
     case left

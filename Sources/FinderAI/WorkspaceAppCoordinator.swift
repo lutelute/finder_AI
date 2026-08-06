@@ -558,6 +558,38 @@ final class WorkspaceAppCoordinator {
 
     var currentWindowPeek: WorkspaceWindowPeek { preferences.windowPeek }
 
+    @objc func setBrowserAppearance(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let mode = WorkspaceAppearance(rawValue: raw) else { return }
+        preferences.browserAppearance = mode
+        windows.forEach { $0.applyAppearance() }
+        sender.menu?.items.forEach { $0.state = ($0 === sender) ? .on : .off }
+    }
+
+    @objc func setTerminalAppearance(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let mode = WorkspaceAppearance(rawValue: raw) else { return }
+        preferences.terminalAppearance = mode
+        windows.forEach { $0.applyAppearance() }
+        sender.menu?.items.forEach { $0.state = ($0 === sender) ? .on : .off }
+    }
+
+    private func refreshAppearanceMenus() {
+        for (title, current) in [
+            ("ファイル一覧の明るさ", preferences.browserAppearance.rawValue),
+            ("ターミナルの明るさ", preferences.terminalAppearance.rawValue)
+        ] {
+            guard let submenu = NSApp.mainMenu?
+                .items.compactMap(\.submenu).first(where: { $0.title == "表示" })?
+                .items.first(where: { $0.submenu?.title == title })?
+                .submenu else { continue }
+            for item in submenu.items {
+                guard let raw = item.representedObject as? String else { continue }
+                item.state = raw == current ? .on : .off
+            }
+        }
+    }
+
     private func refreshWindowPeekMenu() {
         guard let submenu = NSApp.mainMenu?
             .items.compactMap(\.submenu).first(where: { $0.title == "表示" })?
@@ -764,6 +796,7 @@ final class WorkspaceAppCoordinator {
         // 印は組み上げたあとで付ける。`makeMainMenu`はテストのためにアプリの
         // 状態へ触れない約束になっている。
         refreshWindowPeekMenu()
+        refreshAppearanceMenus()
     }
 
     /// Built without touching app state so the key-equivalent table can be
@@ -999,6 +1032,25 @@ final class WorkspaceAppCoordinator {
         let peekItem = NSMenuItem(title: "ウインドウ一覧の覗き方", action: nil, keyEquivalent: "")
         peekItem.submenu = peekMenu
         viewMenu.addItem(peekItem)
+
+        viewMenu.addItem(.separator())
+        // 一覧とターミナルで別々に選べる。一覧は明るく、ターミナルは暗く、と
+        // いう組み合わせが要る。
+        for (title, selector) in [
+            ("ファイル一覧の明るさ", #selector(WorkspaceAppCoordinator.setBrowserAppearance(_:))),
+            ("ターミナルの明るさ", #selector(WorkspaceAppCoordinator.setTerminalAppearance(_:)))
+        ] {
+            let submenu = NSMenu(title: title)
+            for mode in WorkspaceAppearance.allCases {
+                let entry = NSMenuItem(title: mode.title, action: selector, keyEquivalent: "")
+                entry.target = coordinator
+                entry.representedObject = mode.rawValue
+                submenu.addItem(entry)
+            }
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            item.submenu = submenu
+            viewMenu.addItem(item)
+        }
         viewMenu.addItem(.separator())
         viewMenu.addItem(item("このフォルダを検索", action: #selector(WorkspaceBrowserViewController.focusSearchField), key: "f"))
         viewMenu.addItem(item("パスを入力…", action: #selector(WorkspaceBrowserViewController.beginPathEditing), key: "l"))

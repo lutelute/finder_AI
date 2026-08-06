@@ -23,6 +23,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     private var positioned = false
     private let preferences: WorkspacePreferences
     private let sessionManager: any TerminalSessionManaging
+    private let themePainter = ThemedLayerPainter()
     private var rootController: NSViewController!
 
     /// このウインドウの通し番号。閉じても詰め直さないので、セッション中ずっと
@@ -54,12 +55,16 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             preferences: preferences
         )
         activePane = leftPane
-        terminal = DrawerContentViewController(sessionManager: sessionManager)
+        terminal = DrawerContentViewController(
+            sessionManager: sessionManager,
+            preferences: preferences
+        )
         let rootController = NSViewController()
-        let root = NSView()
-        root.appearance = NSAppearance(named: .darkAqua)
-        root.wantsLayer = true
-        root.layer?.backgroundColor = IntegratedPanelTheme.background.cgColor
+        let root = ThemedRootView()
+        // ウインドウ全体はファイル一覧に合わせる。ここは一覧とターミナルの
+        // すき間で、どちらつかずの明るさだと境目だけ浮く。
+        root.appearance = preferences.browserAppearance.nsAppearance
+        themePainter.appearance = root.appearance
         rootController.view = root
 
         let window = NSWindow(
@@ -85,6 +90,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         window.tabbingIdentifier = "FinderAIWorkspace"
         window.contentViewController = rootController
         super.init(window: window)
+        // 塗りの控えはsuper.initの後で。それより前は自分を触れない。
+        root.onAppearanceChanged = { [weak self] in self?.themePainter.repaint() }
+        themePainter.register(root) { IntegratedPanelTheme.background }
         window.delegate = self
 
         rootController.addChild(leftPane)
@@ -148,6 +156,17 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    /// 明るさを選び直したときに、この1枚ぶんを掛け替える。
+    func applyAppearance() {
+        let wanted = preferences.browserAppearance.nsAppearance
+        window?.contentViewController?.view.appearance = wanted
+        themePainter.appearance = wanted
+        themePainter.repaint()
+        leftPane.applyAppearance()
+        rightPane?.applyAppearance()
+        terminal.applyAppearance()
     }
 
     func show() {

@@ -51,6 +51,28 @@ struct WorkspacePreferences {
         static let edgeTabsFollowsPointer = "workspace.edgeTabsFollowsPointer"
         static let edgeTabsAccordion = "workspace.edgeTabsAccordion"
         static let windowPeek = "workspace.windowPeek"
+        static let browserAppearance = "workspace.browserAppearance"
+        static let terminalAppearance = "workspace.terminalAppearance"
+    }
+
+    /// ファイル一覧の明るさ。
+    var browserAppearance: WorkspaceAppearance {
+        get { Self.appearance(defaults.string(forKey: Key.browserAppearance)) }
+        nonmutating set { defaults.set(newValue.rawValue, forKey: Key.browserAppearance) }
+    }
+
+    /// ターミナルの明るさ。一覧とは別に持つ——一覧は明るく、ターミナルは暗く、
+    /// という組み合わせが要る。
+    var terminalAppearance: WorkspaceAppearance {
+        get { Self.appearance(defaults.string(forKey: Key.terminalAppearance)) }
+        nonmutating set { defaults.set(newValue.rawValue, forKey: Key.terminalAppearance) }
+    }
+
+    /// 既定はダーク。これまでずっとダーク一色だったので、何も選んでいない人の
+    /// 見た目を変えない。
+    private static func appearance(_ raw: String?) -> WorkspaceAppearance {
+        guard let raw, let value = WorkspaceAppearance(rawValue: raw) else { return .dark }
+        return value
     }
 
     /// ウインドウの一覧で、行に触れたときの見せ方。
