@@ -55,12 +55,12 @@ struct WorkspacePreferences {
 
     /// ウインドウの一覧で、行に触れたときの見せ方。
     ///
-    /// 既定は枠。前面へ浮かせるのがいちばん確かだが、そのあいだ他のアプリを
-    /// 覆う——覗くたびに画面が切り替わるのは、探しているあいだずっと続く。
+    /// 既定は前面へ出して枠で囲む。前に出すだけだと、覗いた1枚と元から手前に
+    /// いた1枚の区別が付かない。他のアプリを覆いたくないときは、枠だけにできる。
     var windowPeek: WorkspaceWindowPeek {
         get {
             guard let raw = defaults.string(forKey: Key.windowPeek),
-                  let mode = WorkspaceWindowPeek(rawValue: raw) else { return .outline }
+                  let mode = WorkspaceWindowPeek(rawValue: raw) else { return .lift }
             return mode
         }
         nonmutating set { defaults.set(newValue.rawValue, forKey: Key.windowPeek) }

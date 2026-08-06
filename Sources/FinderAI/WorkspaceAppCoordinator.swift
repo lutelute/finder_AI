@@ -506,6 +506,9 @@ final class WorkspaceAppCoordinator {
         case .lift:
             target.level = Self.previewLevel
             previewLifted = target
+            // 枠も一緒に回す。前に出すだけだと、覗いた1枚と元から手前にいた
+            // 1枚が並んだとき、どちらを見ているのか分からない。
+            peekOutline.show(around: target.frame)
         case .outline:
             peekOutline.show(around: target.frame)
         case .thumbnail:

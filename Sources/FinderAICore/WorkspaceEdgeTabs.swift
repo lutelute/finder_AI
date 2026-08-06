@@ -124,15 +124,18 @@ public enum WorkspaceWindowPeek: String, CaseIterable, Sendable {
     case thumbnail
     /// 何もしない。押してはじめて前に出る。
     case off
-    /// そのウインドウを前面へ浮かせる。
+    /// そのウインドウを前面へ浮かせ、あわせて枠で囲む。
+    ///
+    /// 前に出すだけだと、覗いた1枚と元から手前にいた1枚の区別が付かない。
+    /// 枠が付いていれば、どれが覗いているものかは見た瞬間に分かる。
     case lift
 
     public var title: String {
         switch self {
-        case .outline: "枠で場所を示す"
+        case .outline: "枠で場所を示すだけ"
         case .thumbnail: "縮小して中身を見せる"
         case .off: "何もしない（押したときだけ）"
-        case .lift: "前面に浮かせる"
+        case .lift: "前面に出して枠で囲む"
         }
     }
 }
