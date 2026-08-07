@@ -198,6 +198,18 @@ final class DrawerContentViewController: NSViewController {
         root.appearance = preferences.terminalAppearance.nsAppearance
         themePainter.appearance = root.appearance
         root.onAppearanceChanged = { [weak self] in self?.themePainter.repaint() }
+        // ターミナルへ渡る前に、セッションを回す鍵だけ横から取る。
+        root.onKeyEquivalent = { [weak self] event in
+            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            guard let shortcut = SessionCycleShortcut.match(
+                characters: event.charactersIgnoringModifiers,
+                hasCommand: modifiers.contains(.command),
+                hasOption: modifiers.contains(.option),
+                hasOtherModifiers: !modifiers.subtracting([.command, .option]).isEmpty
+            ) else { return false }
+            self?.selectAdjacentSession(offset: shortcut.offset)
+            return true
+        }
         themePainter.register(root) { IntegratedPanelTheme.background }
         view = root
 
@@ -1029,6 +1041,22 @@ final class DrawerContentViewController: NSViewController {
 
     @objc private func showHiddenSessions() {
         onManageSessions?()
+    }
+
+    /// 帯の並びで前後のセッションへ移る。
+    ///
+    /// 帯に入り切らず数へ送られたぶんも並びには居るので、押せる的が
+    /// 無くてもここから辿り着ける。
+    func selectAdjacentSession(offset: Int) {
+        guard let next = DrawerSessionTabs.adjacentID(
+            in: renderedTabs.map(\.id),
+            from: activeSession?.id,
+            offset: offset
+        ), let session = visibleSessions.first(where: { $0.id == next }) else { return }
+        activeSession = session
+        reloadSessions(prefer: session, takesOverMountedElsewhere: true)
+        if !expanded { onToggle?() }
+        view.window?.makeFirstResponder(session.contentView)
     }
 
     @objc private func togglePlacement() {

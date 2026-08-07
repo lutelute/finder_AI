@@ -84,6 +84,26 @@ enum DrawerSessionTabs {
         }
     }
 
+    /// 帯の並びで、今の1本から前後へ辿った先。
+    ///
+    /// 端で折り返す。帯に入り切らず数へ送られたぶんも並びには居るので、
+    /// 押せる的が無くてもキーボードなら辿り着ける——溢れたセッションへの
+    /// 戻り道がこれで1つ増える。
+    static func adjacentID(
+        in order: [UUID],
+        from current: UUID?,
+        offset: Int
+    ) -> UUID? {
+        guard !order.isEmpty else { return nil }
+        guard let current, let index = order.firstIndex(of: current) else {
+            // 今どれも選んでいないなら、進むなら先頭、戻るなら末尾。
+            return offset >= 0 ? order.first : order.last
+        }
+        let count = order.count
+        let moved = ((index + offset) % count + count) % count
+        return order[moved]
+    }
+
     /// 並べる順。
     ///
     /// 今いる場所のものを先頭へ寄せる。帯が溢れて後ろが削られるとき、

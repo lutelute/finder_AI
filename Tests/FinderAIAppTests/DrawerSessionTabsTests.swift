@@ -79,6 +79,30 @@ struct DrawerSessionTabsTests {
         #expect(rows.map(\.id) == [a, b, c])
     }
 
+    @Test("前後の巡回は端で折り返す")
+    func cyclingWrapsAround() {
+        let a = UUID(), b = UUID(), c = UUID()
+        let order = [a, b, c]
+        #expect(DrawerSessionTabs.adjacentID(in: order, from: a, offset: 1) == b)
+        #expect(DrawerSessionTabs.adjacentID(in: order, from: c, offset: 1) == a)
+        #expect(DrawerSessionTabs.adjacentID(in: order, from: a, offset: -1) == c)
+        #expect(DrawerSessionTabs.adjacentID(in: order, from: b, offset: -1) == a)
+    }
+
+    @Test("まだ選んでいなければ、進むなら先頭・戻るなら末尾から始める")
+    func cyclingWithoutASelectionStartsAtAnEnd() {
+        let a = UUID(), b = UUID()
+        #expect(DrawerSessionTabs.adjacentID(in: [a, b], from: nil, offset: 1) == a)
+        #expect(DrawerSessionTabs.adjacentID(in: [a, b], from: nil, offset: -1) == b)
+        // 並びから消えたセッションを起点にされても、同じ扱いで拾う。
+        #expect(DrawerSessionTabs.adjacentID(in: [a, b], from: UUID(), offset: 1) == a)
+    }
+
+    @Test("1本も無ければ巡回先も無い")
+    func cyclingAnEmptyStripGoesNowhere() {
+        #expect(DrawerSessionTabs.adjacentID(in: [], from: nil, offset: 1) == nil)
+    }
+
     @Test("種類はタブが持つ。記号と色で読まずに見分けるため")
     func kindTravelsWithTheRow() {
         let rows = DrawerSessionTabs.rows(

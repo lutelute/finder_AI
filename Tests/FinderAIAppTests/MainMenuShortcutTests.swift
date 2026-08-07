@@ -37,6 +37,19 @@ struct MainMenuShortcutTests {
         }
     }
 
+    /// ⌃Tabはターミナルが自分宛ての入力として食べてしまい、メニューまで
+    /// 届かなかった（実機で確認）。⌘つきなら通る。
+    @Test("セッションの巡回は⌘⌥←／⌘⌥→。ターミナルに食われない組み合わせ")
+    func sessionCyclingUsesCommandOptionArrows() {
+        let next = item("次のTerminalセッション")
+        #expect(next?.keyEquivalent == String(UnicodeScalar(NSRightArrowFunctionKey)!))
+        #expect(next?.keyEquivalentModifierMask == [.command, .option])
+
+        let previous = item("前のTerminalセッション")
+        #expect(previous?.keyEquivalent == String(UnicodeScalar(NSLeftArrowFunctionKey)!))
+        #expect(previous?.keyEquivalentModifierMask == [.command, .option])
+    }
+
     @Test("⌘D duplicates and pinning moves to ⌃⌘T, as in Finder")
     func duplicateOwnsCommandD() {
         let duplicate = item("複製")

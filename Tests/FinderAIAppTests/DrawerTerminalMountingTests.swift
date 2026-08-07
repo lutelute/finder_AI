@@ -166,6 +166,47 @@ struct DrawerTerminalMountingTests {
         #expect(rootView(of: session.contentView) === drawerA.view)
     }
 
+    @Test("⌃Tabの巡回は、帯に的が無いセッションにも届く")
+    func cyclingReachesSessionsWithoutAVisibleTab() throws {
+        let preferences = makePreferences(#function)
+        let manager = TerminalSessionManager(
+            builder: DrawerMockBuilder(),
+            commandLocator: DrawerMockLocator(),
+            registry: InMemorySessionRegistryStore(records: [])
+        )
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("drawer-a")
+        let drawer = makeDrawer(manager: manager, preferences: preferences, directory: folder)
+
+        // 同じフォルダに3種。帯が狭くて全部の的が出ないことがあっても、
+        // 巡回は並びを辿るので全部に届く。
+        let shell = try manager.create(kind: .shell, directoryURL: folder)
+        let codex = try manager.create(kind: .codex, directoryURL: folder)
+        let claude = try manager.create(kind: .claude, directoryURL: folder)
+        let all = Set([shell.id, codex.id, claude.id])
+
+        // 出ている中身がどれかは、ビューがこのドロワーに載っているかで分かる。
+        func mountedID() -> UUID? {
+            manager.allSessions.first {
+                rootView(of: $0.contentView) === drawer.view
+            }?.id
+        }
+
+        var visited: Set<UUID> = []
+        for _ in 0..<3 {
+            drawer.selectAdjacentSession(offset: 1)
+            if let id = mountedID() { visited.insert(id) }
+        }
+        #expect(visited == all)
+
+        // 逆回しでも辿れる。
+        var backwards: Set<UUID> = []
+        for _ in 0..<3 {
+            drawer.selectAdjacentSession(offset: -1)
+            if let id = mountedID() { backwards.insert(id) }
+        }
+        #expect(backwards == all)
+    }
+
     @Test("畳んだパネルでタブを押すと本体も開く")
     func clickingTabExpandsCollapsedPanel() throws {
         let preferences = makePreferences(#function)

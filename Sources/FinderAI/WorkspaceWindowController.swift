@@ -293,6 +293,16 @@ extension WorkspaceWindowController: NSSplitViewDelegate {
         setTerminalExpanded(!terminalExpanded)
     }
 
+    /// ⌃Tab／⌃⇧Tab。帯が詰まって数へ送られたセッションにも、ここからなら
+    /// 辿り着ける——押せる的が無くても回れば必ず来る。
+    @objc func selectNextSession() {
+        terminal.selectAdjacentSession(offset: 1)
+    }
+
+    @objc func selectPreviousSession() {
+        terminal.selectAdjacentSession(offset: -1)
+    }
+
     /// ⌘⌥J、ヘッダーの配置ボタン、設定ウインドウの共通の出口。
     @objc func toggleTerminalEdge() {
         setTerminalEdge(terminalEdge.opposite)

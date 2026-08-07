@@ -1019,6 +1019,26 @@ final class WorkspaceAppCoordinator {
         )
         terminalSize.keyEquivalentModifierMask = [.command, .shift]
         viewMenu.addItem(terminalSize)
+        // タブが増えるほど、狙って押すより回したほうが速い。
+        //
+        // ⌃Tabではなく⌘⌥矢印にしてある。⌃Tabはターミナルが自分宛ての入力と
+        // して食べてしまい、メニューまで届かなかった（実機で確認）。⌘つきの
+        // 組み合わせなら通る。矢印はJISでも英字配列でも同じ的なので、
+        // ⌘⇧[ ／ ⌘⇧] のように配列で位置が変わることもない。
+        let nextSession = item(
+            "次のTerminalセッション",
+            action: #selector(WorkspaceWindowController.selectNextSession),
+            key: String(UnicodeScalar(NSRightArrowFunctionKey)!)
+        )
+        nextSession.keyEquivalentModifierMask = [.command, .option]
+        viewMenu.addItem(nextSession)
+        let previousSession = item(
+            "前のTerminalセッション",
+            action: #selector(WorkspaceWindowController.selectPreviousSession),
+            key: String(UnicodeScalar(NSLeftArrowFunctionKey)!)
+        )
+        previousSession.keyEquivalentModifierMask = [.command, .option]
+        viewMenu.addItem(previousSession)
         // 永続化と出力ログのトグルは設定ウインドウ（⌘,）にある。メニューに残すのは
         // 動作だけで、状態の置き場にはしない。
         let manageSessions = NSMenuItem(
