@@ -18,7 +18,7 @@ struct SessionCountSummaryTests {
         let summary = SessionCountSummary(attached: 2, detached: 0)
         #expect(summary.badgeText == "2")
         #expect(summary.statusTooltip == "実行中2件")
-        #expect(summary.manageTooltip == "Terminalセッションを管理 — 実行中2件（⌘⌥T）")
+        #expect(summary.manageTooltip == "Terminalセッションを管理 — 実行中2件（⌘⇧T）")
     }
 
     @Test("混ざっているときは合計を出し、内訳を添える")
@@ -26,7 +26,7 @@ struct SessionCountSummaryTests {
         let summary = SessionCountSummary(attached: 2, detached: 5)
         #expect(summary.total == 7)
         #expect(summary.badgeText == "7")
-        #expect(summary.manageTooltip == "Terminalセッションを管理 — 実行中7件（うち5件は未接続）（⌘⌥T）")
+        #expect(summary.manageTooltip == "Terminalセッションを管理 — 実行中7件（うち5件は未接続）（⌘⇧T）")
     }
 
     @Test("1つも動いていなければ、帯には何も出さない")
@@ -35,7 +35,7 @@ struct SessionCountSummaryTests {
         #expect(summary.isIdle)
         #expect(summary.badgeText.isEmpty)
         #expect(summary.statusTooltip == "実行中のセッションはありません")
-        #expect(summary.manageTooltip == "すべてのTerminalセッションを管理（⌘⌥T）")
+        #expect(summary.manageTooltip == "すべてのTerminalセッションを管理（⌘⇧T）")
     }
 
     @Test("負の数を渡されても0として扱う")
