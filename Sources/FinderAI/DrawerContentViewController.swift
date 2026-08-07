@@ -762,18 +762,20 @@ final class DrawerContentViewController: NSViewController {
             ? IntegratedPanelTheme.accent
             : IntegratedPanelTheme.secondaryText
         closeButton.isEnabled = activeSession != nil
-        let runningCount = sessionManager.runningCount
-        manageSessionsButton.toolTip = runningCount == 0
-            ? "すべてのTerminalセッションを管理（⌘⌥T）"
-            : "Terminalセッションを管理 — 実行中\(runningCount)件（⌘⌥T）"
-        stripBadge.stringValue = runningCount == 0 ? "" : "\(runningCount)"
-        stripBadge.isHidden = runningCount == 0
-        stripStatusIcon.contentTintColor = runningCount == 0
+        // tmuxで生きているぶんも数える。アプリを開き直した直後はこちらしか
+        // 無く、繋いだ数だけを見せると「実行中0件」になる——動いているAIが
+        // 1つも無いように読めてしまう。
+        let summary = SessionCountSummary(
+            attached: sessionManager.runningCount,
+            detached: sessionManager.detachedRunningCount
+        )
+        manageSessionsButton.toolTip = summary.manageTooltip
+        stripBadge.stringValue = summary.badgeText
+        stripBadge.isHidden = summary.badgeText.isEmpty
+        stripStatusIcon.contentTintColor = summary.isIdle
             ? IntegratedPanelTheme.secondaryText
             : IntegratedPanelTheme.accent
-        stripStatusIcon.toolTip = runningCount == 0
-            ? "実行中のセッションはありません"
-            : "実行中\(runningCount)件"
+        stripStatusIcon.toolTip = summary.statusTooltip
         newSessionButton.isEnabled = directoryURL != nil
         newSessionButton.toolTip = "現在のFinderフォルダで新しいTerminalセッション"
         codexButton.isEnabled = sessionManager.canStart(.codex)

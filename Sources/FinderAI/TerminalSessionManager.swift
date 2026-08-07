@@ -82,6 +82,16 @@ final class TerminalSessionManager: TerminalSessionManaging {
         sessionsByKey.values.filter { $0.isRunning && $0.persistence == nil }.count
     }
 
+    /// tmuxで生きているのに、このアプリが繋いでいないもの。
+    ///
+    /// アプリを開き直した直後はここに全部入る——`runningCount`だけを見せると
+    /// 「実行中0件」と出て、動いているAIが1つも無いように読める。それが
+    /// 「AIに復帰できない、表示できない」の見え方だった。
+    var detachedRunningCount: Int {
+        let attached = Set(sessionsByKey.values.compactMap { $0.persistence?.sessionName })
+        return persistentSessionInfos.filter { !attached.contains($0.name) }.count
+    }
+
     var allSessions: [any ManagedTerminalSession] {
         insertionOrder.compactMap { sessionsByKey[$0] }
     }

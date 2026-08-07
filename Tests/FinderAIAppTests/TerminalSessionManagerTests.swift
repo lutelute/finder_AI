@@ -203,6 +203,51 @@ struct TerminalSessionManagerTests {
         #expect(lost.endedAt != nil)
     }
 
+    @Test("繋いでいるtmuxセッションは未接続として二重に数えない")
+    func detachedCountExcludesAttachedSessions() async throws {
+        let tmuxURL = URL(fileURLWithPath: "/mock/bin/tmux")
+        let controller = RecordingTmuxController()
+        let folder = URL(fileURLWithPath: "/tmp/counted", isDirectory: true)
+        let attachedName = TmuxSessionNaming.sessionName(
+            for: TerminalSessionKey(directoryURL: folder, kind: .claude)
+        )
+        await controller.setSessions([
+            TmuxSessionInfo(
+                name: attachedName,
+                workingDirectoryPath: folder.path,
+                isAttached: true
+            ),
+            TmuxSessionInfo(
+                name: "finderai-claude-999999999999",
+                workingDirectoryPath: "/tmp/elsewhere",
+                isAttached: false
+            )
+        ])
+        let preferences = isolatedPreferences("detached-count")
+        preferences.persistentSessions = true
+        let manager = TerminalSessionManager(
+            builder: MockSessionBuilder(),
+            commandLocator: MockCommandLocator(commands: [
+                "tmux": tmuxURL,
+                "claude": URL(fileURLWithPath: "/mock/bin/claude")
+            ]),
+            preferences: preferences,
+            tmuxController: controller
+        )
+        try await eventually { manager.persistentSessions.count == 2 }
+
+        // まだ何も繋いでいないので、生きている2つとも未接続。
+        #expect(manager.detachedRunningCount == 2)
+
+        // 片方へ繋ぐと、そちらは未接続から外れる。
+        _ = try manager.create(
+            kind: TerminalSessionKind.claude,
+            directoryURL: folder,
+            resumingConversation: false
+        )
+        #expect(manager.detachedRunningCount == 1)
+    }
+
     @Test("前回の続きの求めはビルダーまで届く")
     func createThreadsResumeFlagToBuilder() throws {
         let builder = MockSessionBuilder()

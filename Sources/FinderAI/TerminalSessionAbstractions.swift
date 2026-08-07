@@ -85,6 +85,8 @@ protocol TerminalSessionManaging: AnyObject {
     var runningCount: Int { get }
     /// 実行中のうち、アプリが死んだら消えるもの（persistence無し）の数。
     var runningEphemeralCount: Int { get }
+    /// tmuxで生きているのに、このアプリが繋いでいないものの数。
+    var detachedRunningCount: Int { get }
     var allSessions: [any ManagedTerminalSession] { get }
     var sessionRecords: [TerminalSessionRecord] { get }
 
