@@ -64,6 +64,11 @@ public enum TerminalLaunchPlanner {
             arguments.append(base.executable)
             arguments.append(contentsOf: base.arguments)
         }
+        // tmuxのステータス行は消す。タブもフォルダ名もドロワーが見せていて、
+        // 幅30桁では「[finderai-…」の切れ端にしかならない。`;`区切りの後続
+        // コマンドは-Aで既存セッションへアタッチしたときも走るので、
+        // 昔のセッションも次の接続から綺麗になる。
+        arguments.append(contentsOf: [";", "set-option", "status", "off"])
         return Plan(
             executable: persistence.tmuxExecutableURL.path,
             arguments: arguments
