@@ -1053,8 +1053,12 @@ final class WorkspaceAppCoordinator {
         manageSessions.keyEquivalentModifierMask = [.command, .shift]
         manageSessions.target = coordinator
         viewMenu.addItem(manageSessions)
+        // ⌥⌘Sではなく⌃⌘S。⌥⌘Sはこの環境でアプリまで届かない（3回送っても
+        // 無反応、メニューから選べば動く。⌥⌘Jや⌥⌘2は同じ経路で届くので、
+        // ⌥⌘Sだけが誰かに押さえられている）。⌃⌘系はこのアプリの
+        // ⌃⌘A／⌃⌘T／⌃⌘Eと同じ並びでもある。
         let split = item("2画面に分割／解除", action: #selector(WorkspaceWindowController.toggleSplit), key: "s")
-        split.keyEquivalentModifierMask = [.command, .option]
+        split.keyEquivalentModifierMask = [.command, .control]
         viewMenu.addItem(split)
         let hidden = item("隠しファイルを表示／隠す", action: #selector(WorkspaceBrowserViewController.toggleHiddenFiles), key: ".")
         hidden.keyEquivalentModifierMask = [.command, .shift]

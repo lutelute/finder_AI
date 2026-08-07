@@ -37,6 +37,20 @@ struct MainMenuShortcutTests {
         }
     }
 
+    /// ⌥⌘Sはこの環境でアプリまで届かなかった（3回送っても無反応、メニューから
+    /// 選べば動く）。⌥⌘Jや⌥⌘2は同じ経路で届くので、⌥⌘Sだけが押さえられている。
+    @Test("2画面分割は⌥⌘Sを名乗らない。届かない鍵は書かない")
+    func splitAvoidsTheDeadOptionCommandS() {
+        let split = item("2画面に分割／解除")
+        #expect(split?.keyEquivalent == "s")
+        #expect(split?.keyEquivalentModifierMask == [.command, .control])
+
+        let dead = items(in: menu()).filter {
+            $0.keyEquivalent == "s" && $0.keyEquivalentModifierMask == [.command, .option]
+        }
+        #expect(dead.isEmpty)
+    }
+
     /// ⌥⌘TはmacOSが「ツールバーを表示/隠す」用に押さえていて、こちらの
     /// 項目まで届かない（⌥⌘Jや⌘,は同じ経路で届いたので、⌥⌘Tだけの問題だと
     /// 切り分けた）。メニューに書いてあるのに押しても何も起きない鍵は、
