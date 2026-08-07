@@ -18,18 +18,20 @@ struct DrawerTabStripPlannerTests {
         #expect(plan.overflow == 0)
     }
 
-    @Test("それでも入らなければ、名前も落として印だけにする")
-    func thenNamesGoAndIconsRemain() {
-        let plan = DrawerTabStripPlanner.plan(tabCount: 20, availableWidth: 900)
-        #expect(plan.display == .iconOnly)
-        #expect(plan.visibleCount == 20)
+    @Test("それでも入らなければ、記号と2文字まで詰める")
+    func thenNamesShrinkToTwoLetters() {
+        // compact(48)なら900に17本まで。名前を出す余地は無いが、
+        // 2文字は残るので場所の頭で見分けられる。
+        let plan = DrawerTabStripPlanner.plan(tabCount: 17, availableWidth: 900)
+        #expect(plan.display == .compact)
+        #expect(plan.visibleCount == 17)
         #expect(plan.overflow == 0)
     }
 
     @Test("印だけでも入らないぶんは、隠さず数で示す")
     func theRestBecomesACount() {
         let plan = DrawerTabStripPlanner.plan(tabCount: 60, availableWidth: 400)
-        #expect(plan.display == .iconOnly)
+        #expect(plan.display == .compact)
         #expect(plan.overflow > 0)
         #expect(plan.visibleCount + plan.overflow == 60)
         // チップのぶんを空けてから並べる。詰め込んでチップが消えては、
@@ -39,11 +41,11 @@ struct DrawerTabStripPlannerTests {
         #expect(used + Double(DrawerTabStripPlanner.overflowChipWidth) <= 400)
     }
 
-    @Test("右辺は段を積んで、細くても本数を稼ぐ")
-    func extraRowsBuyCapacityOnTheNarrowEdge() {
-        // 右辺のパネル幅の目安300pt。1段だと印だけで8本ほど。
-        let single = DrawerTabStripPlanner.plan(tabCount: 16, availableWidth: 300, rowCount: 1)
-        let double = DrawerTabStripPlanner.plan(tabCount: 16, availableWidth: 300, rowCount: 2)
+    @Test("段を積めば本数を稼げる")
+    func extraRowsBuyCapacity() {
+        // 右辺のパネル幅の目安400pt。1段では詰めても7本ほど。
+        let single = DrawerTabStripPlanner.plan(tabCount: 12, availableWidth: 400, rowCount: 1)
+        let double = DrawerTabStripPlanner.plan(tabCount: 12, availableWidth: 400, rowCount: 2)
         #expect(single.overflow > 0)
         #expect(double.overflow == 0)
     }
