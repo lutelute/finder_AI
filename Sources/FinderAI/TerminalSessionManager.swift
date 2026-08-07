@@ -458,9 +458,12 @@ final class TerminalSessionManager: TerminalSessionManaging {
     }
 
     func setRole(for session: any ManagedTerminalSession, to role: String?) {
-        guard let recordID = recordIDsBySessionID[session.id],
-              var record = registry.records.first(where: { $0.id == recordID })
-        else { return }
+        guard let recordID = recordIDsBySessionID[session.id] else { return }
+        setSessionRecordRole(id: recordID, role: role)
+    }
+
+    func setSessionRecordRole(id: UUID, role: String?) {
+        guard var record = registry.records.first(where: { $0.id == id }) else { return }
         let trimmed = role?.trimmingCharacters(in: .whitespacesAndNewlines)
         record.role = trimmed.flatMap { $0.isEmpty ? nil : $0 }
         registry.upsert(record)

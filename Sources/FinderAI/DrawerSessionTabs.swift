@@ -22,6 +22,9 @@ enum DrawerSessionTabs {
         /// ⌘⌥Tで付けた名前。同じフォルダにClaudeが何本も並ぶと種類名だけでは
         /// 区別が付かないので、付けてあればタブはこちらを名乗る。
         let customName: String?
+        /// 起動時に渡した役割。タブでは全文を出さずツールチップに回す——
+        /// 帯は狭く、役割は文章になるので。
+        let role: String?
         let directoryURL: URL
         let isRunning: Bool
         let isAnchored: Bool
@@ -30,6 +33,7 @@ enum DrawerSessionTabs {
             id: UUID,
             kindName: String,
             customName: String? = nil,
+            role: String? = nil,
             directoryURL: URL,
             isRunning: Bool,
             isAnchored: Bool = false
@@ -37,6 +41,7 @@ enum DrawerSessionTabs {
             self.id = id
             self.kindName = kindName
             self.customName = customName
+            self.role = role
             self.directoryURL = directoryURL
             self.isRunning = isRunning
             self.isAnchored = isAnchored
@@ -64,10 +69,15 @@ enum DrawerSessionTabs {
             if source.isAnchored { name = "📌 \(name)" }
             let heading = source.customName.map { "\($0)（\(source.kindName)）" }
                 ?? source.kindName
+            // 役割を持たせてあることは印で分かるようにする。決めたのに
+            // どこにも出ないと、決めたこと自体を忘れる。
+            let roleLine = source.role.map { "役割: \($0)\n" } ?? ""
+            let title = belongsToCurrentFolder ? name : "\(name) · \(folder)"
             return DrawerSessionTab(
                 id: source.id,
-                title: belongsToCurrentFolder ? name : "\(name) · \(folder)",
+                title: source.role == nil ? title : "\(title) ✳︎",
                 tooltip: "\(heading) — \(directory.path(percentEncoded: false))\n"
+                    + roleLine
                     + "ダブルクリックでこの場所をブラウザに表示",
                 isRunning: source.isRunning,
                 isActive: source.id == activeID,

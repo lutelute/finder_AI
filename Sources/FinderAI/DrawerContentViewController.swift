@@ -688,6 +688,7 @@ final class DrawerContentViewController: NSViewController {
                     id: $0.id,
                     kindName: $0.kind.displayName,
                     customName: sessionManager.customName(for: $0),
+                    role: sessionManager.role(for: $0),
                     directoryURL: $0.directoryURL,
                     isRunning: $0.isRunning,
                     isAnchored: $0.isAnchored

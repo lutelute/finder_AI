@@ -143,6 +143,37 @@ struct DrawerSessionTabsTests {
         #expect(rows.map(\.title) == ["📌 ●  ビルド番 · projectB"])
     }
 
+    @Test("役割を持たせたタブには印が付き、全文はツールチップに出る")
+    func roleGetsAMarkAndTooltipLine() {
+        let rows = DrawerSessionTabs.rows(
+            sources: [
+                DrawerSessionTabs.Source(
+                    id: UUID(),
+                    kindName: "Claude",
+                    customName: "査読担当",
+                    role: "査読者として振る舞う",
+                    directoryURL: home,
+                    isRunning: true
+                )
+            ],
+            currentDirectory: home,
+            activeID: nil
+        )
+        #expect(rows.map(\.title) == ["●  査読担当 ✳︎"])
+        #expect(rows[0].tooltip.contains("役割: 査読者として振る舞う"))
+    }
+
+    @Test("役割が無ければ印は付かず、ツールチップにも役割の行は出ない")
+    func withoutRoleNoMark() {
+        let rows = DrawerSessionTabs.rows(
+            sources: [source(in: home)],
+            currentDirectory: home,
+            activeID: nil
+        )
+        #expect(rows[0].title.contains("✳︎") == false)
+        #expect(rows[0].tooltip.contains("役割:") == false)
+    }
+
     @Test("名前が無ければこれまでどおり種類名のまま")
     func withoutCustomNameNothingChanges() {
         let rows = DrawerSessionTabs.rows(

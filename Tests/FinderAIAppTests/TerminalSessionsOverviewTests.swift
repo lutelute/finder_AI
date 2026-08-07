@@ -51,6 +51,44 @@ struct TerminalSessionsOverviewTests {
         ).isEmpty)
     }
 
+    @Test("役割は一覧の行に出て、検索でも引ける")
+    func roleSurfacesInRowsAndSearch() {
+        let now = Date()
+        let records = [
+            TerminalSessionRecord(
+                directoryPath: "/tmp/paper",
+                kind: .claude,
+                backend: .tmux,
+                lastActivityAt: now,
+                isPresented: false,
+                endedAt: now,
+                customName: "査読担当",
+                role: "査読者として振る舞い、指摘には必ず根拠を添える"
+            ),
+            TerminalSessionRecord(
+                directoryPath: "/tmp/plain",
+                kind: .shell,
+                backend: .ephemeral,
+                lastActivityAt: now.addingTimeInterval(-100),
+                isPresented: false,
+                endedAt: now
+            )
+        ]
+
+        let rows = TerminalSessionsOverview.rows(inApp: [], detached: [], history: records)
+        let paper = try? #require(rows.first { $0.folderPath == "/tmp/paper" })
+        #expect(paper?.role == "査読者として振る舞い、指摘には必ず根拠を添える")
+        #expect(rows.first { $0.folderPath == "/tmp/plain" }?.role == nil)
+
+        // 名前でもフォルダでもなく、役割の文言だけで見つけられる。
+        let matches = TerminalSessionsOverview.filteredRows(
+            rows,
+            query: "根拠",
+            filter: .all
+        )
+        #expect(matches.map(\.folderPath) == ["/tmp/paper"])
+    }
+
     @Test("confirmed missing tmux records are distinct from ended sessions")
     func missingState() {
         let record = TerminalSessionRecord(
