@@ -12,16 +12,84 @@ final class WorkspaceAppCoordinator {
     private var windows: [WorkspaceWindowController] = []
     private var lastCapturedSnapshot: WorkspaceRestorationSnapshot?
     private var sessionsPanel: TerminalSessionsPanelController?
+    private var windowsPanel: WorkspaceWindowsPanelController?
     private var settingsWindow: SettingsWindowController?
+    /// 画面の縁のタブ。ウインドウに属さないので、セッション同様アプリ全体で1つ。
+    private lazy var edgeTabs: EdgeTabsController = {
+        let controller = EdgeTabsController(
+            preferences: preferences,
+            sessionManager: sessionManager
+        )
+        controller.onOpenDirectory = { [weak self] url in
+            self?.revealDirectory(url)
+        }
+        controller.onShowWindows = { [weak self] in
+            self?.showWindowsPanel()
+        }
+        controller.onAddCurrentFolder = { [weak self] in
+            self?.toggleEdgeTabForCurrentFolder()
+        }
+        controller.windowRowsProvider = { [weak self] in self?.windowRows() ?? [] }
+        controller.onSelectWindow = { [weak self] id in
+            // 押したら確定。浮かせていたぶんを下ろしてから、正面に持ってくる。
+            self?.endWindowPreview()
+            self?.windows.first { ObjectIdentifier($0) == id }?.show()
+        }
+        controller.onCloseWindow = { [weak self] id in
+            self?.windows.first { ObjectIdentifier($0) == id }?.window?.performClose(nil)
+        }
+        controller.onPreviewWindow = { [weak self] id in self?.previewWindow(id) }
+        controller.onEndPreviewWindows = { [weak self] in self?.endWindowPreview() }
+        controller.windowsLayoutProvider = { [weak self] in
+            guard let self else { return .init(screens: [], windows: [], frontmost: nil) }
+            let front = self.lastKeyWorkspaceWindow
+            return .init(
+                screens: NSScreen.screens.map(\.frame),
+                windows: self.windows.compactMap { $0.window?.frame },
+                frontmost: self.windows.first { $0.window === front }?.window?.frame
+            )
+        }
+        controller.onRevealTerminal = { [weak self] url in
+            guard let self else { return }
+            let target = self.frontmostWindow ?? self.windows.first ?? self.workspace
+            target.browser.navigate(to: url)
+            target.showTerminal()
+            target.show()
+        }
+        return controller
+    }()
     // Read back only in `deinit`, which cannot hop to the main actor.
     private nonisolated(unsafe) var sessionsObserver: (any NSObjectProtocol)?
     private nonisolated(unsafe) var activationObserver: (any NSObjectProtocol)?
     private var restartRequired = false
+    /// 終了処理に入ったか。入ったら構成のスナップショットを凍結する。
+    private var isTerminating = false
+    /// ウインドウに振る通し番号。閉じても詰め直さない。
+    private var nextWindowSerial = 1
+    /// 最後にkeyだったワークスペースのウインドウ。
+    ///
+    /// 前面の判定に`NSApp.keyWindow`をそのまま使うと、一覧パネル自身がkeyに
+    /// なった瞬間、どの行も「前面ではない」ことになる。
+    private weak var lastKeyWorkspaceWindow: NSWindow?
+    /// 覗いているあいだ浮かせている1枚。離れたら元の高さへ戻す。
+    private weak var previewLifted: NSWindow?
+    private let peekOutline = WindowPeekOutline()
+    private let peekThumbnail = WindowPeekThumbnail()
+    /// 縮小を撮っている最中の仕事。次の行へ移ったら取り消す。
+    private var peekTask: Task<Void, Never>?
+    /// 覗いているあいだの高さ。袖の一覧（`.floating`）より下、ふつうのウインドウ
+    /// より上。一覧に隠れず、かといって一覧より前に出もしない。
+    private static let previewLevel = NSWindow.Level(
+        rawValue: NSWindow.Level.floating.rawValue - 1
+    )
+
 
     /// Terminal sessions are keyed by folder and kind across the whole app, so two
     /// windows on the same folder share one shell rather than racing to spawn a
     /// second. That makes the manager app-wide, not per-window.
-    static let windowLimit = 20
+    /// 実際に何十枚と開いて使われる。20で止めていたが、それは足りない数だった。
+    /// 上限が要るのは暴走を防ぐためだけなので、実用の範囲より十分上に置く。
+    static let windowLimit = 64
 
     private var workspace: WorkspaceWindowController {
         windows.first ?? makeWindow(directory: Self.defaultDirectory())
@@ -31,21 +99,70 @@ final class WorkspaceAppCoordinator {
         // beginRun()がフラグをdirtyへ倒す前に、前回の終わり方と構成を読み取る。
         // この順を崩すと自分の起動をクラッシュと誤認する。
         let endedCleanly = restorationStore.previousRunEndedCleanly
-        let crashSnapshot = endedCleanly ? nil : restorationStore.snapshot
+        let snapshot = restorationStore.snapshot
+        let crashSnapshot = endedCleanly ? nil : snapshot
+        // 正常に終了したときも、開いていたウインドウはそのまま開き直す。
+        //
+        // 復元をクラッシュ時だけにしていたので、ふつうに終了して起動し直すたびに
+        // 何枚も開いていたウインドウが1枚に戻っていた。何十枚も開いて使う道具で、
+        // それは「閉じた覚えのないものが消える」に等しい。クラッシュのときだけは
+        // 従来どおり、セッションを含めて復元するか訊く。
+        let resumeSnapshot = endedCleanly ? snapshot : nil
         restorationStore.beginRun()
 
         configureMainMenu()
         _ = makeWindow(directory: Self.defaultDirectory())
         windows.first?.show()
+        edgeTabs.reload()
         restoreLastDirectory()
         refreshInstallationIndicator()
 
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                // ワークスペースのウインドウだけを覚える。一覧パネルや設定が
+                // keyになった瞬間に「どれも前面ではない」ことにしないため。
+                guard let key = NSApp.keyWindow,
+                      self.windows.contains(where: { $0.window === key }) else { return }
+                self.lastKeyWorkspaceWindow = key
+                // 覗いていた1枚をそのまま使い始めたなら、浮かせたままにしない。
+                self.endWindowPreview()
+                self.windowsPanel?.refreshIfVisible()
+                self.edgeTabs.refreshWindowsOverview()
+            }
+        }
+        // 明るさのボタンはウインドウごとにあるので、押された1枚だけでなく
+        // 開いている全部へ配る。
+        NotificationCenter.default.addObserver(
+            forName: .workspaceAppearanceDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.windows.forEach { $0.applyAppearance() }
+                self.refreshAppearanceMenus()
+            }
+        }
         activationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.refreshInstallationIndicator() }
+        }
+        // モニタの並びが変わると、前の座標に居たウインドウは誰の画面でもない場所に
+        // 取り残される。開いているのに見えない状態なので、その都度引き戻す。
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.windows.forEach { $0.rescueOffscreenWindow() } }
         }
 
         sessionsObserver = NotificationCenter.default.addObserver(
@@ -66,6 +183,12 @@ final class WorkspaceAppCoordinator {
             Task { [weak self] in
                 self?.offerRestore(of: crashSnapshot)
             }
+        } else if let resumeSnapshot,
+                  preferences.restoresWindows,
+                  resumeSnapshot.windowDirectoryPaths.count > 1 {
+            // 前回と同じ並びで開き直す。1枚だけだった回は、最後に見ていた
+            // フォルダの復元（`restoreLastDirectory`）が同じ仕事をする。
+            restoreWindowsOnly(from: resumeSnapshot)
         }
     }
 
@@ -86,15 +209,21 @@ final class WorkspaceAppCoordinator {
             preferences: preferences,
             // Only the first window restores the saved frame; the rest cascade off
             // it, or they would all stack on the same rectangle.
-            restoresFrame: windows.isEmpty
+            restoresFrame: windows.isEmpty,
+            serial: nextWindowSerial
         )
+        nextWindowSerial += 1
         controller.onClose = { [weak self, weak controller] in
             guard let self, let controller else { return }
             self.windows.removeAll { $0 === controller }
             self.captureSnapshot()
+            self.windowsPanel?.refreshIfVisible()
+            self.edgeTabs.refreshWindowsOverview()
         }
         controller.onDirectoryChanged = { [weak self] in
             self?.captureSnapshot()
+            self?.refreshWindowTitles()
+            self?.windowsPanel?.refreshIfVisible()
         }
         controller.onManageTerminalSessions = { [weak self] in
             self?.showTerminalSessionsPanel()
@@ -102,7 +231,54 @@ final class WorkspaceAppCoordinator {
         windows.append(controller)
         applyInstallationIndicator(to: controller)
         captureSnapshot()
+        refreshWindowTitles()
+        windowsPanel?.refreshIfVisible()
+        edgeTabs.refreshWindowsOverview()
         return controller
+    }
+
+    /// 同名フォルダのウインドウが複数あるときだけ、親フォルダ名を副題に添える。
+    ///
+    /// 「logs」を3枚開くとタイトルが全部同じになり、ウインドウメニューでもDockでも
+    /// 選べない。常に親を出すと今度は冗長なので、重なったときだけにする。
+    private func refreshWindowTitles() {
+        var counts: [String: Int] = [:]
+        for controller in windows {
+            counts[controller.displayedDirectory.lastPathComponent, default: 0] += 1
+        }
+        for controller in windows {
+            let directory = controller.displayedDirectory
+            let name = directory.lastPathComponent
+            let title = name.isEmpty ? directory.path : name
+            let parent = directory.deletingLastPathComponent().lastPathComponent
+            let ambiguous = (counts[name] ?? 0) > 1 && !parent.isEmpty
+            controller.applyDisplayTitle(title, subtitle: ambiguous ? parent : "FinderAI")
+        }
+    }
+
+    /// すでにそのフォルダを見ているウインドウ。あるなら新しく開かずそれを使う。
+    private func window(showing url: URL) -> WorkspaceWindowController? {
+        let target = url.standardizedFileURL
+        return windows.first { $0.displayedDirectory.standardizedFileURL == target }
+    }
+
+    /// そのフォルダを前に出す。
+    ///
+    /// 探す順は「FinderAIのウインドウ → Finderのウインドウ → FinderAIの手前の
+    /// ウインドウで移動」。すでに開いているものがあるなら、それを前に出すのが
+    /// いちばん速く、窓も増えない。Finderを何枚も開いて使う人にとっては、その
+    /// 中の1枚が本命の窓であることも多い。
+    private func revealDirectory(_ url: URL) {
+        if let existing = window(showing: url) {
+            existing.show()
+            return
+        }
+        if preferences.edgeTabsUsesFinderWindows, FinderWindowLocator.reveal(url) {
+            return
+        }
+        let target = frontmostWindow ?? windows.first ?? workspace
+        target.show()
+        target.browser.navigate(to: url)
     }
 
     /// Updating the bundle does not update a running process. Keep that state
@@ -123,6 +299,12 @@ final class WorkspaceAppCoordinator {
     /// 落ちる直前の構成を常に持っておく。書き込みはUserDefaultsへの小さなJSONで、
     /// 内容が変わったときだけ行う。
     private func captureSnapshot() {
+        // 終了が始まったら、そこで見えていた構成のまま止める。
+        //
+        // 終了時はAppKitがウインドウを1枚ずつ閉じ、そのたびに`windowWillClose`が
+        // ここを呼ぶ。最後には「0枚」で上書きされ、次の起動で戻すものが無くなる。
+        // クラッシュではこの経路を通らないので、これまで表に出ていなかった。
+        guard !isTerminating else { return }
         let snapshot = WorkspaceRestorationSnapshot(
             windowDirectoryPaths: windows.compactMap { controller in
                 guard controller.window != nil else { return nil }
@@ -159,6 +341,30 @@ final class WorkspaceAppCoordinator {
         alert.beginSheetModal(for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn else { return }
             self?.performRestore(snapshot)
+        }
+    }
+
+    /// ウインドウの並びだけを開き直す。セッションには触らない。
+    ///
+    /// 正常終了からの再開はこちら。プロセスは自分で畳んだのだから、勝手に起こす
+    /// のは行きすぎ——閉じた覚えのないウインドウだけを戻す。
+    private func restoreWindowsOnly(from snapshot: WorkspaceRestorationSnapshot) {
+        Task { [weak self] in
+            guard let self else { return }
+            for (index, path) in snapshot.windowDirectoryPaths.enumerated() {
+                let url = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+                guard await Self.isReachableDirectory(url) else { continue }
+                if index == 0 {
+                    self.windows.first?.browser.navigate(to: url)
+                } else if self.windows.count < Self.windowLimit {
+                    if self.cascadePoint == .zero, let front = self.frontmostWindow {
+                        self.cascadePoint = front.cascadeOrigin
+                    }
+                    let controller = self.makeWindow(directory: url)
+                    self.cascadePoint = controller.cascade(from: self.cascadePoint)
+                    controller.show()
+                }
+            }
         }
     }
 
@@ -226,10 +432,19 @@ final class WorkspaceAppCoordinator {
 
     @objc func showSettings() {
         if settingsWindow == nil {
-            settingsWindow = SettingsWindowController(
+            let controller = SettingsWindowController(
                 sessionManager: sessionManager,
                 preferences: preferences
             )
+            controller.onEdgeTabsChanged = { [weak self] in
+                self?.edgeTabs.reload()
+            }
+            // 設定は全ウインドウに効く。開いているウインドウが古い辺のままだと、
+            // 「設定したのに変わらない」ように見える。
+            controller.onTerminalEdgeChanged = { [weak self] edge in
+                self?.windows.forEach { $0.applyTerminalEdge(edge) }
+            }
+            settingsWindow = controller
         }
         settingsWindow?.show()
     }
@@ -266,6 +481,233 @@ final class WorkspaceAppCoordinator {
             sessionsPanel = panel
         }
         sessionsPanel?.show()
+    }
+
+    /// 開いているウインドウの一覧。何十枚も開くので、ウインドウメニューの並び
+    /// だけでは足りない——あちらはタイトルしか出ず、同名フォルダが並ぶと選べない。
+    @objc func showWindowsPanel() {
+        if windowsPanel == nil {
+            let panel = WorkspaceWindowsPanelController()
+            panel.rowsProvider = { [weak self] in self?.windowRows() ?? [] }
+            panel.onSelect = { [weak self] id in
+                // 押したら確定。浮かせていたぶんを下ろしてから、正面に持ってくる。
+                self?.endWindowPreview()
+                self?.windows.first { ObjectIdentifier($0) == id }?.show()
+            }
+            panel.onClose = { [weak self] id in
+                self?.windows.first { ObjectIdentifier($0) == id }?.window?.performClose(nil)
+            }
+            panel.onOpenNew = { [weak self] in self?.newWindow() }
+            panel.onPreview = { [weak self] id in self?.previewWindow(id) }
+            panel.onEndPreview = { [weak self] in self?.endWindowPreview() }
+            windowsPanel = panel
+        }
+        windowsPanel?.show()
+    }
+
+    /// 一覧のカードに触れているあいだ、そのウインドウを仮に前へ出す。
+    ///
+    /// カードには名前と置き場所しか書けない。同じフォルダを何枚も開いていると
+    /// それでも足りず、結局どれか当てる作業が残る——中身を見せてしまうのが早い。
+    /// 「仮に」なので、離れれば元の並びへ戻す。
+    private func previewWindow(_ id: ObjectIdentifier) {
+        guard let target = windows.first(where: { ObjectIdentifier($0) == id })?.window else { return }
+        clearWindowPeek()
+        switch preferences.windowPeek {
+        case .off:
+            return
+        case .lift:
+            target.level = Self.previewLevel
+            previewLifted = target
+            // 枠も一緒に回す。前に出すだけだと、覗いた1枚と元から手前にいた
+            // 1枚が並んだとき、どちらを見ているのか分からない。
+            peekOutline.show(around: target.frame)
+        case .outline:
+            peekOutline.show(around: target.frame)
+        case .thumbnail:
+            let list = edgeTabs.presentedWindowsList
+            let panel = windowsPanel?.window
+            let anchor = list?.frame
+                ?? (panel?.isVisible == true ? panel?.frame : nil)
+                ?? target.frame
+            let edge = list?.edge ?? .right
+            let screen = (target.screen ?? NSScreen.main)?.visibleFrame ?? .zero
+            // 撮るのは非同期。返るころには別の行へ移っているかもしれないので、
+            // 次の覗きが始まったら取り消す。
+            peekTask?.cancel()
+            peekTask = Task { [weak self] in
+                let image = await WindowPeekThumbnail.snapshot(of: target)
+                guard !Task.isCancelled, let self else { return }
+                guard let image else {
+                    // 撮れないなら枠で代える。許可がないだけかもしれないし、
+                    // 覗いて何も起きないよりは場所が分かるほうがいい。
+                    self.peekOutline.show(around: target.frame)
+                    return
+                }
+                self.peekThumbnail.show(image, besides: anchor, edge: edge, on: screen)
+            }
+        }
+        // 独立した一覧は上に残す。前に出した拍子に隠れると、次の行へ移れない。
+        raiseWindowsPanelIfVisible()
+    }
+
+    /// 覗くのをやめた。出していたものを引っ込め、浮かせた1枚を元の高さへ戻す。
+    ///
+    /// 重なりそのものを操作する作りから改めた経緯がある。`orderFront`で前に出すと
+    /// 戻し方が要るが、`order(.below:)`はこのアプリが前面にいないと効かない——
+    /// 袖は非アクティブのまま使うので、その状況が常態だった。
+    private func endWindowPreview() {
+        clearWindowPeek()
+    }
+
+    private func clearWindowPeek() {
+        peekTask?.cancel()
+        peekTask = nil
+        previewLifted?.level = .normal
+        previewLifted = nil
+        peekOutline.hide()
+        peekThumbnail.hide()
+    }
+
+    var currentWindowPeek: WorkspaceWindowPeek { preferences.windowPeek }
+
+    @objc func setBrowserAppearance(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let mode = WorkspaceAppearance(rawValue: raw) else { return }
+        preferences.browserAppearance = mode
+        windows.forEach { $0.applyAppearance() }
+        sender.menu?.items.forEach { $0.state = ($0 === sender) ? .on : .off }
+    }
+
+    @objc func setTerminalAppearance(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let mode = WorkspaceAppearance(rawValue: raw) else { return }
+        preferences.terminalAppearance = mode
+        windows.forEach { $0.applyAppearance() }
+        sender.menu?.items.forEach { $0.state = ($0 === sender) ? .on : .off }
+    }
+
+    private func refreshAppearanceMenus() {
+        for (title, current) in [
+            ("ファイル一覧の明るさ", preferences.browserAppearance.rawValue),
+            ("ターミナルの明るさ", preferences.terminalAppearance.rawValue)
+        ] {
+            guard let submenu = NSApp.mainMenu?
+                .items.compactMap(\.submenu).first(where: { $0.title == "表示" })?
+                .items.first(where: { $0.submenu?.title == title })?
+                .submenu else { continue }
+            for item in submenu.items {
+                guard let raw = item.representedObject as? String else { continue }
+                item.state = raw == current ? .on : .off
+            }
+        }
+    }
+
+    private func refreshWindowPeekMenu() {
+        guard let submenu = NSApp.mainMenu?
+            .items.compactMap(\.submenu).first(where: { $0.title == "表示" })?
+            .items.first(where: { $0.submenu?.title == "ウインドウ一覧の覗き方" })?
+            .submenu else { return }
+        let current = preferences.windowPeek.rawValue
+        for item in submenu.items {
+            guard let raw = item.representedObject as? String else { continue }
+            item.state = raw == current ? .on : .off
+        }
+    }
+
+    /// 覗き方を選ぶ。縮小はここで許可を確かめる——覗いた拍子に許可を訊かれる
+    /// のは唐突なので、選んだ時点で1度だけ。
+    @objc func setWindowPeek(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let mode = WorkspaceWindowPeek(rawValue: raw) else { return }
+        if mode == .thumbnail, !WindowPeekThumbnail.isPermitted {
+            let granted = CGRequestScreenCaptureAccess()
+            if !granted {
+                let alert = NSAlert()
+                alert.messageText = "「画面収録」の許可が要ります"
+                alert.informativeText = """
+                システム設定 → プライバシーとセキュリティ → 画面収録 でFinderAIを許可すると、\
+                覗いた1枚の中身を縮小して出せます。許可するまでは枠で場所を示します。
+                """
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            }
+        }
+        preferences.windowPeek = mode
+        sender.menu?.items.forEach { $0.state = ($0 === sender) ? .on : .off }
+    }
+
+    /// 開いているときだけ前に戻す。閉じている一覧を開いてしまわない。
+    private func raiseWindowsPanelIfVisible() {
+        guard let panel = windowsPanel?.window, panel.isVisible else { return }
+        panel.orderFrontRegardless()
+    }
+
+    private func windowRows() -> [WorkspaceWindowsPanelController.Row] {
+        // 一覧パネルがkeyになっても、直前まで前にいたウインドウを前面として扱う。
+        let front = lastKeyWorkspaceWindow ?? NSApp.keyWindow
+        return windows.map { controller in
+            let directory = controller.displayedDirectory
+            let frame = controller.window?.frame ?? .zero
+            let screen = controller.window?.screen ?? NSScreen.main
+            let baseName = directory.lastPathComponent.isEmpty
+                ? directory.path
+                : directory.lastPathComponent
+            return .init(
+                id: ObjectIdentifier(controller),
+                serial: controller.serial,
+                name: baseName,
+                parent: directory.deletingLastPathComponent().path(percentEncoded: false),
+                path: directory.path(percentEncoded: false),
+                runningSessions: sessionManager.sessions(for: directory)
+                    .filter(\.isRunning).count,
+                isFrontmost: controller.window === front,
+                windowFrame: frame,
+                screenFrame: screen?.visibleFrame ?? .zero,
+                screenName: Self.screenName(for: screen),
+                sizeText: "\(Int(frame.width))×\(Int(frame.height))"
+            )
+        }
+    }
+
+    /// 「主画面」「外部1」のように、どのモニタかを短く言う。
+    private static func screenName(for screen: NSScreen?) -> String {
+        guard let screen else { return "画面" }
+        guard let index = NSScreen.screens.firstIndex(of: screen) else { return "画面" }
+        return index == 0 ? "主画面" : "外部\(index)"
+    }
+
+    /// いま見ているフォルダを画面の縁に置く／外す。
+    @objc func toggleEdgeTabForCurrentFolder() {
+        let target = frontmostWindow ?? windows.first
+        guard let directory = target?.browser.currentDirectory else { return }
+        guard edgeTabs.canAdd(directory) else {
+            let alert = NSAlert()
+            alert.messageText = "画面端に置けるのは\(WorkspaceEdgeTabs.capacity)個までです"
+            alert.informativeText = "どれかのタブを右クリックして「画面端から外す」を選ぶと空きが作れます。"
+            alert.addButton(withTitle: "OK")
+            if let window = target?.window, window.isVisible {
+                alert.beginSheetModal(for: window)
+            } else {
+                alert.runModal()
+            }
+            return
+        }
+        edgeTabs.toggle(directory)
+    }
+
+    /// 縁のタブをまとめて消す／戻す。登録は消さないので、戻せば同じ並びが出る。
+    @objc func toggleEdgeTabsVisibility() {
+        edgeTabs.setEnabled(!edgeTabs.isEnabledSetting)
+    }
+
+    @objc func toggleEdgeTabsSide() {
+        edgeTabs.setEdge(edgeTabs.currentEdge.opposite)
+    }
+
+    /// 普段は画面の外へ引っ込め、縁に触れたときだけ滑り出す。
+    @objc func toggleEdgeTabsAutoHide() {
+        edgeTabs.setAutoHide(!edgeTabs.isAutoHiding)
     }
 
     private var cascadePoint: NSPoint = .zero
@@ -314,6 +756,9 @@ final class WorkspaceAppCoordinator {
     }
 
     func prepareForTermination() -> NSApplication.TerminateReply {
+        // ここから先、ウインドウが閉じられてもスナップショットは動かさない。
+        // 終了をやめたときは解く。
+        isTerminating = true
         let ephemeralCount = sessionManager.runningEphemeralCount
         let persistentCount = sessionManager.runningCount - ephemeralCount
         // 失われるものが無ければ聞くことも無い。永続セッションのクライアント終了は
@@ -336,13 +781,17 @@ final class WorkspaceAppCoordinator {
         // Without a window there is no sheet to attach to, so fall back to a modal
         // rather than deferring a reply that nothing would ever send.
         guard let window = workspace.window, window.isVisible else {
-            guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
+            guard alert.runModal() == .alertFirstButtonReturn else {
+                isTerminating = false
+                return .terminateCancel
+            }
             sessionManager.shutdownOwnedProcesses()
             return .terminateNow
         }
 
         alert.beginSheetModal(for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn else {
+                self?.isTerminating = false
                 NSApp.reply(toApplicationShouldTerminate: false)
                 return
             }
@@ -357,6 +806,10 @@ final class WorkspaceAppCoordinator {
         // Populates the window list and keeps the checkmark on the key window.
         NSApp.windowsMenu = main.items.compactMap(\.submenu).first { $0.title == "ウインドウ" }
         NSApp.mainMenu = main
+        // 印は組み上げたあとで付ける。`makeMainMenu`はテストのためにアプリの
+        // 状態へ触れない約束になっている。
+        refreshWindowPeekMenu()
+        refreshAppearanceMenus()
     }
 
     /// Built without touching app state so the key-equivalent table can be
@@ -503,6 +956,20 @@ final class WorkspaceAppCoordinator {
         viewMenu.addItem(cycleView)
         viewMenu.addItem(.separator())
         viewMenu.addItem(item("Terminalを開く／隠す", action: #selector(WorkspaceWindowController.toggleTerminal), key: "j"))
+        let terminalEdge = item(
+            "Terminalを右／下に移動",
+            action: #selector(WorkspaceWindowController.toggleTerminalEdge),
+            key: "j"
+        )
+        terminalEdge.keyEquivalentModifierMask = [.command, .option]
+        viewMenu.addItem(terminalEdge)
+        let terminalSize = item(
+            "Terminalの大きさを切り替え",
+            action: #selector(WorkspaceWindowController.cycleTerminalSize),
+            key: "j"
+        )
+        terminalSize.keyEquivalentModifierMask = [.command, .shift]
+        viewMenu.addItem(terminalSize)
         // 永続化と出力ログのトグルは設定ウインドウ（⌘,）にある。メニューに残すのは
         // 動作だけで、状態の置き場にはしない。
         let manageSessions = NSMenuItem(
@@ -528,6 +995,75 @@ final class WorkspaceAppCoordinator {
         )
         pin.keyEquivalentModifierMask = [.command, .control]
         viewMenu.addItem(pin)
+        // 画面端のタブはウインドウに属さないので、コマンドはレスポンダチェーンでは
+        // なくコーディネータへ直接向ける。
+        let edgeTab = NSMenuItem(
+            title: "このフォルダを画面端に置く／外す",
+            action: #selector(WorkspaceAppCoordinator.toggleEdgeTabForCurrentFolder),
+            keyEquivalent: "e"
+        )
+        edgeTab.keyEquivalentModifierMask = [.command, .control]
+        edgeTab.target = coordinator
+        viewMenu.addItem(edgeTab)
+        let edgeTabsVisibility = NSMenuItem(
+            title: "画面端のフォルダを表示／隠す",
+            action: #selector(WorkspaceAppCoordinator.toggleEdgeTabsVisibility),
+            keyEquivalent: ""
+        )
+        edgeTabsVisibility.target = coordinator
+        viewMenu.addItem(edgeTabsVisibility)
+        let edgeTabsSide = NSMenuItem(
+            title: "画面端のフォルダを左右に切り替え",
+            action: #selector(WorkspaceAppCoordinator.toggleEdgeTabsSide),
+            keyEquivalent: ""
+        )
+        edgeTabsSide.target = coordinator
+        viewMenu.addItem(edgeTabsSide)
+        let edgeTabsAutoHide = NSMenuItem(
+            title: "画面端のフォルダを自動的に隠す",
+            action: #selector(WorkspaceAppCoordinator.toggleEdgeTabsAutoHide),
+            keyEquivalent: ""
+        )
+        edgeTabsAutoHide.target = coordinator
+        viewMenu.addItem(edgeTabsAutoHide)
+
+        // 一覧の行に触れたとき、そのウインドウをどう見せるか。
+        //
+        // 前面へ浮かせるのがいちばん確かだが、探しているあいだじゅう他のアプリ
+        // が覆われる。覆わない出し方も要る、という話から選べるようにした。
+        let peekMenu = NSMenu(title: "ウインドウ一覧の覗き方")
+        for mode in WorkspaceWindowPeek.allCases {
+            let item = NSMenuItem(
+                title: mode.title,
+                action: #selector(WorkspaceAppCoordinator.setWindowPeek(_:)),
+                keyEquivalent: ""
+            )
+            item.target = coordinator
+            item.representedObject = mode.rawValue
+            peekMenu.addItem(item)
+        }
+        let peekItem = NSMenuItem(title: "ウインドウ一覧の覗き方", action: nil, keyEquivalent: "")
+        peekItem.submenu = peekMenu
+        viewMenu.addItem(peekItem)
+
+        viewMenu.addItem(.separator())
+        // 一覧とターミナルで別々に選べる。一覧は明るく、ターミナルは暗く、と
+        // いう組み合わせが要る。
+        for (title, selector) in [
+            ("ファイル一覧の明るさ", #selector(WorkspaceAppCoordinator.setBrowserAppearance(_:))),
+            ("ターミナルの明るさ", #selector(WorkspaceAppCoordinator.setTerminalAppearance(_:)))
+        ] {
+            let submenu = NSMenu(title: title)
+            for mode in WorkspaceAppearance.allCases {
+                let entry = NSMenuItem(title: mode.title, action: selector, keyEquivalent: "")
+                entry.target = coordinator
+                entry.representedObject = mode.rawValue
+                submenu.addItem(entry)
+            }
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            item.submenu = submenu
+            viewMenu.addItem(item)
+        }
         viewMenu.addItem(.separator())
         viewMenu.addItem(item("このフォルダを検索", action: #selector(WorkspaceBrowserViewController.focusSearchField), key: "f"))
         viewMenu.addItem(item("パスを入力…", action: #selector(WorkspaceBrowserViewController.beginPathEditing), key: "l"))
@@ -548,6 +1084,19 @@ final class WorkspaceAppCoordinator {
         windowMenu.addItem(NSMenuItem(title: "閉じる", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"))
         windowMenu.addItem(.separator())
         windowMenu.addItem(NSMenuItem(title: "すべてを手前に移動", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: ""))
+        let windowList = NSMenuItem(
+            title: "ウインドウの一覧…",
+            action: #selector(WorkspaceAppCoordinator.showWindowsPanel),
+            keyEquivalent: "w"
+        )
+        // ⌘⌥WはmacOSが「すべてを閉じる」に使う。奪うと閉じるほうが効かなくなる。
+        windowList.keyEquivalentModifierMask = [.command, .control]
+        windowList.target = coordinator
+        windowMenu.addItem(windowList)
+        // 開いているウインドウをAppKitがここへ並べる（`configureMainMenu`で
+        // `windowsMenu`に繋いである）。20枚まで開ける作りなので、「どれがどれか」
+        // を辿れる場所として要る。
+        windowMenu.addItem(.separator())
         windowItem.submenu = windowMenu
         main.addItem(windowItem)
         return main

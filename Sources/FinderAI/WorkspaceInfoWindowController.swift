@@ -43,7 +43,7 @@ final class WorkspaceInfoWindowController: NSWindowController {
         )
         window.title = "\(self.url.lastPathComponent) の情報"
         window.isReleasedWhenClosed = false
-        window.appearance = NSAppearance(named: .darkAqua)
+
         super.init(window: window)
         window.delegate = self
         window.contentView = makeContent()
@@ -100,7 +100,9 @@ final class WorkspaceInfoWindowController: NSWindowController {
 
         let root = NSView()
         root.wantsLayer = true
-        root.layer?.backgroundColor = IntegratedPanelTheme.background.cgColor
+        root.effectiveAppearance.performAsCurrentDrawingAppearance {
+            root.layer?.backgroundColor = IntegratedPanelTheme.background.cgColor
+        }
         stack.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(stack)
         NSLayoutConstraint.activate([

@@ -167,7 +167,7 @@ final class WorkspaceColumnView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.backgroundColor = IntegratedPanelTheme.background.cgColor
+        updateBackground()
 
         content.orientation = .horizontal
         content.spacing = 0
@@ -190,6 +190,18 @@ final class WorkspaceColumnView: NSView {
             content.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             content.bottomAnchor.constraint(equalTo: scroll.contentView.bottomAnchor)
         ])
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateBackground()
+    }
+
+    /// `cgColor`はその瞬間の外観で固まるので、変わり目で塗り直す。
+    private func updateBackground() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = IntegratedPanelTheme.background.cgColor
+        }
     }
 
     required init?(coder: NSCoder) {

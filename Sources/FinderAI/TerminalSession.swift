@@ -60,6 +60,24 @@ final class LoggingTerminalView: LocalProcessTerminalView {
         outputLog?.append(Array(slice))
         super.dataReceived(slice: slice)
     }
+
+    /// SwiftTermは`nativeForegroundColor`/`nativeBackgroundColor`を代入した瞬間の
+    /// 外観でRGBへ解決して固定し、その値をOSC 10/11（前景・背景色の照会）への
+    /// 応答に使う。動的NSColorを渡すだけでは、まだパネルへ入る前のシステム外観で
+    /// 固まる——claudeのようなTUIは照会の答えで配色を決めるので、暗い画面に
+    /// 「背景は明るい」と答えると、暗い文字を書かれて何も見えなくなる。
+    /// 外観が確定・変更される度に、その外観で解き直して渡す。
+    func resolveThemeColors() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            nativeBackgroundColor = IntegratedPanelTheme.terminalBackground
+            nativeForegroundColor = IntegratedPanelTheme.text
+        }
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        resolveThemeColors()
+    }
 }
 
 @MainActor
@@ -130,8 +148,10 @@ final class TerminalSession: NSObject, @preconcurrency LocalProcessTerminalViewD
 
         terminalView.processDelegate = self
         terminalView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
-        terminalView.nativeBackgroundColor = IntegratedPanelTheme.terminalBackground
-        terminalView.nativeForegroundColor = IntegratedPanelTheme.text
+        // ここではまだビューがパネルへ入っておらず、外観はシステムのまま。
+        // パネルへ入った時点で`viewDidChangeEffectiveAppearance`が正しい外観で
+        // 解き直す。PTYの出力処理は次のrunloopなので、TUIの色照会より先に届く。
+        view.resolveThemeColors()
         terminalView.caretColor = IntegratedPanelTheme.accent
         terminalView.setHostLogging(directory: nil)
 

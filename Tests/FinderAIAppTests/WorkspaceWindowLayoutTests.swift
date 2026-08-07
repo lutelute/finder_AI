@@ -81,12 +81,66 @@ struct WorkspaceWindowLayoutTests {
 
         #expect(controller.window?.contentView?.frame.width == 1180)
         #expect(controller.window?.contentView?.frame.height == 760)
-        #expect(controller.terminalPanelHeight == PanelPlacement.collapsedHeight)
+        #expect(controller.terminalPanelThickness == TerminalPanelLayout.collapsedThickness)
         #expect(!controller.isTerminalExpanded)
+        #expect(controller.terminalPanelEdge == .bottom)
 
         controller.toggleTerminal()
         #expect(controller.isTerminalExpanded)
-        #expect(controller.terminalPanelHeight == 300)
+        #expect(controller.terminalPanelThickness == 300)
+    }
+
+    /// 下と右で覚えている大きさは別。行き来しても、それぞれで決めた寸法に戻る。
+    @Test("moving the terminal to the right edge switches to the width it remembers")
+    func terminalEdgeCarriesItsOwnSize() throws {
+        _ = NSApplication.shared
+        let preferences = Self.isolatedPreferences()
+        let controller = WorkspaceWindowController(
+            sessionManager: TerminalSessionManager(),
+            initialDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            preferences: preferences
+        )
+        let window = try #require(controller.window)
+        window.setContentSize(NSSize(width: 1180, height: 760))
+        controller.toggleTerminal()
+        #expect(controller.terminalPanelThickness == 300)
+
+        controller.toggleTerminalEdge()
+        #expect(controller.terminalPanelEdge == .right)
+        #expect(preferences.terminalEdge == .right)
+        // 右辺の既定は420pt。下辺の300ptを引き継がない。
+        #expect(controller.terminalPanelThickness == 420)
+
+        controller.toggleTerminalEdge()
+        #expect(controller.terminalPanelEdge == .bottom)
+        #expect(controller.terminalPanelThickness == 300)
+    }
+
+    /// 畳んだ状態からのダブルクリックは開く側から始まり、最大まで行ってから畳む。
+    @Test("double-clicking the header walks collapsed → half → full → collapsed")
+    func snapCycleWalksBothWays() throws {
+        _ = NSApplication.shared
+        let controller = WorkspaceWindowController(
+            sessionManager: TerminalSessionManager(),
+            initialDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            preferences: Self.isolatedPreferences()
+        )
+        let window = try #require(controller.window)
+        window.setContentSize(NSSize(width: 1180, height: 760))
+        window.contentView?.layoutSubtreeIfNeeded()
+        let available = try #require(window.contentView?.bounds.height)
+
+        controller.cycleTerminalSize()
+        #expect(controller.isTerminalExpanded)
+        #expect(abs(controller.terminalPanelThickness - available / 2) < 1)
+
+        controller.cycleTerminalSize()
+        #expect(controller.isTerminalExpanded)
+        #expect(controller.terminalPanelThickness > available / 2)
+
+        controller.cycleTerminalSize()
+        #expect(!controller.isTerminalExpanded)
+        #expect(controller.terminalPanelThickness == TerminalPanelLayout.collapsedThickness)
     }
 
     @Test("workspace sidebar can be resized independently inside the same window")
@@ -131,13 +185,34 @@ struct WorkspaceWindowLayoutTests {
         let ceiling = contentHeight - WorkspaceWindowController.minimumBrowserHeight
 
         // Asking for more than fits is capped, not honoured.
-        #expect(controller.clampedTerminalHeight(5_000) <= ceiling)
-        #expect(controller.clampedTerminalHeight(5_000) <= 600)
+        #expect(controller.clampedTerminalThickness(5_000) <= ceiling)
+        #expect(controller.clampedTerminalThickness(5_000) <= 600)
         // A reasonable request is untouched.
-        #expect(controller.clampedTerminalHeight(300) == 300)
+        #expect(controller.clampedTerminalThickness(300) == 300)
         // Below the floor is raised, never negative.
-        #expect(controller.clampedTerminalHeight(10) == 160)
-        #expect(controller.clampedTerminalHeight(-500) == 160)
+        #expect(controller.clampedTerminalThickness(10) == 160)
+        #expect(controller.clampedTerminalThickness(-500) == 160)
+    }
+
+    /// 右辺では横方向で取り合う。ファイル一覧が読める幅を割ってはいけない。
+    @Test("a right-edge terminal yields to the file list's minimum width")
+    func rightEdgeTerminalCannotEatTheFileList() throws {
+        _ = NSApplication.shared
+        let controller = WorkspaceWindowController(
+            sessionManager: TerminalSessionManager(),
+            initialDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            preferences: Self.isolatedPreferences()
+        )
+        let window = try #require(controller.window)
+        window.setContentSize(NSSize(width: 1180, height: 760))
+        controller.toggleTerminalEdge()
+        window.contentView?.layoutSubtreeIfNeeded()
+
+        let contentWidth = try #require(window.contentView?.bounds.width)
+        let ceiling = contentWidth - WorkspaceWindowController.minimumPaneWidth
+        #expect(controller.clampedTerminalThickness(5_000) <= ceiling)
+        #expect(controller.clampedTerminalThickness(420) == 420)
+        #expect(controller.clampedTerminalThickness(10) == 280)
     }
 
     @Test("a window too short for both still returns a usable height")
@@ -154,7 +229,7 @@ struct WorkspaceWindowLayoutTests {
 
         // 260 - 220 leaves less than the 160 floor; the result must still be the
         // floor rather than a negative or zero height.
-        #expect(controller.clampedTerminalHeight(300) == 160)
+        #expect(controller.clampedTerminalThickness(300) == 160)
     }
 
     /// Every window sharing one autosave name would have them overwrite each
