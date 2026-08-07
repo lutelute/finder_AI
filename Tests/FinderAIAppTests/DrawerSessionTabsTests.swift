@@ -104,4 +104,53 @@ struct DrawerSessionTabsTests {
         )
         #expect(rows.map(\.title) == ["●  Shell · /"])
     }
+
+    @Test("名前を付けたセッションはタブでそれを名乗り、種類はツールチップに残る")
+    func customNameTakesOverTheTab() {
+        let rows = DrawerSessionTabs.rows(
+            sources: [
+                DrawerSessionTabs.Source(
+                    id: UUID(),
+                    kindName: "Claude",
+                    customName: "査読担当",
+                    directoryURL: home,
+                    isRunning: true
+                )
+            ],
+            currentDirectory: home,
+            activeID: nil
+        )
+        #expect(rows.map(\.title) == ["●  査読担当"])
+        #expect(rows[0].tooltip.hasPrefix("査読担当（Claude） — "))
+    }
+
+    @Test("名前は他フォルダの接尾辞・固定ピンとも両立する")
+    func customNameComposesWithSuffixAndPin() {
+        let rows = DrawerSessionTabs.rows(
+            sources: [
+                DrawerSessionTabs.Source(
+                    id: UUID(),
+                    kindName: "Shell",
+                    customName: "ビルド番",
+                    directoryURL: away,
+                    isRunning: true,
+                    isAnchored: true
+                )
+            ],
+            currentDirectory: home,
+            activeID: nil
+        )
+        #expect(rows.map(\.title) == ["📌 ●  ビルド番 · projectB"])
+    }
+
+    @Test("名前が無ければこれまでどおり種類名のまま")
+    func withoutCustomNameNothingChanges() {
+        let rows = DrawerSessionTabs.rows(
+            sources: [source(in: home)],
+            currentDirectory: home,
+            activeID: nil
+        )
+        #expect(rows.map(\.title) == ["●  Claude"])
+        #expect(rows[0].tooltip.hasPrefix("Claude — "))
+    }
 }

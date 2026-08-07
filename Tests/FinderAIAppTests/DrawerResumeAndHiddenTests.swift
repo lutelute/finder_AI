@@ -160,6 +160,20 @@ struct DrawerResumeAndHiddenTests {
         #expect(builder.resumeFlags == [false])
     }
 
+    @Test("走っているセッションを名指しで改名でき、その名前が引ける")
+    func renameSessionRoundTrips() throws {
+        let manager = makeManager()
+        let session = try manager.create(kind: .claude, directoryURL: folder)
+        #expect(manager.customName(for: session) == nil)
+
+        manager.renameSession(session, to: "  査読担当  ")
+        #expect(manager.customName(for: session) == "査読担当")
+
+        // 空欄は「名前を外す」。種類名へ戻る。
+        manager.renameSession(session, to: "   ")
+        #expect(manager.customName(for: session) == nil)
+    }
+
     @Test("隠れて実行中のセッションは「＋N」チップになり、押すと管理パネルを開く")
     func hiddenRunningSessionsShowChip() throws {
         let manager = makeManager()
