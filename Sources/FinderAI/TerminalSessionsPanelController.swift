@@ -393,7 +393,9 @@ final class TerminalSessionsPanelController: NSWindowController {
         scroll.hasVerticalScroller = true
         scroll.borderType = .bezelBorder
 
-        searchField.placeholderString = "名前・種類・フォルダ・状態を検索"
+        // 役割も検索に入っている。欄の説明が古いままだと、探せるものを
+        // 探せないと思われる。
+        searchField.placeholderString = "名前・種類・役割・フォルダ・状態を検索"
         searchField.sendsSearchStringImmediately = true
         searchField.target = self
         searchField.action = #selector(filtersChanged)
