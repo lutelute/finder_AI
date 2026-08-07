@@ -660,10 +660,15 @@ final class DrawerContentViewController: NSViewController {
 
         if let preferred, visibleSessions.contains(where: { $0.id == preferred.id }) {
             activeSession = preferred
-        } else if let activeSession, visibleSessions.contains(where: { $0.id == activeSession.id }) {
+        } else if let activeSession, visibleSessions.contains(where: { $0.id == activeSession.id }),
+                  !isMountedInAnotherDrawer(activeSession) {
             self.activeSession = activeSession
         } else {
-            activeSession = visibleSessions.last
+            // セッションのcontentViewは1つしかない。他のウインドウに出ている
+            // 中身を自動選択で取り上げると、向こうはタブだけ残して空になる。
+            // 自動では他所の中身を取らない——取るのはタブを押した（意思のある）
+            // ときだけ。全部が他所なら空のまま、タブは残る。
+            activeSession = visibleSessions.last { !isMountedInAnotherDrawer($0) }
         }
 
         let rows = DrawerSessionTabs.rows(
@@ -765,11 +770,26 @@ final class DrawerContentViewController: NSViewController {
         }
     }
 
+    /// このドロワー以外（別ウインドウのドロワー）にセッションの中身が
+    /// 出ているか。contentViewは1つしかなく、こちらが取れば向こうから消える。
+    private func isMountedInAnotherDrawer(_ session: any ManagedTerminalSession) -> Bool {
+        guard let superview = session.contentView.superview else { return false }
+        return superview !== terminalContainer
+    }
+
     /// Re-adding a terminal view forces SwiftTerm to re-lay-out and reflow its
     /// buffer, so the mounted view is left alone when the active session has not
     /// actually changed — every folder change reaches this path.
     private func showActiveTerminal() {
-        guard mountedSessionID != activeSession?.id else { return }
+        // IDの一致だけで早退してはいけない。別ウインドウが同じセッションを
+        // マウントすると、ビューはこちらから黙って消える——「もう出ている」と
+        // 信じたままだと、タブは見えるのに中身が空で、押しても何も起きない。
+        // 実際にこの区画へ載っているときだけ何もしない。
+        if mountedSessionID == activeSession?.id,
+           let mounted = activeSession?.contentView,
+           mounted.superview === terminalContainer {
+            return
+        }
 
         for subview in terminalContainer.subviews where subview !== emptyState {
             subview.removeFromSuperview()
@@ -843,6 +863,9 @@ final class DrawerContentViewController: NSViewController {
         let session = visibleSessions[sender.tag]
         activeSession = session
         reloadSessions(prefer: session)
+        // タブは畳んでいても見えている。押したのに中身が隠れたままでは
+        // 「開けない」ので、startSessionと同じく本体も開く。
+        if !expanded { onToggle?() }
         view.window?.makeFirstResponder(session.contentView)
         // ダブルクリックはブラウザもそのセッションの現在地へ連れて行く。
         // clickCountはマウスイベントにしか意味がない: Accessibility経由の
