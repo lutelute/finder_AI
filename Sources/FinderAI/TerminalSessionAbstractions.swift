@@ -138,6 +138,8 @@ protocol TerminalSessionManaging: AnyObject {
     /// プロンプトへ足される（claudeのみ。codexに同等の公開フラグが無い）。
     func role(for session: any ManagedTerminalSession) -> String?
     func setRole(for session: any ManagedTerminalSession, to role: String?)
+    /// 台帳の行に直接。まだ走っていないフォルダにも役割を用意できる。
+    func setSessionRecordRole(id: UUID, role: String?)
     func renameSessionRecord(id: UUID, name: String?)
     func setSessionRecordPinned(id: UUID, isPinned: Bool)
     func forgetSessionRecord(id: UUID)

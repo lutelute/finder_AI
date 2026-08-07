@@ -14,11 +14,38 @@ struct TerminalSessionRowModel: Equatable {
     let recordID: UUID?
     let kind: TerminalSessionKind?
     let kindLabel: String
+    /// 起動時にAIへ渡す役割。決めてあることが分かるように一覧へ出す——
+    /// どこにも出ないと、決めたこと自体を忘れる。
+    let role: String?
     let folderPath: String
     let stateLabel: String
     let category: TerminalSessionRowCategory
     let lastActivityAt: Date?
     let isPinned: Bool
+
+    init(
+        target: Target,
+        recordID: UUID?,
+        kind: TerminalSessionKind?,
+        kindLabel: String,
+        role: String? = nil,
+        folderPath: String,
+        stateLabel: String,
+        category: TerminalSessionRowCategory,
+        lastActivityAt: Date?,
+        isPinned: Bool
+    ) {
+        self.target = target
+        self.recordID = recordID
+        self.kind = kind
+        self.kindLabel = kindLabel
+        self.role = role
+        self.folderPath = folderPath
+        self.stateLabel = stateLabel
+        self.category = category
+        self.lastActivityAt = lastActivityAt
+        self.isPinned = isPinned
+    }
 }
 
 /// Freezes exactly what the user selected before an alert is shown. Table rows
@@ -141,6 +168,7 @@ enum TerminalSessionsOverview {
                 recordID: record?.id,
                 kind: summary.kind,
                 kindLabel: record?.customName ?? summary.kindLabel,
+                role: record?.role,
                 folderPath: summary.folderPath,
                 stateLabel: summary.isRunning
                     ? stateLabel(
@@ -172,6 +200,7 @@ enum TerminalSessionsOverview {
                     recordID: record?.id,
                     kind: info.kind,
                     kindLabel: record?.customName ?? info.kind?.displayName ?? "？",
+                    role: record?.role,
                     folderPath: info.workingDirectoryPath,
                     // 外部=ユーザーが自分のターミナルからattachしている場合。
                     stateLabel: info.isAttached ? "接続中（外部）" : "待機中（未接続）",
@@ -200,6 +229,7 @@ enum TerminalSessionsOverview {
                     recordID: record.id,
                     kind: record.kind,
                     kindLabel: record.customName ?? record.kind.displayName,
+                    role: record.role,
                     folderPath: record.directoryPath,
                     stateLabel: historyStateLabel(record),
                     category: .history,
@@ -226,6 +256,7 @@ enum TerminalSessionsOverview {
             guard !needle.isEmpty else { return true }
             return row.kindLabel.localizedCaseInsensitiveContains(needle)
                 || row.kind?.displayName.localizedCaseInsensitiveContains(needle) == true
+                || row.role?.localizedCaseInsensitiveContains(needle) == true
                 || row.folderPath.localizedCaseInsensitiveContains(needle)
                 || row.stateLabel.localizedCaseInsensitiveContains(needle)
         }
@@ -336,6 +367,9 @@ final class TerminalSessionsPanelController: NSWindowController {
         let kindColumn = NSTableColumn(identifier: .init("kind"))
         kindColumn.title = "名前／種類"
         kindColumn.width = 130
+        let roleColumn = NSTableColumn(identifier: .init("role"))
+        roleColumn.title = "役割"
+        roleColumn.width = 150
         let stateColumn = NSTableColumn(identifier: .init("state"))
         stateColumn.title = "状態"
         stateColumn.width = 110
@@ -345,7 +379,7 @@ final class TerminalSessionsPanelController: NSWindowController {
         let folderColumn = NSTableColumn(identifier: .init("folder"))
         folderColumn.title = "フォルダ"
         folderColumn.width = 320
-        [pinColumn, kindColumn, stateColumn, activityColumn, folderColumn]
+        [pinColumn, kindColumn, roleColumn, stateColumn, activityColumn, folderColumn]
             .forEach(tableView.addTableColumn)
         tableView.allowsMultipleSelection = true
         tableView.usesAlternatingRowBackgroundColors = true
@@ -605,21 +639,56 @@ final class TerminalSessionsPanelController: NSWindowController {
         guard let row = selectedRows().first,
               let recordID = row.recordID,
               let window else { return }
+        let supportsRole = row.kind == .claude
         let field = NSTextField(string: row.kindLabel)
         field.placeholderString = row.kind?.displayName ?? "セッション名"
-        field.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
+
+        let roleView = NSTextView(frame: NSRect(x: 0, y: 0, width: 320, height: 68))
+        roleView.string = row.role ?? ""
+        roleView.font = .systemFont(ofSize: 12)
+        roleView.isRichText = false
+        roleView.textContainerInset = NSSize(width: 4, height: 4)
+        let roleScroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 320, height: 68))
+        roleScroll.documentView = roleView
+        roleScroll.hasVerticalScroller = true
+        roleScroll.borderType = .bezelBorder
+
+        let nameCaption = NSTextField(labelWithString: "名前（空欄で種類名に戻す）")
+        let roleCaption = NSTextField(labelWithString: "役割（次に開始したときから効きます）")
+        for caption in [nameCaption, roleCaption] {
+            caption.font = .systemFont(ofSize: 11)
+            caption.textColor = .secondaryLabelColor
+        }
+
+        let stack = NSStackView(views: supportsRole
+            ? [nameCaption, field, roleCaption, roleScroll]
+            : [nameCaption, field])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 4
+        stack.setCustomSpacing(12, after: field)
+        stack.frame = NSRect(x: 0, y: 0, width: 320, height: supportsRole ? 140 : 46)
+        field.widthAnchor.constraint(equalToConstant: 320).isActive = true
+        roleScroll.widthAnchor.constraint(equalToConstant: 320).isActive = true
+        roleScroll.heightAnchor.constraint(equalToConstant: 68).isActive = true
+
         let alert = NSAlert()
-        alert.messageText = "セッション名を変更"
-        alert.informativeText = "空欄にすると種類名へ戻ります。"
-        alert.accessoryView = field
+        alert.messageText = supportsRole ? "セッションの名前と役割" : "セッション名を変更"
+        alert.informativeText = supportsRole
+            ? "役割はこのフォルダのClaudeに残り、次に開始したときのシステムプロンプトへ足されます。走っている最中に変えても、そのセッションの振る舞いは変わりません。"
+            : "空欄にすると種類名へ戻ります。"
+        alert.accessoryView = stack
         alert.addButton(withTitle: "保存")
         alert.addButton(withTitle: "キャンセル")
         alert.beginSheetModal(for: window) { [weak self] response in
-            guard response == .alertFirstButtonReturn else { return }
-            self?.sessionManager.renameSessionRecord(
+            guard response == .alertFirstButtonReturn, let self else { return }
+            self.sessionManager.renameSessionRecord(
                 id: recordID,
                 name: field.stringValue
             )
+            if supportsRole {
+                self.sessionManager.setSessionRecordRole(id: recordID, role: roleView.string)
+            }
         }
     }
 
@@ -767,6 +836,9 @@ extension TerminalSessionsPanelController: NSTableViewDataSource, NSTableViewDel
             text = model.isPinned ? "★" : ""
         case "kind":
             text = model.kindLabel
+        case "role":
+            // 役割は長文になり得るので、一覧では1行に畳んで見せる。
+            text = model.role?.replacingOccurrences(of: "\n", with: " ") ?? "—"
         case "state":
             text = model.stateLabel
         case "activity":
@@ -789,7 +861,14 @@ extension TerminalSessionsPanelController: NSTableViewDataSource, NSTableViewDel
             label.alignment = .center
         }
         label.lineBreakMode = .byTruncatingMiddle
-        label.toolTip = model.folderPath
+        if tableColumn.identifier.rawValue == "role" {
+            label.lineBreakMode = .byTruncatingTail
+            if model.role == nil { label.textColor = .tertiaryLabelColor }
+            // 畳んだ1行では読み切れないので、全文はここで見せる。
+            label.toolTip = model.role ?? model.folderPath
+        } else {
+            label.toolTip = model.folderPath
+        }
         return label
     }
 
