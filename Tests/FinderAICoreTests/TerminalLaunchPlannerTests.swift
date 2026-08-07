@@ -38,6 +38,10 @@ struct TerminalLaunchPlannerTests {
         ) == nil)
     }
 
+    /// ステータス行はドロワーのタブと重複し、狭い幅では切れ端にしかならない
+    /// ので、セッションコマンドの後続で消す。
+    private let statusOffSuffix = [";", "set-option", "status", "off"]
+
     @Test("persistent shell attaches-or-creates the named tmux session")
     func persistentShell() {
         let plan = TerminalLaunchPlanner.plan(
@@ -52,7 +56,7 @@ struct TerminalLaunchPlannerTests {
                 "new-session", "-A",
                 "-s", persistence.sessionName,
                 "-c", "/tmp/work dir"
-            ]
+            ] + statusOffSuffix
         ))
     }
 
@@ -92,7 +96,12 @@ struct TerminalLaunchPlannerTests {
             resumesConversation: true
         )
         #expect(plan?.executable == "/opt/homebrew/bin/tmux")
-        #expect(plan?.arguments.suffix(2) == [claude.path, "--continue"])
+        #expect(plan?.arguments == [
+            "new-session", "-A",
+            "-s", persistence.sessionName,
+            "-c", "/tmp/x",
+            claude.path, "--continue"
+        ] + statusOffSuffix)
     }
 
     @Test("persistent CLI runs the command inside the tmux session")
@@ -105,7 +114,10 @@ struct TerminalLaunchPlannerTests {
             directoryPath: "/tmp/x"
         )
         #expect(plan?.executable == "/opt/homebrew/bin/tmux")
-        #expect(plan?.arguments.last == codex.path)
+        // セッションコマンド（起動するCLI）はステータス行を消す後続の前に居る。
+        #expect(plan?.arguments.firstIndex(of: codex.path).map { index in
+            plan?.arguments[..<index].contains(";") == false
+        } == true)
         // CLIが見つからないなら、tmuxで包んでも起動できないものはできない。
         #expect(TerminalLaunchPlanner.plan(
             kind: .codex,
