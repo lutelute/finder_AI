@@ -420,7 +420,10 @@ final class WorkspaceAppCoordinator {
         }
 
         let front = frontmostWindow
-        let directory = front?.browser.currentDirectory ?? Self.defaultDirectory()
+        // 開く先を決めてあるならそこ。決めていなければ従来どおり手前と同じ。
+        let directory = preferences.newWindowDirectory
+            ?? front?.browser.currentDirectory
+            ?? Self.defaultDirectory()
         // Seed the walk from the window this one came from, then let it run.
         if cascadePoint == .zero, let front {
             cascadePoint = front.cascadeOrigin
@@ -1123,6 +1126,11 @@ final class WorkspaceAppCoordinator {
         //
         // Restoring the previous folder resolves a bookmark, which stays local and
         // returns nil rather than blocking when the volume is gone.
-        WorkspacePreferences().lastDirectory ?? FileManager.default.homeDirectoryForCurrentUser
+        //
+        // ユーザーが「開く先」を決めているなら、それが最優先。
+        let preferences = WorkspacePreferences()
+        return preferences.newWindowDirectory
+            ?? preferences.lastDirectory
+            ?? FileManager.default.homeDirectoryForCurrentUser
     }
 }

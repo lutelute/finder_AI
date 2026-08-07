@@ -115,6 +115,31 @@ struct DrawerTerminalMountingTests {
         _ = drawerB
     }
 
+    @Test("同じフォルダを開いた新しいドロワーも、他所に出ている中身を奪わない")
+    func newDrawerOnSameFolderDoesNotSteal() throws {
+        let preferences = makePreferences(#function)
+        let manager = TerminalSessionManager(
+            builder: DrawerMockBuilder(),
+            commandLocator: DrawerMockLocator(),
+            registry: InMemorySessionRegistryStore(records: [])
+        )
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("drawer-a")
+
+        let drawerA = makeDrawer(manager: manager, preferences: preferences, directory: folder)
+        let session = try manager.create(kind: .claude, directoryURL: folder)
+        #expect(rootView(of: session.contentView) === drawerA.view)
+
+        // フォルダ移動は「そのフォルダのセッションを前へ」を自動で求めるが、
+        // 中身が他のウインドウに出ているなら奪わない——新しいウインドウを
+        // 開いただけで元のAI画面が消えてはいけない。
+        let drawerB = makeDrawer(manager: manager, preferences: preferences, directory: folder)
+        #expect(rootView(of: session.contentView) === drawerA.view)
+
+        // タブを押した（意思のある）ときだけ取り寄せる。
+        try #require(tabButtons(in: drawerB.view).first).performClick(nil)
+        #expect(rootView(of: session.contentView) === drawerB.view)
+    }
+
     @Test("タブを押せば、他所に出ている中身でも取り寄せられ、元の側も押せば取り戻せる")
     func clickingTabReclaimsStolenSession() throws {
         let preferences = makePreferences(#function)
