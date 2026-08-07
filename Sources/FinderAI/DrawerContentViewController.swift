@@ -1,19 +1,33 @@
 import AppKit
 import FinderAICore
 
+/// 帯の1本。
+///
+/// 種類の記号・実行中の点・名前を別々に描くので、幅が足りないときは
+/// 名前だけ畳んで記号は残せる。文字列を1本に固めると、この削り方ができない。
+/// 選んでいる1本は、地の色と細い縁の両方で示す——色だけだと、暗い配色では
+/// 隣と見分けが付かない。
 @MainActor
 private final class SessionTabButton: NSButton {
     var isActiveTab = false {
         didSet { needsDisplay = true }
     }
+    override var wantsUpdateLayer: Bool { false }
 
-    override var wantsUpdateLayer: Bool { true }
-
-    override func updateLayer() {
-        layer?.backgroundColor = (
-            isActiveTab ? IntegratedPanelTheme.activeTab : .clear
-        ).cgColor
-        layer?.cornerRadius = 4
+    override func draw(_ dirtyRect: NSRect) {
+        if isActiveTab {
+            let path = NSBezierPath(
+                roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
+                xRadius: 5,
+                yRadius: 5
+            )
+            IntegratedPanelTheme.activeTab.setFill()
+            path.fill()
+            IntegratedPanelTheme.accent.setStroke()
+            path.lineWidth = 1
+            path.stroke()
+        }
+        super.draw(dirtyRect)
     }
 }
 
@@ -75,6 +89,9 @@ final class DrawerContentViewController: NSViewController {
     /// 「＋N」チップが示した、隠れて実行中のセッション数。タブと一緒に描き
     /// 直すので、変わったかどうかをここで見分ける。
     private var renderedHiddenCount = 0
+    /// 前回どこまで詰めたか。幅が変われば詰め方も変わるので、組み直しの
+    /// 要否はこれも見て決める。
+    private var renderedPlan: DrawerTabStripPlanner.Plan?
 
     private let resizeHandle = ResizeHandleView()
     /// パネルとブラウザの境目。下辺なら上に、右辺なら左に出る。
@@ -403,8 +420,15 @@ final class DrawerContentViewController: NSViewController {
 
         sessionTabs.orientation = .horizontal
         sessionTabs.alignment = .centerY
-        sessionTabs.spacing = 2
+        sessionTabs.spacing = DrawerTabStripPlanner.spacing
         sessionTabs.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        // 帯はウインドウを押し広げない。入らないぶんは`tabStripPlan`が削るので、
+        // ここが踏ん張ると最小幅だけが育って、パネルを細くできなくなる。
+        sessionTabs.setContentCompressionResistancePriority(
+            .defaultLow,
+            for: .horizontal
+        )
+        sessionTabs.clipsToBounds = true
 
         configureIconButton(
             placementButton,
@@ -686,7 +710,7 @@ final class DrawerContentViewController: NSViewController {
             sources: visibleSessions.map {
                 DrawerSessionTabs.Source(
                     id: $0.id,
-                    kindName: $0.kind.displayName,
+                    kind: $0.kind,
                     customName: sessionManager.customName(for: $0),
                     role: sessionManager.role(for: $0),
                     directoryURL: $0.directoryURL,
@@ -702,52 +726,14 @@ final class DrawerContentViewController: NSViewController {
         let hiddenRunningCount = sessionManager.allSessions
             .filter { $0.isRunning && !sessionManager.isPresented($0) }
             .count
-        if rows != renderedTabs || hiddenRunningCount != renderedHiddenCount {
-            sessionTabs.arrangedSubviews.forEach {
-                sessionTabs.removeArrangedSubview($0)
-                $0.removeFromSuperview()
-            }
-            for (index, row) in rows.enumerated() {
-                let session = visibleSessions[index]
-                let button = SessionTabButton()
-                button.title = row.title
-                button.font = .systemFont(ofSize: 11, weight: .medium)
-                // Arriving somewhere that already has a live terminal is
-                // announced in color: only current-folder running sessions get
-                // the accent, so the strip separates "open here" from
-                // "open elsewhere" without reading a single label.
-                button.contentTintColor = row.isRunning && row.belongsToCurrentFolder
-                    ? IntegratedPanelTheme.accent
-                    : row.isRunning && row.isActive
-                        ? IntegratedPanelTheme.text
-                        : IntegratedPanelTheme.secondaryText
-                button.isBordered = false
-                button.tag = index
-                button.target = self
-                button.action = #selector(selectSession(_:))
-                button.menu = sessionContextMenu(for: session)
-                button.isActiveTab = row.isActive
-                button.toolTip = row.tooltip
-                button.translatesAutoresizingMaskIntoConstraints = false
-                button.widthAnchor.constraint(greaterThanOrEqualToConstant: 68).isActive = true
-                button.heightAnchor.constraint(equalToConstant: 26).isActive = true
-                sessionTabs.addArrangedSubview(button)
-            }
-            if hiddenRunningCount > 0 {
-                let chip = NSButton()
-                chip.title = "＋\(hiddenRunningCount)"
-                chip.font = .systemFont(ofSize: 11, weight: .medium)
-                chip.contentTintColor = IntegratedPanelTheme.secondaryText
-                chip.isBordered = false
-                chip.target = self
-                chip.action = #selector(showHiddenSessions)
-                chip.toolTip = "隠れて実行中のセッションが\(hiddenRunningCount)件 — 押して一覧から戻す"
-                chip.translatesAutoresizingMaskIntoConstraints = false
-                chip.heightAnchor.constraint(equalToConstant: 26).isActive = true
-                sessionTabs.addArrangedSubview(chip)
-            }
+        let plan = tabStripPlan(for: rows.count)
+        if rows != renderedTabs
+            || hiddenRunningCount != renderedHiddenCount
+            || plan != renderedPlan {
+            rebuildTabStrip(rows: rows, plan: plan, hiddenRunningCount: hiddenRunningCount)
             renderedTabs = rows
             renderedHiddenCount = hiddenRunningCount
+            renderedPlan = plan
         }
         sessionTabs.isHidden = visibleSessions.isEmpty && renderedHiddenCount == 0
         // 右辺ではタブが2段目そのもの。増減で段の要否が変わったときだけ組み直す。
@@ -809,6 +795,156 @@ final class DrawerContentViewController: NSViewController {
                     ? "\(kind.displayName)で前回の続き"
                     : kind.displayName
         }
+    }
+
+    /// 幅が変われば詰め方も変わる。パネルの大きさを引きずって変えている
+    /// 最中も追いつくよう、レイアウトのたびに見直す（変化が無ければ
+    /// `rebuildTabStrip`まで行かずに済む）。
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        guard !renderedTabs.isEmpty || renderedHiddenCount > 0 else { return }
+        let plan = tabStripPlan(for: renderedTabs.count)
+        guard plan != renderedPlan else { return }
+        rebuildTabStrip(
+            rows: renderedTabs,
+            plan: plan,
+            hiddenRunningCount: renderedHiddenCount
+        )
+        renderedPlan = plan
+    }
+
+    /// 帯に使える横幅から、何本をどこまで見せるかを決める。
+    ///
+    /// 右辺のパネルは細いので段を2つ使う——縦は余っていて、横だけが
+    /// 足りない。下辺は横に長いので1段でよい。
+    private func tabStripPlan(for tabCount: Int) -> DrawerTabStripPlanner.Plan {
+        // 帯そのものの幅は測らない。並びは中身の幅に合わせて伸びるので、
+        // それを基準にすると「入るから削らなくてよい」と答え続け、代わりに
+        // ヘッダーごと横へ膨らんでウインドウの最小幅を押し上げる——
+        // 「横がいっぱいになる」の正体はこれだった。使える幅は、パネルから
+        // 他の物のぶんを引いて出す。
+        let panelWidth = view.bounds.width > 1
+            ? view.bounds.width
+            : preferences.terminalThickness(for: edge)
+        if edge == .right {
+            // 2段目まるごとがタブ。左右の余白だけ引く。細いので段で稼ぐ。
+            return DrawerTabStripPlanner.plan(
+                tabCount: tabCount,
+                availableWidth: panelWidth - 24,
+                rowCount: 2
+            )
+        }
+        // 下辺は1段。パス表示と右端のボタン群のぶんを空けておく。
+        return DrawerTabStripPlanner.plan(
+            tabCount: tabCount,
+            availableWidth: panelWidth - Self.bottomRowReserve,
+            rowCount: 1
+        )
+    }
+
+    /// 下辺のヘッダーで、タブ以外（パス・明るさ・配置・管理・＋・閉じる）が
+    /// 使う幅の見積もり。
+    private static let bottomRowReserve: CGFloat = 380
+
+    private func rebuildTabStrip(
+        rows: [DrawerSessionTab],
+        plan: DrawerTabStripPlanner.Plan,
+        hiddenRunningCount: Int
+    ) {
+        sessionTabs.arrangedSubviews.forEach {
+            sessionTabs.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
+        // 並びは「今いる場所を先頭へ」で組み替えてあるので、押された1本は
+        // 番号ではなくIDで引く。番号で引くと別のセッションが開く。
+        for row in rows.prefix(plan.visibleCount) {
+            guard let session = visibleSessions.first(where: { $0.id == row.id }) else { continue }
+            sessionTabs.addArrangedSubview(
+                makeTabButton(row: row, session: session, plan: plan)
+            )
+        }
+        // 入り切らなかったぶんと、隠したまま動いているぶん。どちらも
+        // 「見えていないが在る」なので、1つの数にまとめて一覧へ送る。
+        let unseen = plan.overflow + hiddenRunningCount
+        if unseen > 0 {
+            sessionTabs.addArrangedSubview(makeOverflowChip(
+                count: unseen,
+                overflow: plan.overflow,
+                hidden: hiddenRunningCount
+            ))
+        }
+    }
+
+    private func makeTabButton(
+        row: DrawerSessionTab,
+        session: any ManagedTerminalSession,
+        plan: DrawerTabStripPlanner.Plan
+    ) -> NSButton {
+        let button = SessionTabButton()
+        button.image = NSImage(
+            systemSymbolName: row.kind.symbolName,
+            accessibilityDescription: row.kind.displayName
+        )
+        button.imagePosition = plan.display == .iconOnly ? .imageOnly : .imageLeading
+        button.imageHugsTitle = true
+        // 印は1つに絞る。記号の色だけで「動いているか」「今ここか」を言う——
+        // 点と記号を別々に置くと、狭いタブでは点が隣との区切りに見えた。
+        button.contentTintColor = row.isRunning
+            ? (row.belongsToCurrentFolder ? IntegratedPanelTheme.accent : row.kind.tint)
+            : IntegratedPanelTheme.secondaryText
+        // 文字は「今ここか、よそか」。記号とは役割が違うので色を分ける。
+        let titleColor = row.belongsToCurrentFolder || row.isActive
+            ? IntegratedPanelTheme.text
+            : IntegratedPanelTheme.secondaryText
+        button.attributedTitle = NSAttributedString(
+            string: plan.display == .full ? row.fullTitle : row.compactTitle,
+            attributes: [
+                .foregroundColor: titleColor,
+                .font: NSFont.systemFont(
+                    ofSize: 11,
+                    weight: row.isActive ? .semibold : .medium
+                )
+            ]
+        )
+        button.isBordered = false
+        // 左寄せ。点・記号・名前をひと続きに見せ、名前の頭が縦に揃うので
+        // 並んだタブを目で流して探せる。
+        button.alignment = .left
+        if let cell = button.cell as? NSButtonCell {
+            cell.imageDimsWhenDisabled = false
+        }
+        button.identifier = NSUserInterfaceItemIdentifier(row.id.uuidString)
+        button.target = self
+        button.action = #selector(selectSession(_:))
+        button.menu = sessionContextMenu(for: session)
+        button.isActiveTab = row.isActive
+        button.toolTip = row.tooltip
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.widthAnchor.constraint(
+            equalToConstant: plan.display.width
+        ).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        return button
+    }
+
+    private func makeOverflowChip(count: Int, overflow: Int, hidden: Int) -> NSButton {
+        let chip = SessionTabButton()
+        chip.title = "＋\(count)"
+        chip.font = .systemFont(ofSize: 11, weight: .semibold)
+        chip.contentTintColor = IntegratedPanelTheme.secondaryText
+        chip.isBordered = false
+        chip.target = self
+        chip.action = #selector(showHiddenSessions)
+        var reasons: [String] = []
+        if overflow > 0 { reasons.append("帯に入り切らないぶん\(overflow)件") }
+        if hidden > 0 { reasons.append("隠して実行中\(hidden)件") }
+        chip.toolTip = reasons.joined(separator: "・") + " — 押すと一覧（⌘⌥T）で選べます"
+        chip.translatesAutoresizingMaskIntoConstraints = false
+        chip.widthAnchor.constraint(
+            equalToConstant: DrawerTabStripPlanner.overflowChipWidth
+        ).isActive = true
+        chip.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        return chip
     }
 
     /// このドロワー以外（別ウインドウのドロワー）にセッションの中身が
@@ -919,8 +1055,9 @@ final class DrawerContentViewController: NSViewController {
     }
 
     @objc private func selectSession(_ sender: NSButton) {
-        guard visibleSessions.indices.contains(sender.tag) else { return }
-        let session = visibleSessions[sender.tag]
+        guard let raw = sender.identifier?.rawValue,
+              let id = UUID(uuidString: raw),
+              let session = visibleSessions.first(where: { $0.id == id }) else { return }
         activeSession = session
         reloadSessions(prefer: session, takesOverMountedElsewhere: true)
         // タブは畳んでいても見えている。押したのに中身が隠れたままでは
