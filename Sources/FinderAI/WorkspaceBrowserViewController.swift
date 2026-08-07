@@ -1464,6 +1464,15 @@ final class WorkspaceBrowserViewController: NSViewController {
         navigate(to: url, addHistory: true)
     }
 
+    /// 入れ物のフォルダを開いて、その1つを選んだ状態にする。外から
+    /// ファイルを渡されたときの着地点。読み込みは非同期なので、選ぶのは
+    /// 一覧が揃ってから（`selectPendingItemIfNeeded`が拾う）。
+    func reveal(_ url: URL) {
+        let target = url.standardizedFileURL
+        pendingSelectionURL = target
+        navigate(to: target.deletingLastPathComponent())
+    }
+
     private func navigate(to url: URL, addHistory: Bool) {
         if addHistory { navigator.navigate(to: url) }
         let directory = navigator.currentDirectory

@@ -35,4 +35,19 @@ final class WorkspaceAppDelegate: NSObject, NSApplicationDelegate {
         coordinator?.showWorkspace()
         return true
     }
+
+    /// Finderの「このアプリケーションで開く」、ドックへのドロップ、`open -a`。
+    ///
+    /// 起動と同時に渡されることもあるので、コーディネータがまだ無ければ
+    /// 立ち上がりを待って渡し直す。ここで捨てると、Finderから開いたのに
+    /// 何も起きない——これまでがその状態だった。
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let coordinator else {
+            DispatchQueue.main.async { [weak self] in
+                self?.coordinator?.openExternally(urls)
+            }
+            return
+        }
+        coordinator.openExternally(urls)
+    }
 }

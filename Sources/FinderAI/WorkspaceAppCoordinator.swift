@@ -749,6 +749,50 @@ final class WorkspaceAppCoordinator {
 
     /// Clicking the Dock icon with every window closed has to produce a window,
     /// not silently do nothing.
+    /// Finderの「このアプリケーションで開く」や`open -a`から渡された場所。
+    ///
+    /// フォルダはそのまま開き、ファイルは入れ物のフォルダを開いて選ぶ——
+    /// Finderの代わりに使う道具なので、`.tex`を渡されて何も起きないより、
+    /// その隣を見せたほうが期待に近い。1つ目は今の窓、2つ目以降は別の窓へ。
+    /// まとめて渡されたものを1枚に上書きし合っても意味がない。
+    func openExternally(_ urls: [URL]) {
+        let targets = urls.compactMap { url -> ExternalOpenTarget? in
+            var isDirectory: ObjCBool = false
+            let standardized = url.standardizedFileURL
+            guard FileManager.default.fileExists(
+                atPath: standardized.path,
+                isDirectory: &isDirectory
+            ) else { return nil }
+            return ExternalOpenTarget(url: standardized, isDirectory: isDirectory.boolValue)
+        }
+        let steps = ExternalOpenPlanner.steps(
+            for: targets,
+            hasOpenWindow: (frontmostWindow ?? windows.first) != nil,
+            availableNewWindows: Self.windowLimit - windows.count
+        )
+        guard !steps.isEmpty else { return }
+
+        for step in steps {
+            let target: WorkspaceWindowController
+            if step.usesNewWindow {
+                let controller = makeWindow(directory: step.folder)
+                cascadePoint = controller.cascade(from: cascadePoint)
+                target = controller
+            } else if let existing = frontmostWindow ?? windows.first {
+                target = existing
+            } else {
+                continue
+            }
+            target.show()
+            if let selection = step.selection {
+                target.browser.reveal(selection)
+            } else {
+                target.browser.navigate(to: step.folder)
+            }
+        }
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     func showWorkspace() {
         if let existing = frontmostWindow ?? windows.first {
             existing.show()
