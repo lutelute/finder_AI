@@ -56,6 +56,28 @@ extension NSAppearance {
     }
 }
 
+extension TerminalSessionKind {
+    /// タブに出す記号。読まずに種類を見分けるための的。
+    var symbolName: String {
+        switch self {
+        case .shell: "terminal.fill"
+        case .codex: "chevron.left.forwardslash.chevron.right"
+        case .claude: "sparkles"
+        }
+    }
+
+    /// 種類ごとの色。名前を落として記号だけにしても、色で区別が残る。
+    /// 選択や強調に使う青とは別の色にして、「今どれを見ているか」と
+    /// 「これは何か」が混ざらないようにする。
+    var tint: NSColor {
+        switch self {
+        case .shell: NSColor(srgbRed: 0.55, green: 0.60, blue: 0.67, alpha: 1)
+        case .codex: NSColor(srgbRed: 0.36, green: 0.72, blue: 0.51, alpha: 1)
+        case .claude: NSColor(srgbRed: 0.85, green: 0.52, blue: 0.35, alpha: 1)
+        }
+    }
+}
+
 extension WorkspaceAppearance {
     /// AppKitに渡す外観。システムに合わせるときはnil（親から受け継ぐ）。
     var nsAppearance: NSAppearance? {

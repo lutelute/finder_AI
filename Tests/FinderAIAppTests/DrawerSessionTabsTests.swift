@@ -1,3 +1,4 @@
+import FinderAICore
 import Foundation
 @testable import FinderAIApp
 import Testing
@@ -9,157 +10,164 @@ struct DrawerSessionTabsTests {
 
     private func source(
         id: UUID = UUID(),
-        kind: String = "Claude",
+        kind: TerminalSessionKind = .claude,
+        customName: String? = nil,
+        role: String? = nil,
         in directory: URL,
-        running: Bool = true
+        running: Bool = true,
+        anchored: Bool = false
     ) -> DrawerSessionTabs.Source {
         DrawerSessionTabs.Source(
             id: id,
-            kindName: kind,
+            kind: kind,
+            customName: customName,
+            role: role,
             directoryURL: directory,
-            isRunning: running
+            isRunning: running,
+            isAnchored: anchored
         )
     }
 
-    @Test("a session in the current folder shows no folder suffix")
+    @Test("今いる場所のものはフォルダ名を添えない")
     func currentFolderHasNoSuffix() {
         let rows = DrawerSessionTabs.rows(
             sources: [source(in: home)],
             currentDirectory: home,
             activeID: nil
         )
-        #expect(rows.map(\.title) == ["●  Claude"])
-        #expect(rows.map(\.belongsToCurrentFolder) == [true])
+        #expect(rows.map(\.fullTitle) == ["Claude"])
+        #expect(rows[0].folderName == nil)
+        #expect(rows[0].belongsToCurrentFolder)
     }
 
-    @Test("a session in another folder is suffixed with its folder name")
+    @Test("よその場所のものは、どこにいるかを添える")
     func otherFolderIsSuffixed() {
         let rows = DrawerSessionTabs.rows(
             sources: [source(in: away)],
             currentDirectory: home,
             activeID: nil
         )
-        #expect(rows.map(\.title) == ["●  Claude · projectB"])
-        #expect(rows.map(\.belongsToCurrentFolder) == [false])
-        #expect(rows[0].tooltip == "Claude — /Users/x/projectB/\nダブルクリックでこの場所をブラウザに表示")
+        #expect(rows.map(\.fullTitle) == ["Claude · projectB"])
+        #expect(rows[0].folderName == "projectB")
+        // 幅が無いときはフォルダを落とす。
+        #expect(rows.map(\.compactTitle) == ["Claude"])
     }
 
-    @Test("stopped sessions lose the running dot but keep their identity")
-    func stoppedSessionHasNoDot() {
-        let rows = DrawerSessionTabs.rows(
-            sources: [source(kind: "Shell", in: away, running: false)],
-            currentDirectory: home,
-            activeID: nil
-        )
-        #expect(rows.map(\.title) == ["Shell · projectB"])
-        #expect(rows.map(\.isRunning) == [false])
-    }
-
-    @Test("only the active id is marked active")
-    func activeMarking() {
-        let active = UUID()
-        let rows = DrawerSessionTabs.rows(
-            sources: [source(id: active, in: home), source(in: away)],
-            currentDirectory: home,
-            activeID: active
-        )
-        #expect(rows.map(\.isActive) == [true, false])
-    }
-
-    @Test("without a current directory every session shows its folder")
-    func noCurrentDirectorySuffixesEverything() {
-        let rows = DrawerSessionTabs.rows(
-            sources: [source(in: home), source(kind: "Codex", in: away)],
-            currentDirectory: nil,
-            activeID: nil
-        )
-        #expect(rows.map(\.title) == ["●  Claude · projectA", "●  Codex · projectB"])
-    }
-
-    @Test("an anchored shell wears the pin on its tab")
-    func anchoredShellShowsPin() {
+    @Test("今いる場所のものを先頭へ寄せる。削られてよいのはよその場所のほう")
+    func currentFolderSessionsComeFirst() {
+        let awayFirst = UUID()
+        let hereLater = UUID()
         let rows = DrawerSessionTabs.rows(
             sources: [
-                DrawerSessionTabs.Source(
-                    id: UUID(),
-                    kindName: "Shell",
-                    directoryURL: home,
-                    isRunning: true,
-                    isAnchored: true
-                )
+                source(id: awayFirst, in: away),
+                source(id: hereLater, in: home)
             ],
             currentDirectory: home,
             activeID: nil
         )
-        #expect(rows.map(\.title) == ["📌 ●  Shell"])
+        #expect(rows.map(\.id) == [hereLater, awayFirst])
     }
 
-    @Test("a volume-root session falls back to its full path as the folder name")
-    func rootFolderFallsBackToPath() {
-        let root = URL(fileURLWithPath: "/", isDirectory: true)
+    @Test("同じ組の中では渡された順のまま。押す先が動かない")
+    func orderIsStableWithinAGroup() {
+        let a = UUID(), b = UUID(), c = UUID()
         let rows = DrawerSessionTabs.rows(
-            sources: [source(kind: "Shell", in: root)],
+            sources: [source(id: a, in: away), source(id: b, in: away), source(id: c, in: away)],
             currentDirectory: home,
             activeID: nil
         )
-        #expect(rows.map(\.title) == ["●  Shell · /"])
+        #expect(rows.map(\.id) == [a, b, c])
+    }
+
+    @Test("種類はタブが持つ。記号と色で読まずに見分けるため")
+    func kindTravelsWithTheRow() {
+        let rows = DrawerSessionTabs.rows(
+            sources: [
+                source(kind: .shell, in: home),
+                source(kind: .codex, in: home),
+                source(kind: .claude, in: home)
+            ],
+            currentDirectory: home,
+            activeID: nil
+        )
+        #expect(rows.map(\.kind) == [.shell, .codex, .claude])
+    }
+
+    @Test("止まっているものは実行中として扱わない")
+    func stoppedSessionIsNotRunning() {
+        let rows = DrawerSessionTabs.rows(
+            sources: [source(in: home, running: false)],
+            currentDirectory: home,
+            activeID: nil
+        )
+        #expect(rows[0].isRunning == false)
+    }
+
+    @Test("選んでいる1本だけが選択中")
+    func activeMarking() {
+        let chosen = UUID()
+        let rows = DrawerSessionTabs.rows(
+            sources: [source(id: chosen, in: home), source(in: home)],
+            currentDirectory: home,
+            activeID: chosen
+        )
+        #expect(rows.filter(\.isActive).map(\.id) == [chosen])
+    }
+
+    @Test("行き先が決まっていなければ、どれも今いる場所のものではない")
+    func noCurrentDirectoryMeansEverythingIsElsewhere() {
+        let rows = DrawerSessionTabs.rows(
+            sources: [source(in: home), source(in: away)],
+            currentDirectory: nil,
+            activeID: nil
+        )
+        #expect(rows.allSatisfy { !$0.belongsToCurrentFolder })
+        #expect(rows.map(\.folderName) == ["projectA", "projectB"])
+    }
+
+    @Test("固定したシェルには📌が付く")
+    func anchoredShellShowsPin() {
+        let rows = DrawerSessionTabs.rows(
+            sources: [source(kind: .shell, in: home, anchored: true)],
+            currentDirectory: home,
+            activeID: nil
+        )
+        #expect(rows.map(\.fullTitle) == ["📌 Shell"])
+    }
+
+    @Test("ボリュームの根はフルパスを名乗る")
+    func rootFolderFallsBackToPath() {
+        let root = URL(fileURLWithPath: "/", isDirectory: true)
+        let rows = DrawerSessionTabs.rows(
+            sources: [source(kind: .shell, in: root)],
+            currentDirectory: home,
+            activeID: nil
+        )
+        #expect(rows.map(\.fullTitle) == ["Shell · /"])
     }
 
     @Test("名前を付けたセッションはタブでそれを名乗り、種類はツールチップに残る")
     func customNameTakesOverTheTab() {
         let rows = DrawerSessionTabs.rows(
-            sources: [
-                DrawerSessionTabs.Source(
-                    id: UUID(),
-                    kindName: "Claude",
-                    customName: "査読担当",
-                    directoryURL: home,
-                    isRunning: true
-                )
-            ],
+            sources: [source(customName: "査読担当", in: home)],
             currentDirectory: home,
             activeID: nil
         )
-        #expect(rows.map(\.title) == ["●  査読担当"])
+        #expect(rows.map(\.fullTitle) == ["査読担当"])
         #expect(rows[0].tooltip.hasPrefix("査読担当（Claude） — "))
-    }
-
-    @Test("名前は他フォルダの接尾辞・固定ピンとも両立する")
-    func customNameComposesWithSuffixAndPin() {
-        let rows = DrawerSessionTabs.rows(
-            sources: [
-                DrawerSessionTabs.Source(
-                    id: UUID(),
-                    kindName: "Shell",
-                    customName: "ビルド番",
-                    directoryURL: away,
-                    isRunning: true,
-                    isAnchored: true
-                )
-            ],
-            currentDirectory: home,
-            activeID: nil
-        )
-        #expect(rows.map(\.title) == ["📌 ●  ビルド番 · projectB"])
     }
 
     @Test("役割を持たせたタブには印が付き、全文はツールチップに出る")
     func roleGetsAMarkAndTooltipLine() {
         let rows = DrawerSessionTabs.rows(
             sources: [
-                DrawerSessionTabs.Source(
-                    id: UUID(),
-                    kindName: "Claude",
-                    customName: "査読担当",
-                    role: "査読者として振る舞う",
-                    directoryURL: home,
-                    isRunning: true
-                )
+                source(customName: "査読担当", role: "査読者として振る舞う", in: home)
             ],
             currentDirectory: home,
             activeID: nil
         )
-        #expect(rows.map(\.title) == ["●  査読担当 ✳︎"])
+        #expect(rows.map(\.fullTitle) == ["査読担当 ✳︎"])
+        #expect(rows[0].hasRole)
         #expect(rows[0].tooltip.contains("役割: 査読者として振る舞う"))
     }
 
@@ -170,18 +178,27 @@ struct DrawerSessionTabsTests {
             currentDirectory: home,
             activeID: nil
         )
-        #expect(rows[0].title.contains("✳︎") == false)
+        #expect(rows[0].hasRole == false)
+        #expect(rows[0].fullTitle.contains("✳︎") == false)
         #expect(rows[0].tooltip.contains("役割:") == false)
     }
 
-    @Test("名前が無ければこれまでどおり種類名のまま")
-    func withoutCustomNameNothingChanges() {
+    @Test("固定・役割・よその場所は同時に成り立つ")
+    func marksCompose() {
         let rows = DrawerSessionTabs.rows(
-            sources: [source(in: home)],
+            sources: [
+                source(
+                    kind: .shell,
+                    customName: "ビルド番",
+                    role: "ビルドだけ回す",
+                    in: away,
+                    anchored: true
+                )
+            ],
             currentDirectory: home,
             activeID: nil
         )
-        #expect(rows.map(\.title) == ["●  Claude"])
-        #expect(rows[0].tooltip.hasPrefix("Claude — "))
+        #expect(rows.map(\.fullTitle) == ["📌 ビルド番 · projectB ✳︎"])
+        #expect(rows.map(\.compactTitle) == ["📌 ビルド番 ✳︎"])
     }
 }
