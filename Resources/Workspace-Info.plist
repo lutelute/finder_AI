@@ -26,6 +26,40 @@
 	<string>100</string>
 	<key>FinderAIGitCommit</key>
 	<string>source</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<!-- Finderの「このアプリケーションで開く」、ドックへのドロップ、
+			     open -a の受け口。Viewerに留め、既定の扱い手にはならない
+			     (LSHandlerRank=Alternate)。フォルダをダブルクリックしたときに
+			     Finderの代わりにこちらが開いてしまうのは行き過ぎで、
+			     選んだときだけ来てほしい。 -->
+			<key>CFBundleTypeName</key>
+			<string>Folder</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.folder</string>
+			</array>
+		</dict>
+		<dict>
+			<!-- ファイルを渡されたら、その隣（入れ物のフォルダ）を開いて選ぶ。
+			     何も起きないより期待に近い。 -->
+			<key>CFBundleTypeName</key>
+			<string>Any file</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.item</string>
+			</array>
+		</dict>
+	</array>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.developer-tools</string>
 	<key>LSMinimumSystemVersion</key>
