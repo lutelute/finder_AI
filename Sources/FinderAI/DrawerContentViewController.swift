@@ -207,8 +207,9 @@ final class DrawerContentViewController: NSViewController {
                 hasOption: modifiers.contains(.option),
                 hasOtherModifiers: !modifiers.subtracting([.command, .option]).isEmpty
             ) else { return false }
-            self?.selectAdjacentSession(offset: shortcut.offset)
-            return true
+            // 1本も無いときは握り潰さない。取ったのに何も起きない鍵は、
+            // 押した人からは「効かないアプリ」に見える。
+            return self?.selectAdjacentSession(offset: shortcut.offset) ?? false
         }
         themePainter.register(root) { IntegratedPanelTheme.background }
         view = root
@@ -1047,16 +1048,19 @@ final class DrawerContentViewController: NSViewController {
     ///
     /// 帯に入り切らず数へ送られたぶんも並びには居るので、押せる的が
     /// 無くてもここから辿り着ける。
-    func selectAdjacentSession(offset: Int) {
+    /// - Returns: 実際に移ったか。移れなかった鍵は握り潰さず、他へ渡す。
+    @discardableResult
+    func selectAdjacentSession(offset: Int) -> Bool {
         guard let next = DrawerSessionTabs.adjacentID(
             in: renderedTabs.map(\.id),
             from: activeSession?.id,
             offset: offset
-        ), let session = visibleSessions.first(where: { $0.id == next }) else { return }
+        ), let session = visibleSessions.first(where: { $0.id == next }) else { return false }
         activeSession = session
         reloadSessions(prefer: session, takesOverMountedElsewhere: true)
         if !expanded { onToggle?() }
         view.window?.makeFirstResponder(session.contentView)
+        return true
     }
 
     @objc private func togglePlacement() {
