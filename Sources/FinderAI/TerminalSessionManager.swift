@@ -119,6 +119,18 @@ final class TerminalSessionManager: TerminalSessionManaging {
         return detachedSessionNames.contains(TmuxSessionNaming.sessionName(for: key))
     }
 
+    func hasResumableConversation(
+        kind: TerminalSessionKind,
+        directoryURL: URL
+    ) -> Bool {
+        // `--continue`を持つのはclaudeだけ。台帳の記録は「ここで動かしたことが
+        // ある」の証拠で、会話の実体はclaude側にある。実体が消えていても、
+        // claudeが「続きは無い」と穏当に伝えるだけで壊れはしない。
+        guard kind == .claude else { return false }
+        let path = directoryURL.standardizedFileURL.path
+        return sessionRecords.contains { $0.kind == .claude && $0.directoryPath == path }
+    }
+
     var persistentSessions: [TmuxSessionInfo] {
         persistentSessionInfos
     }
@@ -284,7 +296,8 @@ final class TerminalSessionManager: TerminalSessionManaging {
     @discardableResult
     func create(
         kind: TerminalSessionKind,
-        directoryURL: URL
+        directoryURL: URL,
+        resumingConversation: Bool
     ) throws -> any ManagedTerminalSession {
         let key = TerminalSessionKey(directoryURL: directoryURL, kind: kind)
         if let existing = sessionsByKey[key] {
@@ -324,7 +337,8 @@ final class TerminalSessionManager: TerminalSessionManaging {
             directoryURL: directoryURL,
             kind: kind,
             executableURL: executableURL,
-            persistence: persistence
+            persistence: persistence,
+            resumesConversation: resumingConversation
         )
         let now = Date()
         var record = registry.record(matching: key) ?? TerminalSessionRecord(

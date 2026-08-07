@@ -25,7 +25,8 @@ private struct StubSessionBuilder: TerminalSessionBuilding {
         directoryURL: URL,
         kind: TerminalSessionKind,
         executableURL: URL?,
-        persistence: TerminalSessionPersistence?
+        persistence: TerminalSessionPersistence?,
+        resumesConversation: Bool
     ) throws -> any ManagedTerminalSession {
         throw SessionCreationError.executableNotFound(kind.displayName)
     }

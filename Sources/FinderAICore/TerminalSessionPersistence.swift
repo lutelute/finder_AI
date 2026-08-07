@@ -30,11 +30,17 @@ public enum TerminalLaunchPlanner {
     /// 永続時は`new-session -A`を使う。作成と再アタッチが同じコマンドになるので、
     /// クラッシュ後の「再接続」に専用経路が要らない。`-c`は新規作成時だけ効き、
     /// 既存セッションへのアタッチでは無視される（それで正しい）。
+    ///
+    /// `resumesConversation`はclaudeにだけ効く（`--continue`＝そのフォルダの
+    /// 直近の会話へ戻る）。tmux併用時はセッションコマンドに含める：生きている
+    /// tmuxへは-Aがアタッチするだけでコマンドは無視され、Macの再起動などで
+    /// tmuxごと消えた後は、新しいセッションが会話を引き継いで立ち上がる。
     public static func plan(
         kind: TerminalSessionKind,
         commandURL: URL?,
         persistence: TerminalSessionPersistence?,
-        directoryPath: String
+        directoryPath: String,
+        resumesConversation: Bool = false
     ) -> Plan? {
         let base: Plan
         switch kind {
@@ -42,7 +48,8 @@ public enum TerminalLaunchPlanner {
             base = Plan(executable: "/bin/zsh", arguments: ["-l"])
         case .codex, .claude:
             guard let commandURL else { return nil }
-            base = Plan(executable: commandURL.path, arguments: [])
+            let arguments = (resumesConversation && kind == .claude) ? ["--continue"] : []
+            base = Plan(executable: commandURL.path, arguments: arguments)
         }
 
         guard let persistence else { return base }
@@ -55,6 +62,7 @@ public enum TerminalLaunchPlanner {
         // shellはtmuxのdefault-shell（macOSではログインシェルのzsh）に任せる。
         if kind != .shell {
             arguments.append(base.executable)
+            arguments.append(contentsOf: base.arguments)
         }
         return Plan(
             executable: persistence.tmuxExecutableURL.path,

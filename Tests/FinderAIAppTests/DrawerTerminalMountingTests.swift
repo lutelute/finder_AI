@@ -35,7 +35,8 @@ private final class DrawerMockBuilder: TerminalSessionBuilding {
         directoryURL: URL,
         kind: TerminalSessionKind,
         executableURL: URL?,
-        persistence: TerminalSessionPersistence?
+        persistence: TerminalSessionPersistence?,
+        resumesConversation: Bool
     ) throws -> any ManagedTerminalSession {
         DrawerMockSession(directoryURL: directoryURL, kind: kind)
     }

@@ -39,6 +39,7 @@ private final class MockSessionBuilder: TerminalSessionBuilding {
         let kind: TerminalSessionKind
         let executableURL: URL?
         let persistence: TerminalSessionPersistence?
+        let resumesConversation: Bool
     }
 
     private(set) var requests: [Request] = []
@@ -48,13 +49,15 @@ private final class MockSessionBuilder: TerminalSessionBuilding {
         directoryURL: URL,
         kind: TerminalSessionKind,
         executableURL: URL?,
-        persistence: TerminalSessionPersistence?
+        persistence: TerminalSessionPersistence?,
+        resumesConversation: Bool
     ) throws -> any ManagedTerminalSession {
         requests.append(Request(
             directoryURL: directoryURL,
             kind: kind,
             executableURL: executableURL,
-            persistence: persistence
+            persistence: persistence,
+            resumesConversation: resumesConversation
         ))
         let session = MockManagedSession(directoryURL: directoryURL, kind: kind)
         session.persistence = persistence
