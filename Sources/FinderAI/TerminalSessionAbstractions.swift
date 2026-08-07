@@ -54,7 +54,8 @@ protocol TerminalSessionBuilding {
         directoryURL: URL,
         kind: TerminalSessionKind,
         executableURL: URL?,
-        persistence: TerminalSessionPersistence?
+        persistence: TerminalSessionPersistence?,
+        resumesConversation: Bool
     ) throws -> any ManagedTerminalSession
 }
 
@@ -110,8 +111,15 @@ protocol TerminalSessionManaging: AnyObject {
     func killPersistentSessions(named names: [String]) async
     func create(
         kind: TerminalSessionKind,
-        directoryURL: URL
+        directoryURL: URL,
+        resumingConversation: Bool
     ) throws -> any ManagedTerminalSession
+    /// このフォルダで以前そのAIを動かした記録が台帳にあるか。あるなら
+    /// 「前回の続き」（claudeの`--continue`）で戻れる見込みがある。
+    func hasResumableConversation(
+        kind: TerminalSessionKind,
+        directoryURL: URL
+    ) -> Bool
     /// 表示中のシェルをフォルダ移動へ追従させ、成功したら台帳と索引も
     /// 新しい所属へ付け替える。移動先に同種のセッションが既にいる場合は
     /// 何もせずfalse（呼び出し側が移動先のセッションを前面に出す）。
@@ -126,6 +134,17 @@ protocol TerminalSessionManaging: AnyObject {
     func shutdownOwnedProcesses()
 }
 
+extension TerminalSessionManaging {
+    /// 新規（前回の続きを求めない）作成。
+    @discardableResult
+    func create(
+        kind: TerminalSessionKind,
+        directoryURL: URL
+    ) throws -> any ManagedTerminalSession {
+        try create(kind: kind, directoryURL: directoryURL, resumingConversation: false)
+    }
+}
+
 @MainActor
 struct SwiftTermSessionBuilder: TerminalSessionBuilding {
     var preferences = WorkspacePreferences()
@@ -134,7 +153,8 @@ struct SwiftTermSessionBuilder: TerminalSessionBuilding {
         directoryURL: URL,
         kind: TerminalSessionKind,
         executableURL: URL?,
-        persistence: TerminalSessionPersistence?
+        persistence: TerminalSessionPersistence?,
+        resumesConversation: Bool
     ) throws -> any ManagedTerminalSession {
         try TerminalSession(
             directoryURL: directoryURL,
@@ -142,7 +162,8 @@ struct SwiftTermSessionBuilder: TerminalSessionBuilding {
             executableURL: executableURL,
             persistence: persistence,
             // 起動時ではなく作成時に読む。トグルの変更が次のセッションから効く。
-            logsOutput: preferences.sessionLogging
+            logsOutput: preferences.sessionLogging,
+            resumesConversation: resumesConversation
         )
     }
 }

@@ -112,7 +112,8 @@ final class TerminalSession: NSObject, @preconcurrency LocalProcessTerminalViewD
         kind: TerminalSessionKind,
         executableURL: URL?,
         persistence: TerminalSessionPersistence?,
-        logsOutput: Bool
+        logsOutput: Bool,
+        resumesConversation: Bool = false
     ) throws {
         self.directoryURL = directoryURL.standardizedFileURL
         self.kind = kind
@@ -125,7 +126,8 @@ final class TerminalSession: NSObject, @preconcurrency LocalProcessTerminalViewD
             kind: kind,
             commandURL: executableURL,
             persistence: persistence,
-            directoryPath: self.directoryURL.path
+            directoryPath: self.directoryURL.path,
+            resumesConversation: resumesConversation
         ) else {
             throw SessionCreationError.executableNotFound(kind.displayName)
         }

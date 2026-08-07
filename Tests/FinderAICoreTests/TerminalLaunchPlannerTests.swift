@@ -56,6 +56,45 @@ struct TerminalLaunchPlannerTests {
         ))
     }
 
+    @Test("前回の続きは、claudeにだけ--continueを付ける")
+    func resumeAddsContinueForClaudeOnly() {
+        let claude = URL(fileURLWithPath: "/mock/bin/claude")
+        let resumed = TerminalLaunchPlanner.plan(
+            kind: .claude,
+            commandURL: claude,
+            persistence: nil,
+            directoryPath: "/tmp/x",
+            resumesConversation: true
+        )
+        #expect(resumed == .init(executable: claude.path, arguments: ["--continue"]))
+
+        let codex = URL(fileURLWithPath: "/mock/bin/codex")
+        let codexResumed = TerminalLaunchPlanner.plan(
+            kind: .codex,
+            commandURL: codex,
+            persistence: nil,
+            directoryPath: "/tmp/x",
+            resumesConversation: true
+        )
+        #expect(codexResumed == .init(executable: codex.path, arguments: []))
+    }
+
+    @Test("tmux併用の続きは、セッションコマンドに--continueを含める")
+    func resumeSurvivesTmuxLoss() {
+        // 生きているtmuxへは-Aがアタッチするだけでコマンドは無視される。
+        // tmuxごと消えた後（Macの再起動）は、このコマンドが会話を引き継ぐ。
+        let claude = URL(fileURLWithPath: "/mock/bin/claude")
+        let plan = TerminalLaunchPlanner.plan(
+            kind: .claude,
+            commandURL: claude,
+            persistence: persistence,
+            directoryPath: "/tmp/x",
+            resumesConversation: true
+        )
+        #expect(plan?.executable == "/opt/homebrew/bin/tmux")
+        #expect(plan?.arguments.suffix(2) == [claude.path, "--continue"])
+    }
+
     @Test("persistent CLI runs the command inside the tmux session")
     func persistentCLI() {
         let codex = URL(fileURLWithPath: "/mock/bin/codex")

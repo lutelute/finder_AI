@@ -72,6 +72,9 @@ final class DrawerContentViewController: NSViewController {
     /// The tab strip is rebuilt from scratch on every reload; this is what the
     /// strip currently shows, so an unchanged session set can skip the teardown.
     private var renderedTabs: [DrawerSessionTab] = []
+    /// 「＋N」チップが示した、隠れて実行中のセッション数。タブと一緒に描き
+    /// 直すので、変わったかどうかをここで見分ける。
+    private var renderedHiddenCount = 0
 
     private let resizeHandle = ResizeHandleView()
     /// パネルとブラウザの境目。下辺なら上に、右辺なら左に出る。
@@ -684,7 +687,12 @@ final class DrawerContentViewController: NSViewController {
             currentDirectory: directoryURL,
             activeID: activeSession?.id
         )
-        if rows != renderedTabs {
+        // 「タブを隠す」で隠したまま忘れると、動いているのにどこにも見えない。
+        // 隠れて実行中の数をチップで示し、押せば管理パネルから戻せる。
+        let hiddenRunningCount = sessionManager.allSessions
+            .filter { $0.isRunning && !sessionManager.isPresented($0) }
+            .count
+        if rows != renderedTabs || hiddenRunningCount != renderedHiddenCount {
             sessionTabs.arrangedSubviews.forEach {
                 sessionTabs.removeArrangedSubview($0)
                 $0.removeFromSuperview()
@@ -715,9 +723,23 @@ final class DrawerContentViewController: NSViewController {
                 button.heightAnchor.constraint(equalToConstant: 26).isActive = true
                 sessionTabs.addArrangedSubview(button)
             }
+            if hiddenRunningCount > 0 {
+                let chip = NSButton()
+                chip.title = "＋\(hiddenRunningCount)"
+                chip.font = .systemFont(ofSize: 11, weight: .medium)
+                chip.contentTintColor = IntegratedPanelTheme.secondaryText
+                chip.isBordered = false
+                chip.target = self
+                chip.action = #selector(showHiddenSessions)
+                chip.toolTip = "隠れて実行中のセッションが\(hiddenRunningCount)件 — 押して一覧から戻す"
+                chip.translatesAutoresizingMaskIntoConstraints = false
+                chip.heightAnchor.constraint(equalToConstant: 26).isActive = true
+                sessionTabs.addArrangedSubview(chip)
+            }
             renderedTabs = rows
+            renderedHiddenCount = hiddenRunningCount
         }
-        sessionTabs.isHidden = visibleSessions.isEmpty
+        sessionTabs.isHidden = visibleSessions.isEmpty && renderedHiddenCount == 0
         // 右辺ではタブが2段目そのもの。増減で段の要否が変わったときだけ組み直す。
         if showsTabRow != (edge == .right && expanded && !visibleSessions.isEmpty) {
             applyEdgeLayout()
@@ -753,7 +775,9 @@ final class DrawerContentViewController: NSViewController {
     }
 
     /// tmux側に生き残りがあるフォルダでは、開始ボタンは新規起動ではなく再接続に
-    /// なる（`new-session -A`が同じコマンドで両方を兼ねる）。表示だけ実態に合わせる。
+    /// なる（`new-session -A`が同じコマンドで両方を兼ねる）。tmuxも消えた後
+    /// （Macの再起動など）でも、ここでclaudeを動かした記録があれば「前回の
+    /// 続き」（`--continue`）として戻れる。表示だけ実態に合わせる。
     private func updateStartButtonTitles() {
         let buttons: [(NSButton, TerminalSessionKind)] = [
             (shellButton, .shell),
@@ -764,9 +788,14 @@ final class DrawerContentViewController: NSViewController {
             let reattaches = directoryURL.map {
                 sessionManager.hasDetachedPersistentSession(kind: kind, directoryURL: $0)
             } ?? false
+            let resumes = !reattaches && (directoryURL.map {
+                sessionManager.hasResumableConversation(kind: kind, directoryURL: $0)
+            } ?? false)
             button.title = reattaches
                 ? "\(kind.displayName)に再接続"
-                : kind.displayName
+                : resumes
+                    ? "\(kind.displayName)で前回の続き"
+                    : kind.displayName
         }
     }
 
@@ -812,10 +841,14 @@ final class DrawerContentViewController: NSViewController {
         mountedSessionID = session.id
     }
 
-    private func startSession(kind: TerminalSessionKind) {
+    private func startSession(kind: TerminalSessionKind, resumingConversation: Bool = false) {
         guard let directoryURL else { return }
         do {
-            let session = try sessionManager.create(kind: kind, directoryURL: directoryURL)
+            let session = try sessionManager.create(
+                kind: kind,
+                directoryURL: directoryURL,
+                resumingConversation: resumingConversation
+            )
             reloadSessions(prefer: session)
             if !expanded { onToggle?() }
             view.window?.makeFirstResponder(session.contentView)
@@ -828,6 +861,10 @@ final class DrawerContentViewController: NSViewController {
         onToggle?()
     }
 
+    @objc private func showHiddenSessions() {
+        onManageSessions?()
+    }
+
     @objc private func togglePlacement() {
         onTogglePlacement?()
     }
@@ -835,8 +872,13 @@ final class DrawerContentViewController: NSViewController {
     @objc private func showNewSessionMenu() {
         let menu = NSMenu(title: "新しいTerminalセッション")
         for (index, kind) in TerminalSessionKind.allCases.enumerated() {
+            // ボタン側が「前回の続き」になっているときだけ、こちらが新規だと
+            // 明示する。同じ名前で挙動が違う2つの入り口を作らない。
+            let resumes = directoryURL.map {
+                sessionManager.hasResumableConversation(kind: kind, directoryURL: $0)
+            } ?? false
             let item = NSMenuItem(
-                title: kind.displayName,
+                title: resumes ? "\(kind.displayName)（新規の会話）" : kind.displayName,
                 action: #selector(startSessionFromMenu(_:)),
                 keyEquivalent: ""
             )
@@ -848,6 +890,8 @@ final class DrawerContentViewController: NSViewController {
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: newSessionButton.bounds.maxY + 2), in: newSessionButton)
     }
 
+    /// ＋メニューは常に新規。ボタン側が「前回の続き」を担うので、まっさらに
+    /// 始め直す道はこちらに残す。
     @objc private func startSessionFromMenu(_ sender: NSMenuItem) {
         guard TerminalSessionKind.allCases.indices.contains(sender.tag) else { return }
         startSession(kind: TerminalSessionKind.allCases[sender.tag])
@@ -855,7 +899,11 @@ final class DrawerContentViewController: NSViewController {
 
     @objc private func startSessionFromButton(_ sender: NSButton) {
         guard TerminalSessionKind.allCases.indices.contains(sender.tag) else { return }
-        startSession(kind: TerminalSessionKind.allCases[sender.tag])
+        let kind = TerminalSessionKind.allCases[sender.tag]
+        let resumes = directoryURL.map {
+            sessionManager.hasResumableConversation(kind: kind, directoryURL: $0)
+        } ?? false
+        startSession(kind: kind, resumingConversation: resumes)
     }
 
     @objc private func selectSession(_ sender: NSButton) {
