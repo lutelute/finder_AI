@@ -202,6 +202,25 @@ struct TerminalSessionManagerTests {
         #expect(lost.endedAt != nil)
     }
 
+    @Test("前回の続きの求めはビルダーまで届く")
+    func createThreadsResumeFlagToBuilder() throws {
+        let builder = MockSessionBuilder()
+        let manager = TerminalSessionManager(
+            builder: builder,
+            commandLocator: MockCommandLocator(
+                commands: ["claude": URL(fileURLWithPath: "/mock/bin/claude")]
+            )
+        )
+        let folder = URL(fileURLWithPath: "/tmp/resume-thread", isDirectory: true)
+
+        _ = try manager.create(kind: .claude, directoryURL: folder, resumingConversation: true)
+        #expect(builder.requests.last?.resumesConversation == true)
+
+        let another = URL(fileURLWithPath: "/tmp/resume-thread-b", isDirectory: true)
+        _ = try manager.create(kind: .claude, directoryURL: another)
+        #expect(builder.requests.last?.resumesConversation == false)
+    }
+
     @Test("an unavailable tmux query never converts a registry entry to missing")
     func unavailableSnapshotPreservesRegistry() async throws {
         let tmuxURL = URL(fileURLWithPath: "/mock/bin/tmux")
