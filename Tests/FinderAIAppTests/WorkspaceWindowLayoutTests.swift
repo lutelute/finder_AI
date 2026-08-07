@@ -400,6 +400,32 @@ struct WorkspaceWindowLayoutTests {
         controller.close()
     }
 
+    @Test("分割を解除したら、見ている場所が変わったことを知らせる")
+    func closingTheSplitAnnouncesTheActiveFolder() throws {
+        _ = NSApplication.shared
+        let preferences = Self.isolatedPreferences()
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        // 2枚目は別の場所を開く。ここを知らせないと、閉じたあともウインドウ名や
+        // 俯瞰が「閉じた2枚目の場所」を名乗り続ける（実機で踏んだ）。
+        preferences.secondDirectory = home.appendingPathComponent("Library", isDirectory: true)
+        let controller = WorkspaceWindowController(
+            sessionManager: TerminalSessionManager(),
+            initialDirectory: home,
+            preferences: preferences
+        )
+        var announcements = 0
+        controller.onDirectoryChanged = { announcements += 1 }
+
+        controller.toggleSplit()
+        let afterOpening = announcements
+        controller.toggleSplit()
+
+        #expect(announcements > afterOpening)
+        // 解除後に名乗るのは1枚目の場所。
+        #expect(controller.displayedDirectory.standardizedFileURL == home.standardizedFileURL)
+        controller.close()
+    }
+
     /// Searches inside the browser rather than the window: the window now hosts an
     /// outer split view for the two panes, and a depth-first search from the root
     /// finds that one first.

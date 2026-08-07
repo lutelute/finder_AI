@@ -149,8 +149,11 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             self.activePane = pane
             self.terminal.setDirectory(pane.currentDirectory)
             self.window?.representedURL = pane.currentDirectory
-            self.window?.title = pane.currentDirectory.lastPathComponent
             self.updatePaneHighlight()
+            // 名前はコーディネータが決める（同名フォルダが重なったときだけ
+            // 親を添える）。ここで直に書くと、その気配りを飛ばした名前が
+            // 一瞬出てから上書きされる。
+            self.onDirectoryChanged?()
         }
     }
 
@@ -495,6 +498,11 @@ extension WorkspaceWindowController: NSSplitViewDelegate {
             installEdgeLayout()
         }
         window?.makeFirstResponder(activePane.view)
+        // 見ている場所が変わったのと同じこと。ウインドウ名も俯瞰も台帳も、
+        // どれもactivePaneの現在地から作るので、ここで知らせないと
+        // 「閉じた2枚目の場所」を名乗り続ける——中身はわさびなのに
+        // タイトルはCloudStorage、という状態を実機で踏んだ。
+        onDirectoryChanged?()
     }
 
     private func applySplitRatio() {
