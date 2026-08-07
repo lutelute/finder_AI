@@ -138,6 +138,19 @@ final class ThemedLayerPainter {
 final class ThemedRootView: NSView {
     var onAppearanceChanged: (() -> Void)?
 
+    /// ターミナルより先に鍵を見るための口。
+    ///
+    /// `performKeyEquivalent`は親から子へ降りるので、ここで拾えばターミナルが
+    /// 自分宛ての入力として食べる前に済む。⌃Tabも⌘⌥矢印も、素直にメニューへ
+    /// 任せると届かなかった（実機で確認）——ターミナルを内に抱えた画面では、
+    /// 鍵の取り合いに勝てるのは中身より外側だけ。
+    var onKeyEquivalent: ((NSEvent) -> Bool)?
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if onKeyEquivalent?(event) == true { return true }
+        return super.performKeyEquivalent(with: event)
+    }
+
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         onAppearanceChanged?()
