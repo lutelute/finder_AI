@@ -818,20 +818,27 @@ final class DrawerContentViewController: NSViewController {
     /// 右辺のパネルは細いので段を2つ使う——縦は余っていて、横だけが
     /// 足りない。下辺は横に長いので1段でよい。
     private func tabStripPlan(for tabCount: Int) -> DrawerTabStripPlanner.Plan {
-        // 帯そのものの幅は測らない。並びは中身の幅に合わせて伸びるので、
-        // それを基準にすると「入るから削らなくてよい」と答え続け、代わりに
-        // ヘッダーごと横へ膨らんでウインドウの最小幅を押し上げる——
-        // 「横がいっぱいになる」の正体はこれだった。使える幅は、パネルから
-        // 他の物のぶんを引いて出す。
-        let panelWidth = view.bounds.width > 1
-            ? view.bounds.width
-            : preferences.terminalThickness(for: edge)
+        // 使える幅は、帯にもパネルの現寸にも聞かない。
+        //
+        // どちらも中身の幅で決まるので、それを基準にすると「入っているから
+        // 削らなくてよい」と答え続け、代わりにパネルが横へ膨らんでファイル
+        // 一覧を押し潰す。実測では、タブ10本ぶん（148pt×10≒1490pt）に
+        // ちょうど一致する幅までパネルが広がっていた——「横がいっぱいに
+        // なる」の正体はこれ。
+        //
+        // 中身に左右されない寸法だけを見る：右辺は使う人が決めた厚み、
+        // 下辺はウインドウの幅。
+        let panelWidth = edge == .right
+            ? preferences.terminalThickness(for: .right)
+            : (view.window?.frame.width ?? view.bounds.width)
         if edge == .right {
-            // 2段目まるごとがタブ。左右の余白だけ引く。細いので段で稼ぐ。
+            // 2段目まるごとがタブ。左右の余白だけ引く。段は1つしか無いので、
+            // 稼げるのは幅だけ——ここを2段と偽ると、入らない本数を並べて
+            // タブが潰れる。
             return DrawerTabStripPlanner.plan(
                 tabCount: tabCount,
                 availableWidth: panelWidth - 24,
-                rowCount: 2
+                rowCount: 1
             )
         }
         // 下辺は1段。パス表示と右端のボタン群のぶんを空けておく。
@@ -885,7 +892,7 @@ final class DrawerContentViewController: NSViewController {
             systemSymbolName: row.kind.symbolName,
             accessibilityDescription: row.kind.displayName
         )
-        button.imagePosition = plan.display == .iconOnly ? .imageOnly : .imageLeading
+        button.imagePosition = .imageLeading
         button.imageHugsTitle = true
         // 印は1つに絞る。記号の色だけで「動いているか」「今ここか」を言う——
         // 点と記号を別々に置くと、狭いタブでは点が隣との区切りに見えた。
@@ -896,8 +903,13 @@ final class DrawerContentViewController: NSViewController {
         let titleColor = row.belongsToCurrentFolder || row.isActive
             ? IntegratedPanelTheme.text
             : IntegratedPanelTheme.secondaryText
+        let text: String = switch plan.display {
+        case .full: row.fullTitle
+        case .nameOnly: row.compactTitle
+        case .compact: row.shortLabel
+        }
         button.attributedTitle = NSAttributedString(
-            string: plan.display == .full ? row.fullTitle : row.compactTitle,
+            string: text,
             attributes: [
                 .foregroundColor: titleColor,
                 .font: NSFont.systemFont(
@@ -920,9 +932,13 @@ final class DrawerContentViewController: NSViewController {
         button.isActiveTab = row.isActive
         button.toolTip = row.tooltip
         button.translatesAutoresizingMaskIntoConstraints = false
-        button.widthAnchor.constraint(
-            equalToConstant: plan.display.width
-        ).isActive = true
+        // 必須にしない。必須だと「この幅でなければならない」がパネルの
+        // 最小幅になり、タブが増えるほどパネルが横へ育ってファイル一覧を
+        // 押し潰す。譲れる優先度にしておけば、詰め方が追いつくまでの
+        // 短い間はタブが縮むだけで済む。
+        let width = button.widthAnchor.constraint(equalToConstant: plan.display.width)
+        width.priority = .defaultHigh
+        width.isActive = true
         button.heightAnchor.constraint(equalToConstant: 26).isActive = true
         return button
     }
@@ -940,9 +956,11 @@ final class DrawerContentViewController: NSViewController {
         if hidden > 0 { reasons.append("隠して実行中\(hidden)件") }
         chip.toolTip = reasons.joined(separator: "・") + " — 押すと一覧（⌘⌥T）で選べます"
         chip.translatesAutoresizingMaskIntoConstraints = false
-        chip.widthAnchor.constraint(
+        let width = chip.widthAnchor.constraint(
             equalToConstant: DrawerTabStripPlanner.overflowChipWidth
-        ).isActive = true
+        )
+        width.priority = .defaultHigh
+        width.isActive = true
         chip.heightAnchor.constraint(equalToConstant: 26).isActive = true
         return chip
     }

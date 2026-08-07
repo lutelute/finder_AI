@@ -13,14 +13,19 @@ public enum DrawerTabStripPlanner {
         case full
         /// 名前だけ。フォルダは落とす。
         case nameOnly
-        /// 種類の印だけ。名前はツールチップへ回す。
-        case iconOnly
+        /// 種類の印と、2文字の見出し。
+        ///
+        /// 印だけにはしない。同じ種類のセッションが並ぶと——同じ人が
+        /// 何本もClaudeを開くのだから普通にそうなる——記号は全部同じ絵に
+        /// なり、どれがどれか全く分からなくなる（実機で確認）。2文字でも
+        /// あれば場所の頭が読めて、狙って押せる。
+        case compact
 
         public var width: CGFloat {
             switch self {
             case .full: 148
             case .nameOnly: 92
-            case .iconOnly: 30
+            case .compact: 48
             }
         }
     }
@@ -58,7 +63,7 @@ public enum DrawerTabStripPlanner {
         let rows = max(1, rowCount)
 
         // 削らずに済む見せ方を上から順に探す。名前が出ているほうが速い。
-        for display in [TabDisplay.full, .nameOnly, .iconOnly] {
+        for display in [TabDisplay.full, .nameOnly, .compact] {
             if capacity(width: availableWidth, tabWidth: display.width) * rows >= tabCount {
                 return Plan(display: display, visibleCount: tabCount, overflow: 0)
             }
@@ -70,10 +75,10 @@ public enum DrawerTabStripPlanner {
         // 帯から消え、押す先も無くなる——狭いときほど、今いる1本だけは
         // 見えていないと困る（並びは今いる場所を先頭にしてある）。
         let widthForTabs = availableWidth - overflowChipWidth - spacing
-        let fits = capacity(width: widthForTabs, tabWidth: TabDisplay.iconOnly.width) * rows
+        let fits = capacity(width: widthForTabs, tabWidth: TabDisplay.compact.width) * rows
         let visible = max(1, min(tabCount, fits))
         return Plan(
-            display: .iconOnly,
+            display: .compact,
             visibleCount: visible,
             overflow: tabCount - visible
         )

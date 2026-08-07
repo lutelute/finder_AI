@@ -37,6 +37,12 @@ struct DrawerSessionTab: Equatable {
     /// フォルダを落とした表記。
     var compactTitle: String { decorated(name) }
 
+    /// 詰まったときの2文字。記号だけでは同じ種類が全部同じ絵になるので、
+    /// 場所（よそなら フォルダ名、今ここなら 名前）の頭を添えて見分ける。
+    var shortLabel: String {
+        String((folderName ?? name).prefix(2))
+    }
+
     private func decorated(_ text: String) -> String {
         var result = text
         if isAnchored { result = "📌 " + result }
