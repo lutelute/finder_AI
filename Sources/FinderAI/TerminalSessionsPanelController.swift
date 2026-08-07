@@ -570,7 +570,17 @@ final class TerminalSessionsPanelController: NSWindowController {
                 sessionManager.revealInTabs(session)
             case .detachedTmux:
                 guard let kind = row.kind else { return }
-                _ = try sessionManager.create(kind: kind, directoryURL: url)
+                // 一覧の行が古く、tmux側の実体がもう無いこともある（Macの
+                // 再起動後など）。生きていれば-Aがそのままアタッチし、死んで
+                // いれば「前回の続き」で会話を引き継いで立ち上げる。
+                _ = try sessionManager.create(
+                    kind: kind,
+                    directoryURL: url,
+                    resumingConversation: sessionManager.hasResumableConversation(
+                        kind: kind,
+                        directoryURL: url
+                    )
+                )
             case .record:
                 return
             }
