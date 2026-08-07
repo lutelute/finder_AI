@@ -182,7 +182,7 @@ Codexには`--append-system-prompt`に相当する公開フラグが無い（0.1
 
 永続化と出力ログのトグルは`SettingsWindowController`（⌘,）にあります。メニューに残っているのは動作（セッション管理を開く等）だけで、状態の置き場にはしません。設定の実体は従来どおり`WorkspacePreferences`で、ウインドウは開くたびに実体から読み直します。
 
-`TerminalSessionsPanelController`（表示メニュー「Terminalセッションを管理…」⌘⌥T）が全セッションの俯瞰です。ドロワーのタブ帯（`DrawerSessionTabs.rows`、純関数）も表示中の全セッションを常に載せます — 現在フォルダ以外のセッションはタブ名にフォルダ名サフィックスが付き、フォルダ移動で黙って消えることはありません。
+`TerminalSessionsPanelController`（表示メニュー「Terminalセッションを管理…」⌘⇧T）が全セッションの俯瞰です。ドロワーのタブ帯（`DrawerSessionTabs.rows`、純関数）も表示中の全セッションを常に載せます — 現在フォルダ以外のセッションはタブ名にフォルダ名サフィックスが付き、フォルダ移動で黙って消えることはありません。
 
 #### 帯は溢れる前提で作る
 

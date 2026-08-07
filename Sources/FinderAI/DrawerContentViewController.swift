@@ -967,7 +967,7 @@ final class DrawerContentViewController: NSViewController {
         var reasons: [String] = []
         if overflow > 0 { reasons.append("帯に入り切らないぶん\(overflow)件") }
         if hidden > 0 { reasons.append("隠して実行中\(hidden)件") }
-        chip.toolTip = reasons.joined(separator: "・") + " — 押すと一覧（⌘⌥T）で選べます"
+        chip.toolTip = reasons.joined(separator: "・") + " — 押すと一覧（⌘⇧T）で選べます"
         chip.translatesAutoresizingMaskIntoConstraints = false
         let width = chip.widthAnchor.constraint(
             equalToConstant: DrawerTabStripPlanner.overflowChipWidth
@@ -1167,7 +1167,7 @@ final class DrawerContentViewController: NSViewController {
             "このセッションの場所をブラウザで表示",
             action: #selector(openSessionDirectoryFromMenu(_:))
         ))
-        // 名前は⌘⌥Tの管理パネルでも付けられるが、名乗らせたくなるのは
+        // 名前は⌘⇧Tの管理パネルでも付けられるが、名乗らせたくなるのは
         // タブが並んで見分けが付かないこの場所。
         menu.addItem(item(
             session.kind == .claude ? "名前と役割…" : "名前を付ける…",

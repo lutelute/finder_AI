@@ -35,7 +35,7 @@ public struct SessionCountSummary: Equatable, Sendable {
 
     public var manageTooltip: String {
         isIdle
-            ? "すべてのTerminalセッションを管理（⌘⌥T）"
-            : "Terminalセッションを管理 — 実行中\(total)件\(breakdown)（⌘⌥T）"
+            ? "すべてのTerminalセッションを管理（⌘⇧T）"
+            : "Terminalセッションを管理 — 実行中\(total)件\(breakdown)（⌘⇧T）"
     }
 }

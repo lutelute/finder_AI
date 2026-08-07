@@ -37,6 +37,23 @@ struct MainMenuShortcutTests {
         }
     }
 
+    /// ⌥⌘TはmacOSが「ツールバーを表示/隠す」用に押さえていて、こちらの
+    /// 項目まで届かない（⌥⌘Jや⌘,は同じ経路で届いたので、⌥⌘Tだけの問題だと
+    /// 切り分けた）。メニューに書いてあるのに押しても何も起きない鍵は、
+    /// 無いより悪い。
+    @Test("セッション管理は⌥⌘Tを名乗らない。OSに押さえられていて届かない")
+    func sessionCenterAvoidsTheReservedOptionCommandT() {
+        let manage = item("Terminalセッションを管理…")
+        #expect(manage?.keyEquivalent == "t")
+        #expect(manage?.keyEquivalentModifierMask == [.command, .shift])
+
+        // ⌥⌘Tを名乗る項目がどこにも無いこと。
+        let reserved = items(in: menu()).filter {
+            $0.keyEquivalent == "t" && $0.keyEquivalentModifierMask == [.command, .option]
+        }
+        #expect(reserved.isEmpty)
+    }
+
     /// ⌃Tabはターミナルが自分宛ての入力として食べてしまい、メニューまで
     /// 届かなかった（実機で確認）。⌘つきなら通る。
     @Test("セッションの巡回は⌘⌥←／⌘⌥→。ターミナルに食われない組み合わせ")

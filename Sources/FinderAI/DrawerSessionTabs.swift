@@ -55,7 +55,7 @@ enum DrawerSessionTabs {
     struct Source: Equatable {
         let id: UUID
         let kind: TerminalSessionKind
-        /// ⌘⌥Tで付けた名前。同じフォルダにClaudeが何本も並ぶと種類名だけでは
+        /// ⌘⇧Tで付けた名前。同じフォルダにClaudeが何本も並ぶと種類名だけでは
         /// 区別が付かないので、付けてあればタブはこちらを名乗る。
         let customName: String?
         /// 起動時に渡した役割。タブでは全文を出さずツールチップに回す——

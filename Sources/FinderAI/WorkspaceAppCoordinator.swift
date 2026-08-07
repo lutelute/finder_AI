@@ -1041,12 +1041,16 @@ final class WorkspaceAppCoordinator {
         viewMenu.addItem(previousSession)
         // 永続化と出力ログのトグルは設定ウインドウ（⌘,）にある。メニューに残すのは
         // 動作だけで、状態の置き場にはしない。
+        // ⌥⌘Tではなく⌘⇧T。⌥⌘TはmacOSが「ツールバーを表示/隠す」用に押さえて
+        // いて、こちらの項目まで届かない（⌥⌘Jや⌘,は同じ経路で届くので、
+        // ⌥⌘Tだけの問題だと切り分け済み）。メニューに書いてあるのに押しても
+        // 何も起きない鍵は、無いより悪い。
         let manageSessions = NSMenuItem(
             title: "Terminalセッションを管理…",
             action: #selector(WorkspaceAppCoordinator.showTerminalSessionsPanel),
             keyEquivalent: "t"
         )
-        manageSessions.keyEquivalentModifierMask = [.command, .option]
+        manageSessions.keyEquivalentModifierMask = [.command, .shift]
         manageSessions.target = coordinator
         viewMenu.addItem(manageSessions)
         let split = item("2画面に分割／解除", action: #selector(WorkspaceWindowController.toggleSplit), key: "s")
