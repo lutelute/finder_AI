@@ -60,8 +60,8 @@ struct TerminalLaunchPlannerTests {
         ))
     }
 
-    @Test("前回の続きは、claudeに--continue、codexにresume --lastを付ける")
-    func resumeArgumentsMatchEachCLI() {
+    @Test("前回の続きは、失敗しても新しい会話へ落ちるsh越しに起動する")
+    func resumeFallsBackInsteadOfDying() {
         let claude = URL(fileURLWithPath: "/mock/bin/claude")
         let resumed = TerminalLaunchPlanner.plan(
             kind: .claude,
@@ -70,7 +70,13 @@ struct TerminalLaunchPlannerTests {
             directoryPath: "/tmp/x",
             resumesConversation: true
         )
-        #expect(resumed == .init(executable: claude.path, arguments: ["--continue"]))
+        #expect(resumed?.executable == "/bin/sh")
+        let script = resumed?.arguments.last ?? ""
+        #expect(resumed?.arguments.first == "-c")
+        // 先に続きを試し、駄目なら断ってから素の起動へexecで置き換える。
+        #expect(script.hasPrefix("'/mock/bin/claude' '--continue' || {"))
+        #expect(script.contains("exec '/mock/bin/claude'"))
+        #expect(script.contains("[FinderAI]"))
 
         let codex = URL(fileURLWithPath: "/mock/bin/codex")
         let codexResumed = TerminalLaunchPlanner.plan(
@@ -80,10 +86,9 @@ struct TerminalLaunchPlannerTests {
             directoryPath: "/tmp/x",
             resumesConversation: true
         )
-        #expect(codexResumed == .init(
-            executable: codex.path,
-            arguments: ["resume", "--last"]
-        ))
+        #expect(codexResumed?.arguments.last?.hasPrefix(
+            "'/mock/bin/codex' 'resume' '--last' || {"
+        ) == true)
 
         // shellに会話は無い。求められても素のログインシェルのまま。
         let shell = TerminalLaunchPlanner.plan(
@@ -94,6 +99,37 @@ struct TerminalLaunchPlannerTests {
             resumesConversation: true
         )
         #expect(shell == .init(executable: "/bin/zsh", arguments: ["-l"]))
+    }
+
+    @Test("役割は続きの側にも落ちた先にも付く")
+    func roleSurvivesTheFallback() {
+        let claude = URL(fileURLWithPath: "/mock/bin/claude")
+        let script = TerminalLaunchPlanner.plan(
+            kind: .claude,
+            commandURL: claude,
+            persistence: nil,
+            directoryPath: "/tmp/x",
+            resumesConversation: true,
+            role: "査読者"
+        )?.arguments.last ?? ""
+        #expect(script.hasPrefix(
+            "'/mock/bin/claude' '--continue' '--append-system-prompt' '査読者' || {"
+        ))
+        #expect(script.contains("exec '/mock/bin/claude' '--append-system-prompt' '査読者'"))
+    }
+
+    @Test("役割の引用符はスクリプトを壊さない")
+    func roleWithQuotesStaysQuoted() {
+        let claude = URL(fileURLWithPath: "/mock/bin/claude")
+        let script = TerminalLaunchPlanner.plan(
+            kind: .claude,
+            commandURL: claude,
+            persistence: nil,
+            directoryPath: "/tmp/x",
+            resumesConversation: true,
+            role: "it's a role"
+        )?.arguments.last ?? ""
+        #expect(script.contains("'it'\\''s a role'"))
     }
 
     @Test("役割はclaudeにだけ--append-system-promptとして渡る")
@@ -133,27 +169,11 @@ struct TerminalLaunchPlannerTests {
         #expect(empty == .init(executable: claude.path, arguments: []))
     }
 
-    @Test("続きと役割は同時に渡せる（続きが先、役割が後）")
-    func resumeAndRoleCompose() {
-        let claude = URL(fileURLWithPath: "/mock/bin/claude")
-        let plan = TerminalLaunchPlanner.plan(
-            kind: .claude,
-            commandURL: claude,
-            persistence: nil,
-            directoryPath: "/tmp/x",
-            resumesConversation: true,
-            role: "査読者"
-        )
-        #expect(plan == .init(
-            executable: claude.path,
-            arguments: ["--continue", "--append-system-prompt", "査読者"]
-        ))
-    }
-
-    @Test("tmux併用の続きは、セッションコマンドに--continueを含める")
+    @Test("tmux併用の続きも、落ちない一綴りとしてセッションへ渡る")
     func resumeSurvivesTmuxLoss() {
         // 生きているtmuxへは-Aがアタッチするだけでコマンドは無視される。
-        // tmuxごと消えた後（Macの再起動）は、このコマンドが会話を引き継ぐ。
+        // tmuxごと消えた後（Macの再起動）は、このコマンドが会話を引き継ぐ——
+        // 引き継げなければ新しい会話へ落ちる。セッションは残る。
         let claude = URL(fileURLWithPath: "/mock/bin/claude")
         let plan = TerminalLaunchPlanner.plan(
             kind: .claude,
@@ -163,12 +183,15 @@ struct TerminalLaunchPlannerTests {
             resumesConversation: true
         )
         #expect(plan?.executable == "/opt/homebrew/bin/tmux")
-        #expect(plan?.arguments == [
+        let head = Array(plan?.arguments.prefix(8) ?? [])
+        #expect(head == [
             "new-session", "-A",
             "-s", persistence.sessionName,
             "-c", "/tmp/x",
-            claude.path, "--continue"
-        ] + statusOffSuffix)
+            "/bin/sh", "-c"
+        ])
+        #expect(plan?.arguments[8].contains("|| {") == true)
+        #expect(Array(plan?.arguments.suffix(4) ?? []) == statusOffSuffix)
     }
 
     @Test("persistent CLI runs the command inside the tmux session")
