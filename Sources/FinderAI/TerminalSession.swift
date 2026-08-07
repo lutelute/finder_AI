@@ -251,17 +251,27 @@ final class TerminalSession: NSObject, @preconcurrency LocalProcessTerminalViewD
         outputLog?.close()
     }
 
-    private static func childEnvironment(
+    static func childEnvironment(
         directoryURL: URL,
-        persistent: Bool
+        persistent: Bool,
+        base: [String: String] = ProcessInfo.processInfo.environment
     ) -> [String] {
-        var environment = ProcessInfo.processInfo.environment
+        var environment = base
         environment["PATH"] = ExecutableLocator.augmentedPath(environment: environment)
         environment["TERM"] = "xterm-256color"
         environment["COLORTERM"] = "truecolor"
         environment["TERM_PROGRAM"] = "FinderAI"
         environment["SHELL"] = "/bin/zsh"
         environment["PWD"] = directoryURL.path
+        if environment["LANG"] == nil,
+           environment["LC_ALL"] == nil,
+           environment["LC_CTYPE"] == nil {
+            // Finder/Dockから起動したGUIアプリの子はロケールを持たない。素のまま
+            // だとtmuxがクライアントを非UTF-8とみなし、日本語・絵文字・罫線を
+            // 全部 `_` で埋めて描く（画面が謎のアンダーバーだらけになる）。
+            // 明示的なロケールがあるときは一切上書きしない。
+            environment["LANG"] = "en_US.UTF-8"
+        }
         if persistent {
             // TMUXが残っているとtmuxはネスト起動とみなして拒否する。FinderAI自身が
             // tmux内から起動された場合でも、子のtmuxクライアントは独立させる。
