@@ -53,6 +53,25 @@ struct WorkspacePreferences {
         static let windowPeek = "workspace.windowPeek"
         static let browserAppearance = "workspace.browserAppearance"
         static let terminalAppearance = "workspace.terminalAppearance"
+        static let newWindowDirectory = "workspace.newWindowDirectory"
+    }
+
+    /// 新しいウインドウ（⌘Nと起動時の最初の1枚）で開くフォルダ。
+    /// 未設定なら従来どおり：⌘Nは手前のウインドウと同じフォルダ、
+    /// 起動時は最後に見ていたフォルダ。
+    var newWindowDirectory: URL? {
+        get {
+            guard let path = defaults.string(forKey: Key.newWindowDirectory),
+                  !path.isEmpty else { return nil }
+            return URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+        }
+        nonmutating set {
+            guard let newValue else {
+                defaults.removeObject(forKey: Key.newWindowDirectory)
+                return
+            }
+            defaults.set(newValue.standardizedFileURL.path, forKey: Key.newWindowDirectory)
+        }
     }
 
     /// ファイル一覧の明るさ。

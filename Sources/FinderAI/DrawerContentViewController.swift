@@ -655,13 +655,21 @@ final class DrawerContentViewController: NSViewController {
         stripPlacementButton.toolTip = label
     }
 
-    private func reloadSessions(prefer preferred: (any ManagedTerminalSession)? = nil) {
+    /// `takesOverMountedElsewhere`は、他のウインドウに出ている中身を取り寄せて
+    /// よいときだけtrue（タブや開始ボタンを押した＝意思のあるときだけ）。
+    /// フォルダ移動や新しいウインドウの初期表示のような自動の選択がここをtrueに
+    /// すると、開いただけで元のウインドウからAIの画面が消える。
+    private func reloadSessions(
+        prefer preferred: (any ManagedTerminalSession)? = nil,
+        takesOverMountedElsewhere: Bool = false
+    ) {
         guard isViewLoaded else { return }
         // Every presented session, not just the current folder's — see
         // DrawerSessionTab for why the strip never hides running work.
         visibleSessions = sessionManager.allSessions.filter { sessionManager.isPresented($0) }
 
-        if let preferred, visibleSessions.contains(where: { $0.id == preferred.id }) {
+        if let preferred, visibleSessions.contains(where: { $0.id == preferred.id }),
+           takesOverMountedElsewhere || !isMountedInAnotherDrawer(preferred) {
             activeSession = preferred
         } else if let activeSession, visibleSessions.contains(where: { $0.id == activeSession.id }),
                   !isMountedInAnotherDrawer(activeSession) {
@@ -849,7 +857,7 @@ final class DrawerContentViewController: NSViewController {
                 directoryURL: directoryURL,
                 resumingConversation: resumingConversation
             )
-            reloadSessions(prefer: session)
+            reloadSessions(prefer: session, takesOverMountedElsewhere: true)
             if !expanded { onToggle?() }
             view.window?.makeFirstResponder(session.contentView)
         } catch {
@@ -910,7 +918,7 @@ final class DrawerContentViewController: NSViewController {
         guard visibleSessions.indices.contains(sender.tag) else { return }
         let session = visibleSessions[sender.tag]
         activeSession = session
-        reloadSessions(prefer: session)
+        reloadSessions(prefer: session, takesOverMountedElsewhere: true)
         // タブは畳んでいても見えている。押したのに中身が隠れたままでは
         // 「開けない」ので、startSessionと同じく本体も開く。
         if !expanded { onToggle?() }

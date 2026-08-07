@@ -186,4 +186,17 @@ struct WorkspacePreferencesTests {
         preferences.lastDirectory = folder
         #expect(preferences.lastDirectory?.standardizedFileURL == folder.standardizedFileURL)
     }
+
+    @Test("新しいウインドウで開くフォルダは往復し、外せば未指定へ戻る")
+    func newWindowDirectoryRoundTrip() throws {
+        let preferences = WorkspacePreferences(defaults: try makeDefaults())
+        #expect(preferences.newWindowDirectory == nil)
+
+        let folder = URL(fileURLWithPath: "/private/tmp/new-window-default", isDirectory: true)
+        preferences.newWindowDirectory = folder
+        #expect(preferences.newWindowDirectory == folder.standardizedFileURL)
+
+        preferences.newWindowDirectory = nil
+        #expect(preferences.newWindowDirectory == nil)
+    }
 }

@@ -47,6 +47,9 @@ final class SettingsWindowController: NSWindowController {
     /// 登録済みのフォルダ。ここから外せないと、タブを右クリックする方法しか
     /// 無いことになる——隠す設定にしていると、その右クリックの的が画面に無い。
     private let edgeTabsList = NSStackView()
+    /// 新しいウインドウで開くフォルダの現在値。指定なしのときはその旨を出す。
+    private let newWindowPathLabel = NSTextField(labelWithString: "")
+    private let newWindowCaption = NSTextField(wrappingLabelWithString: "")
     private let versionLabel = NSTextField(labelWithString: "")
     private let commitLabel = NSTextField(labelWithString: "")
     private let installationLabel = NSTextField(wrappingLabelWithString: "")
@@ -109,6 +112,9 @@ final class SettingsWindowController: NSWindowController {
             ? "FinderAIが落ちたり終了しても、以降に開始したセッションはtmux内で生き続け、同じフォルダから再接続できます。"
             : "tmuxが見つかりません。Homebrewなら `brew install tmux` で導入すると有効にできます。"
         loggingCheckbox.state = preferences.sessionLogging ? .on : .off
+        newWindowPathLabel.stringValue = preferences.newWindowDirectory
+            .map { "開く先: \($0.path)" }
+            ?? "指定なし（⌘Nは手前のウインドウと同じフォルダ）"
         let buildInfo = WorkspaceBuildInfo.current
         versionLabel.stringValue = buildInfo.versionText
         commitLabel.stringValue = buildInfo.commitText
@@ -180,6 +186,12 @@ final class SettingsWindowController: NSWindowController {
         loggingCheckbox.action = #selector(toggleLogging)
         loggingCaption.stringValue = "これ以降に開始するセッションの出力（コマンドと表示内容を含む）をローカルに保存します。完全終了時に選んだ回復用記録も同じフォルダに置かれ、どちらも14日で自動削除します。"
 
+        newWindowCaption.stringValue = "⌘Nと起動時の最初のウインドウを、決めたフォルダで開きます。指定が無ければ、⌘Nは手前のウインドウと同じフォルダ、起動時は最後に見ていたフォルダです。"
+        newWindowPathLabel.font = .systemFont(ofSize: 11)
+        newWindowPathLabel.textColor = .labelColor
+        newWindowPathLabel.lineBreakMode = .byTruncatingMiddle
+        newWindowPathLabel.preferredMaxLayoutWidth = 400
+
         [
             terminalEdgeCaption,
             persistCaption,
@@ -189,6 +201,7 @@ final class SettingsWindowController: NSWindowController {
             edgeTabsFollowCaption,
             edgeTabsAutoHideCaption,
             edgeTabsFinderCaption,
+            newWindowCaption,
             commitLabel,
             installationLabel
         ].forEach {
@@ -210,6 +223,28 @@ final class SettingsWindowController: NSWindowController {
         separator.boxType = .separator
         let edgeTabsSeparator = NSBox()
         edgeTabsSeparator.boxType = .separator
+        let windowSeparator = NSBox()
+        windowSeparator.boxType = .separator
+
+        let windowTitle = NSTextField(labelWithString: "ウインドウ")
+        windowTitle.font = .boldSystemFont(ofSize: 13)
+        let chooseNewWindowFolder = NSButton(
+            title: "開く先のフォルダを選択…",
+            target: self,
+            action: #selector(chooseNewWindowDirectory)
+        )
+        chooseNewWindowFolder.bezelStyle = .rounded
+        chooseNewWindowFolder.controlSize = .small
+        let clearNewWindowFolder = NSButton(
+            title: "指定を外す",
+            target: self,
+            action: #selector(clearNewWindowDirectory)
+        )
+        clearNewWindowFolder.bezelStyle = .rounded
+        clearNewWindowFolder.controlSize = .small
+        let newWindowButtonsRow = NSStackView(views: [chooseNewWindowFolder, clearNewWindowFolder])
+        newWindowButtonsRow.orientation = .horizontal
+        newWindowButtonsRow.spacing = 8
 
         let placementRow = NSStackView(views: [
             NSTextField(labelWithString: "パネルの位置"),
@@ -230,6 +265,10 @@ final class SettingsWindowController: NSWindowController {
             placementRow, indented(terminalEdgeCaption),
             persistCheckbox, indented(persistCaption),
             loggingCheckbox, indented(loggingCaption), indented(openLogs),
+            windowSeparator,
+            windowTitle,
+            newWindowPathLabel,
+            newWindowButtonsRow, indented(newWindowCaption),
             edgeTabsSeparator,
             edgeTabsTitle,
             edgeTabsCheckbox, indented(edgeTabsCaption),
@@ -398,5 +437,23 @@ final class SettingsWindowController: NSWindowController {
             withIntermediateDirectories: true
         )
         NSWorkspace.shared.open(SessionLogStore.directory)
+    }
+
+    @objc private func chooseNewWindowDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = preferences.newWindowDirectory
+        panel.prompt = "この場所にする"
+        panel.message = "新しいウインドウで開くフォルダを選んでください"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        preferences.newWindowDirectory = url
+        refresh()
+    }
+
+    @objc private func clearNewWindowDirectory() {
+        preferences.newWindowDirectory = nil
+        refresh()
     }
 }
