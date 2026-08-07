@@ -102,7 +102,7 @@ struct DrawerResumeAndHiddenTests {
         return found
     }
 
-    @Test("台帳にclaudeの記録があるフォルダは、そのフォルダでだけ「続き」がある")
+    @Test("台帳に記録があるフォルダは、その種類・そのフォルダでだけ「続き」がある")
     func resumableComesFromRegistry() {
         let manager = makeManager(records: [
             TerminalSessionRecord(
@@ -110,9 +110,16 @@ struct DrawerResumeAndHiddenTests {
                 kind: .claude,
                 backend: .tmux,
                 isPresented: false
+            ),
+            TerminalSessionRecord(
+                directoryPath: folder.path,
+                kind: .codex,
+                backend: .ephemeral,
+                isPresented: false
             )
         ])
         #expect(manager.hasResumableConversation(kind: .claude, directoryURL: folder))
+        #expect(manager.hasResumableConversation(kind: .codex, directoryURL: folder))
         #expect(!manager.hasResumableConversation(kind: .shell, directoryURL: folder))
         #expect(!manager.hasResumableConversation(
             kind: .claude,

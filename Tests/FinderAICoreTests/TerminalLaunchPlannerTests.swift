@@ -60,8 +60,8 @@ struct TerminalLaunchPlannerTests {
         ))
     }
 
-    @Test("前回の続きは、claudeにだけ--continueを付ける")
-    func resumeAddsContinueForClaudeOnly() {
+    @Test("前回の続きは、claudeに--continue、codexにresume --lastを付ける")
+    func resumeArgumentsMatchEachCLI() {
         let claude = URL(fileURLWithPath: "/mock/bin/claude")
         let resumed = TerminalLaunchPlanner.plan(
             kind: .claude,
@@ -80,7 +80,20 @@ struct TerminalLaunchPlannerTests {
             directoryPath: "/tmp/x",
             resumesConversation: true
         )
-        #expect(codexResumed == .init(executable: codex.path, arguments: []))
+        #expect(codexResumed == .init(
+            executable: codex.path,
+            arguments: ["resume", "--last"]
+        ))
+
+        // shellに会話は無い。求められても素のログインシェルのまま。
+        let shell = TerminalLaunchPlanner.plan(
+            kind: .shell,
+            commandURL: nil,
+            persistence: nil,
+            directoryPath: "/tmp/x",
+            resumesConversation: true
+        )
+        #expect(shell == .init(executable: "/bin/zsh", arguments: ["-l"]))
     }
 
     @Test("tmux併用の続きは、セッションコマンドに--continueを含める")
