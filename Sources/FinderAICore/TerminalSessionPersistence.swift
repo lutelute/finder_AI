@@ -54,14 +54,32 @@ public enum TerminalLaunchPlanner {
             base = Plan(executable: "/bin/zsh", arguments: ["-l"])
         case .codex, .claude:
             guard let commandURL else { return nil }
-            var arguments: [String] = []
-            if resumesConversation {
-                arguments = kind == .claude ? ["--continue"] : ["resume", "--last"]
-            }
+            var roleArguments: [String] = []
             if kind == .claude, let role, !role.isEmpty {
-                arguments += ["--append-system-prompt", role]
+                roleArguments = ["--append-system-prompt", role]
             }
-            base = Plan(executable: commandURL.path, arguments: arguments)
+            guard resumesConversation else {
+                base = Plan(executable: commandURL.path, arguments: roleArguments)
+                break
+            }
+            // 続きを求める起動は、失敗しても致命傷にしない。claudeの`--continue`は
+            // 戻れる会話が無いと即座に終了する（実測）。tmuxで包んでいると
+            // セッションごと消え、押した人には「タブが出て一瞬で死んだ」としか
+            // 見えない。失敗したら理由を1行出して、そのまま新しい会話へ落ちる。
+            let resumeArguments = kind == .claude
+                ? ["--continue"] + roleArguments
+                : ["resume", "--last"]
+            base = Plan(
+                executable: "/bin/sh",
+                arguments: [
+                    "-c",
+                    resumeFallbackScript(
+                        commandPath: commandURL.path,
+                        resumeArguments: resumeArguments,
+                        freshArguments: roleArguments
+                    )
+                ]
+            )
         }
 
         guard let persistence else { return base }
@@ -85,5 +103,24 @@ public enum TerminalLaunchPlanner {
             executable: persistence.tmuxExecutableURL.path,
             arguments: arguments
         )
+    }
+
+    /// 「続きへ戻る、駄目なら新しく始める」をひと綴りにしたsh script。
+    ///
+    /// `exec`で置き換えるので、落ちたあとに残るのはAIのプロセス1つだけ。
+    /// 断りの1行は、黙って別物が立ち上がったように見えるのを防ぐためにある。
+    static func resumeFallbackScript(
+        commandPath: String,
+        resumeArguments: [String],
+        freshArguments: [String]
+    ) -> String {
+        func line(_ arguments: [String]) -> String {
+            ([commandPath] + arguments).map(ShellQuoting.quoted).joined(separator: " ")
+        }
+        let notice = "前回の続きに戻れませんでした。新しい会話を始めます。"
+        return line(resumeArguments)
+            + " || { printf '\\n[FinderAI] \(notice)\\n'; exec "
+            + line(freshArguments)
+            + "; }"
     }
 }
