@@ -767,8 +767,8 @@ final class WorkspaceAppCoordinator {
         }
         let steps = ExternalOpenPlanner.steps(
             for: targets,
-            hasOpenWindow: (frontmostWindow ?? windows.first) != nil,
-            availableNewWindows: Self.windowLimit - windows.count
+            availableNewWindows: Self.windowLimit - windows.count,
+            isAlreadyShown: { [weak self] folder in self?.window(showing: folder) != nil }
         )
         guard !steps.isEmpty else { return }
 
@@ -778,15 +778,17 @@ final class WorkspaceAppCoordinator {
                 let controller = makeWindow(directory: step.folder)
                 cascadePoint = controller.cascade(from: cascadePoint)
                 target = controller
-            } else if let existing = frontmostWindow ?? windows.first {
+            } else if let existing = window(showing: step.folder) {
                 target = existing
             } else {
                 continue
             }
             target.show()
+            // 既にその場所を映している窓は動かさない。選ぶものがあるときだけ
+            // 一覧の中で拾う。
             if let selection = step.selection {
                 target.browser.reveal(selection)
-            } else {
+            } else if step.usesNewWindow {
                 target.browser.navigate(to: step.folder)
             }
         }
