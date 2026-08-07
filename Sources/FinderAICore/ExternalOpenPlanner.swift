@@ -34,23 +34,32 @@ public enum ExternalOpenPlanner {
         }
     }
 
+    /// 既に開いている窓は、その場所を見ているときだけ使い回す。
+    ///
+    /// 見ていた窓を勝手に別の場所へ動かさない——外から1つ渡しただけで、
+    /// 手前で開いていた作業場所が消えるのは事故（実際に消して気付いた）。
+    /// Finderも、フォルダを開けと言われたら新しい窓を出す。
+    ///
     /// - Parameters:
-    ///   - hasOpenWindow: 今ある窓を1つ使えるか。
     ///   - availableNewWindows: あと何枚まで開いてよいか。
+    ///   - isAlreadyShown: その場所を映している窓が既にあるか。
     public static func steps(
         for targets: [ExternalOpenTarget],
-        hasOpenWindow: Bool,
-        availableNewWindows: Int
+        availableNewWindows: Int,
+        isAlreadyShown: (URL) -> Bool
     ) -> [Step] {
         var steps: [Step] = []
         var remainingNewWindows = max(0, availableNewWindows)
-        var canUseExistingWindow = hasOpenWindow
 
         for target in targets {
+            let standardized = target.url.standardizedFileURL
+            let folder = target.isDirectory
+                ? standardized
+                : standardized.deletingLastPathComponent()
+
             let usesNewWindow: Bool
-            if canUseExistingWindow {
+            if isAlreadyShown(folder) {
                 usesNewWindow = false
-                canUseExistingWindow = false
             } else if remainingNewWindows > 0 {
                 usesNewWindow = true
                 remainingNewWindows -= 1
@@ -60,11 +69,8 @@ public enum ExternalOpenPlanner {
                 break
             }
 
-            let standardized = target.url.standardizedFileURL
             steps.append(Step(
-                folder: target.isDirectory
-                    ? standardized
-                    : standardized.deletingLastPathComponent(),
+                folder: folder,
                 selection: target.isDirectory ? nil : standardized,
                 usesNewWindow: usesNewWindow
             ))
