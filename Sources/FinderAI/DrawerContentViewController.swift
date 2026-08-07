@@ -687,6 +687,7 @@ final class DrawerContentViewController: NSViewController {
                 DrawerSessionTabs.Source(
                     id: $0.id,
                     kindName: $0.kind.displayName,
+                    customName: sessionManager.customName(for: $0),
                     directoryURL: $0.directoryURL,
                     isRunning: $0.isRunning,
                     isAnchored: $0.isAnchored
@@ -976,6 +977,12 @@ final class DrawerContentViewController: NSViewController {
             "このセッションの場所をブラウザで表示",
             action: #selector(openSessionDirectoryFromMenu(_:))
         ))
+        // 名前は⌘⌥Tの管理パネルでも付けられるが、名乗らせたくなるのは
+        // タブが並んで見分けが付かないこの場所。
+        menu.addItem(item(
+            sessionManager.customName(for: session) == nil ? "名前を付ける…" : "名前を変える…",
+            action: #selector(renameSessionFromMenu(_:))
+        ))
         menu.addItem(.separator())
         menu.addItem(item(
             "タブを隠す（実行は継続）",
@@ -1002,6 +1009,23 @@ final class DrawerContentViewController: NSViewController {
         guard let text = menuItem.representedObject as? String,
               let id = UUID(uuidString: text) else { return nil }
         return sessionManager.allSessions.first { $0.id == id }
+    }
+
+    @objc private func renameSessionFromMenu(_ sender: NSMenuItem) {
+        guard let session = session(from: sender), let window = view.window else { return }
+        let field = NSTextField(string: sessionManager.customName(for: session) ?? "")
+        field.placeholderString = session.kind.displayName
+        field.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
+        let alert = NSAlert()
+        alert.messageText = "セッション名を変更"
+        alert.informativeText = "空欄にすると種類名へ戻ります。"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "キャンセル")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            self?.sessionManager.renameSession(session, to: field.stringValue)
+        }
     }
 
     @objc private func hideSessionFromMenu(_ sender: NSMenuItem) {

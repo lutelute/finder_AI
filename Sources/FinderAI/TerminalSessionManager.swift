@@ -439,6 +439,16 @@ final class TerminalSessionManager: TerminalSessionManaging {
         notifyChange()
     }
 
+    func customName(for session: any ManagedTerminalSession) -> String? {
+        guard let recordID = recordIDsBySessionID[session.id] else { return nil }
+        return registry.records.first { $0.id == recordID }?.customName
+    }
+
+    func renameSession(_ session: any ManagedTerminalSession, to name: String?) {
+        guard let recordID = recordIDsBySessionID[session.id] else { return }
+        renameSessionRecord(id: recordID, name: name)
+    }
+
     func renameSessionRecord(id: UUID, name: String?) {
         guard var record = registry.records.first(where: { $0.id == id }) else { return }
         let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)

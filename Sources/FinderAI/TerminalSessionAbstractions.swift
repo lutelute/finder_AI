@@ -128,6 +128,11 @@ protocol TerminalSessionManaging: AnyObject {
         to directoryURL: URL
     ) -> Bool
     func remove(_ session: any ManagedTerminalSession)
+    /// このセッションに付けた名前。付けていなければnil。
+    func customName(for session: any ManagedTerminalSession) -> String?
+    /// 走っているセッションを名指しで改名する。台帳のIDを知らなくてよいので、
+    /// タブのように「そのセッション」しか手元に無い場所から呼べる。
+    func renameSession(_ session: any ManagedTerminalSession, to name: String?)
     func renameSessionRecord(id: UUID, name: String?)
     func setSessionRecordPinned(id: UUID, isPinned: Bool)
     func forgetSessionRecord(id: UUID)

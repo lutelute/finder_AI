@@ -19,6 +19,9 @@ enum DrawerSessionTabs {
     struct Source: Equatable {
         let id: UUID
         let kindName: String
+        /// ⌘⌥Tで付けた名前。同じフォルダにClaudeが何本も並ぶと種類名だけでは
+        /// 区別が付かないので、付けてあればタブはこちらを名乗る。
+        let customName: String?
         let directoryURL: URL
         let isRunning: Bool
         let isAnchored: Bool
@@ -26,12 +29,14 @@ enum DrawerSessionTabs {
         init(
             id: UUID,
             kindName: String,
+            customName: String? = nil,
             directoryURL: URL,
             isRunning: Bool,
             isAnchored: Bool = false
         ) {
             self.id = id
             self.kindName = kindName
+            self.customName = customName
             self.directoryURL = directoryURL
             self.isRunning = isRunning
             self.isAnchored = isAnchored
@@ -50,14 +55,19 @@ enum DrawerSessionTabs {
             let folder = directory.lastPathComponent.isEmpty
                 ? directory.path(percentEncoded: false)
                 : directory.lastPathComponent
-            var name = source.isRunning ? "●  \(source.kindName)" : source.kindName
+            // 名前を付けてあればそれを名乗る。種類はツールチップに残すので、
+            // 「これは何のAIか」は失われない。
+            let label = source.customName ?? source.kindName
+            var name = source.isRunning ? "●  \(label)" : label
             // An anchored shell deliberately stays put; the pin says "this one
             // does not follow you" right on the tab.
             if source.isAnchored { name = "📌 \(name)" }
+            let heading = source.customName.map { "\($0)（\(source.kindName)）" }
+                ?? source.kindName
             return DrawerSessionTab(
                 id: source.id,
                 title: belongsToCurrentFolder ? name : "\(name) · \(folder)",
-                tooltip: "\(source.kindName) — \(directory.path(percentEncoded: false))\n"
+                tooltip: "\(heading) — \(directory.path(percentEncoded: false))\n"
                     + "ダブルクリックでこの場所をブラウザに表示",
                 isRunning: source.isRunning,
                 isActive: source.id == activeID,
