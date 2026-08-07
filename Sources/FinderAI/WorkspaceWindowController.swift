@@ -277,7 +277,7 @@ extension WorkspaceWindowController: NSSplitViewDelegate {
     }
 
     func splitView(_ splitView: NSSplitView, canCollapseSubview subview: NSView) -> Bool {
-        // Collapsing would leave an invisible pane still taking commands; ⌘⌥S is
+        // Collapsing would leave an invisible pane still taking commands; ⌃⌘S is
         // the way out.
         false
     }
@@ -442,7 +442,7 @@ extension WorkspaceWindowController: NSSplitViewDelegate {
         toggleTerminal()
     }
 
-    /// ⌘⌥S. The second pane opens on the same folder, which is what "split this"
+    /// ⌃⌘S. The second pane opens on the same folder, which is what "split this"
     /// almost always means — you then navigate one side away.
     @objc func toggleSplit() {
         setSplitEnabled(!splitEnabled)
