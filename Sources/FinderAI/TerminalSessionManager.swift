@@ -334,12 +334,15 @@ final class TerminalSessionManager: TerminalSessionManaging {
         } else {
             persistence = nil
         }
+        // 役割はフォルダ×種類の台帳に残る。同じ場所で開き直したAIは、前と
+        // 同じ役回りで立ち上がる——役割を決め直す手間が毎回いらない。
         let session = try builder.makeSession(
             directoryURL: directoryURL,
             kind: kind,
             executableURL: executableURL,
             persistence: persistence,
-            resumesConversation: resumingConversation
+            resumesConversation: resumingConversation,
+            role: registry.record(matching: key)?.role
         )
         let now = Date()
         var record = registry.record(matching: key) ?? TerminalSessionRecord(
@@ -447,6 +450,21 @@ final class TerminalSessionManager: TerminalSessionManaging {
     func renameSession(_ session: any ManagedTerminalSession, to name: String?) {
         guard let recordID = recordIDsBySessionID[session.id] else { return }
         renameSessionRecord(id: recordID, name: name)
+    }
+
+    func role(for session: any ManagedTerminalSession) -> String? {
+        guard let recordID = recordIDsBySessionID[session.id] else { return nil }
+        return registry.records.first { $0.id == recordID }?.role
+    }
+
+    func setRole(for session: any ManagedTerminalSession, to role: String?) {
+        guard let recordID = recordIDsBySessionID[session.id],
+              var record = registry.records.first(where: { $0.id == recordID })
+        else { return }
+        let trimmed = role?.trimmingCharacters(in: .whitespacesAndNewlines)
+        record.role = trimmed.flatMap { $0.isEmpty ? nil : $0 }
+        registry.upsert(record)
+        notifyChange()
     }
 
     func renameSessionRecord(id: UUID, name: String?) {

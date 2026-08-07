@@ -96,6 +96,60 @@ struct TerminalLaunchPlannerTests {
         #expect(shell == .init(executable: "/bin/zsh", arguments: ["-l"]))
     }
 
+    @Test("役割はclaudeにだけ--append-system-promptとして渡る")
+    func roleGoesToClaudeOnly() {
+        let claude = URL(fileURLWithPath: "/mock/bin/claude")
+        let withRole = TerminalLaunchPlanner.plan(
+            kind: .claude,
+            commandURL: claude,
+            persistence: nil,
+            directoryPath: "/tmp/x",
+            role: "査読者として振る舞う"
+        )
+        #expect(withRole == .init(
+            executable: claude.path,
+            arguments: ["--append-system-prompt", "査読者として振る舞う"]
+        ))
+
+        // codexには同等の公開フラグが無い。効かない指示を付けたふりはしない。
+        let codex = URL(fileURLWithPath: "/mock/bin/codex")
+        let codexPlan = TerminalLaunchPlanner.plan(
+            kind: .codex,
+            commandURL: codex,
+            persistence: nil,
+            directoryPath: "/tmp/x",
+            role: "査読者として振る舞う"
+        )
+        #expect(codexPlan == .init(executable: codex.path, arguments: []))
+
+        // 空文字はフラグごと落とす。空のシステムプロンプトに意味は無い。
+        let empty = TerminalLaunchPlanner.plan(
+            kind: .claude,
+            commandURL: claude,
+            persistence: nil,
+            directoryPath: "/tmp/x",
+            role: ""
+        )
+        #expect(empty == .init(executable: claude.path, arguments: []))
+    }
+
+    @Test("続きと役割は同時に渡せる（続きが先、役割が後）")
+    func resumeAndRoleCompose() {
+        let claude = URL(fileURLWithPath: "/mock/bin/claude")
+        let plan = TerminalLaunchPlanner.plan(
+            kind: .claude,
+            commandURL: claude,
+            persistence: nil,
+            directoryPath: "/tmp/x",
+            resumesConversation: true,
+            role: "査読者"
+        )
+        #expect(plan == .init(
+            executable: claude.path,
+            arguments: ["--continue", "--append-system-prompt", "査読者"]
+        ))
+    }
+
     @Test("tmux併用の続きは、セッションコマンドに--continueを含める")
     func resumeSurvivesTmuxLoss() {
         // 生きているtmuxへは-Aがアタッチするだけでコマンドは無視される。

@@ -50,7 +50,8 @@ private final class MockSessionBuilder: TerminalSessionBuilding {
         kind: TerminalSessionKind,
         executableURL: URL?,
         persistence: TerminalSessionPersistence?,
-        resumesConversation: Bool
+        resumesConversation: Bool,
+        role: String?
     ) throws -> any ManagedTerminalSession {
         requests.append(Request(
             directoryURL: directoryURL,
