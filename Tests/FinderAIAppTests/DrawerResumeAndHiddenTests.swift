@@ -32,15 +32,18 @@ private final class ResumeMockSession: ManagedTerminalSession {
 @MainActor
 private final class ResumeRecordingBuilder: TerminalSessionBuilding {
     private(set) var resumeFlags: [Bool] = []
+    private(set) var roles: [String?] = []
 
     func makeSession(
         directoryURL: URL,
         kind: TerminalSessionKind,
         executableURL: URL?,
         persistence: TerminalSessionPersistence?,
-        resumesConversation: Bool
+        resumesConversation: Bool,
+        role: String?
     ) throws -> any ManagedTerminalSession {
         resumeFlags.append(resumesConversation)
+        roles.append(role)
         return ResumeMockSession(directoryURL: directoryURL, kind: kind)
     }
 }
@@ -172,6 +175,41 @@ struct DrawerResumeAndHiddenTests {
         // 空欄は「名前を外す」。種類名へ戻る。
         manager.renameSession(session, to: "   ")
         #expect(manager.customName(for: session) == nil)
+    }
+
+    @Test("役割は台帳に残り、同じフォルダで開き直したAIへ渡る")
+    func roleSticksToFolderAndKind() throws {
+        let builder = ResumeRecordingBuilder()
+        let manager = makeManager(builder: builder)
+
+        let first = try manager.create(kind: .claude, directoryURL: folder)
+        // 最初の起動には何も渡らない。まだ役割が決まっていない。
+        #expect(builder.roles == [nil])
+
+        manager.setRole(for: first, to: "  査読者として振る舞う  ")
+        #expect(manager.role(for: first) == "査読者として振る舞う")
+
+        // 閉じて開き直すと、台帳の役割が次のセッションへ渡る。
+        manager.remove(first)
+        _ = try manager.create(kind: .claude, directoryURL: folder)
+        #expect(builder.roles.last == "査読者として振る舞う")
+    }
+
+    @Test("役割を空にすると、次の起動には渡らない")
+    func clearingRoleStopsPassingIt() throws {
+        let builder = ResumeRecordingBuilder()
+        let manager = makeManager(builder: builder)
+
+        let session = try manager.create(kind: .claude, directoryURL: folder)
+        manager.setRole(for: session, to: "査読者")
+        manager.setRole(for: session, to: "   ")
+        #expect(manager.role(for: session) == nil)
+
+        manager.remove(session)
+        _ = try manager.create(kind: .claude, directoryURL: folder)
+        // `.last`は二重Optionalになるので添字で見る。
+        #expect(builder.roles.count == 2)
+        #expect(builder.roles[1] == nil)
     }
 
     @Test("隠れて実行中のセッションは「＋N」チップになり、押すと管理パネルを開く")

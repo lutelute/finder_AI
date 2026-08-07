@@ -55,7 +55,8 @@ protocol TerminalSessionBuilding {
         kind: TerminalSessionKind,
         executableURL: URL?,
         persistence: TerminalSessionPersistence?,
-        resumesConversation: Bool
+        resumesConversation: Bool,
+        role: String?
     ) throws -> any ManagedTerminalSession
 }
 
@@ -133,6 +134,10 @@ protocol TerminalSessionManaging: AnyObject {
     /// 走っているセッションを名指しで改名する。台帳のIDを知らなくてよいので、
     /// タブのように「そのセッション」しか手元に無い場所から呼べる。
     func renameSession(_ session: any ManagedTerminalSession, to name: String?)
+    /// このフォルダのこのAIに持たせた役割。次に開始したときのシステム
+    /// プロンプトへ足される（claudeのみ。codexに同等の公開フラグが無い）。
+    func role(for session: any ManagedTerminalSession) -> String?
+    func setRole(for session: any ManagedTerminalSession, to role: String?)
     func renameSessionRecord(id: UUID, name: String?)
     func setSessionRecordPinned(id: UUID, isPinned: Bool)
     func forgetSessionRecord(id: UUID)
@@ -159,7 +164,8 @@ struct SwiftTermSessionBuilder: TerminalSessionBuilding {
         kind: TerminalSessionKind,
         executableURL: URL?,
         persistence: TerminalSessionPersistence?,
-        resumesConversation: Bool
+        resumesConversation: Bool,
+        role: String?
     ) throws -> any ManagedTerminalSession {
         try TerminalSession(
             directoryURL: directoryURL,
@@ -168,7 +174,8 @@ struct SwiftTermSessionBuilder: TerminalSessionBuilding {
             persistence: persistence,
             // 起動時ではなく作成時に読む。トグルの変更が次のセッションから効く。
             logsOutput: preferences.sessionLogging,
-            resumesConversation: resumesConversation
+            resumesConversation: resumesConversation,
+            role: role
         )
     }
 }

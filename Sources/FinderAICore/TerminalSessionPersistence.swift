@@ -37,12 +37,16 @@ public enum TerminalLaunchPlanner {
     /// セッションコマンドに含める：生きているtmuxへは-Aがアタッチするだけで
     /// コマンドは無視され、Macの再起動などでtmuxごと消えた後は、新しい
     /// セッションが会話を引き継いで立ち上がる。
+    /// `role`はclaudeにだけ効く（`--append-system-prompt`）。codexには同等の
+    /// 公開フラグが無い（0.146.0で確認）ので、渡されても付けない——効かない
+    /// 指示を付けたふりをするより、付かないほうが正しい。
     public static func plan(
         kind: TerminalSessionKind,
         commandURL: URL?,
         persistence: TerminalSessionPersistence?,
         directoryPath: String,
-        resumesConversation: Bool = false
+        resumesConversation: Bool = false,
+        role: String? = nil
     ) -> Plan? {
         let base: Plan
         switch kind {
@@ -50,11 +54,12 @@ public enum TerminalLaunchPlanner {
             base = Plan(executable: "/bin/zsh", arguments: ["-l"])
         case .codex, .claude:
             guard let commandURL else { return nil }
-            let arguments: [String]
+            var arguments: [String] = []
             if resumesConversation {
                 arguments = kind == .claude ? ["--continue"] : ["resume", "--last"]
-            } else {
-                arguments = []
+            }
+            if kind == .claude, let role, !role.isEmpty {
+                arguments += ["--append-system-prompt", role]
             }
             base = Plan(executable: commandURL.path, arguments: arguments)
         }

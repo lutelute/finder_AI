@@ -980,7 +980,7 @@ final class DrawerContentViewController: NSViewController {
         // 名前は⌘⌥Tの管理パネルでも付けられるが、名乗らせたくなるのは
         // タブが並んで見分けが付かないこの場所。
         menu.addItem(item(
-            sessionManager.customName(for: session) == nil ? "名前を付ける…" : "名前を変える…",
+            session.kind == .claude ? "名前と役割…" : "名前を付ける…",
             action: #selector(renameSessionFromMenu(_:))
         ))
         menu.addItem(.separator())
@@ -1011,20 +1011,60 @@ final class DrawerContentViewController: NSViewController {
         return sessionManager.allSessions.first { $0.id == id }
     }
 
+    /// 名前と役割は同じ紙で決める。「このタブは誰で、何をする人か」は
+    /// ひと続きの話で、別々のダイアログに分けるほうが不自然。
     @objc private func renameSessionFromMenu(_ sender: NSMenuItem) {
         guard let session = session(from: sender), let window = view.window else { return }
-        let field = NSTextField(string: sessionManager.customName(for: session) ?? "")
-        field.placeholderString = session.kind.displayName
-        field.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
+        let supportsRole = session.kind == .claude
+
+        let nameField = NSTextField(string: sessionManager.customName(for: session) ?? "")
+        nameField.placeholderString = session.kind.displayName
+
+        let roleField = NSTextView(frame: NSRect(x: 0, y: 0, width: 320, height: 68))
+        roleField.string = sessionManager.role(for: session) ?? ""
+        roleField.font = .systemFont(ofSize: 12)
+        roleField.isRichText = false
+        roleField.textContainerInset = NSSize(width: 4, height: 4)
+        let roleScroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 320, height: 68))
+        roleScroll.documentView = roleField
+        roleScroll.hasVerticalScroller = true
+        roleScroll.borderType = .bezelBorder
+
+        let nameCaption = NSTextField(labelWithString: "名前（空欄で種類名に戻す）")
+        let roleCaption = NSTextField(
+            labelWithString: "役割（次に開始したときから効きます）"
+        )
+        for caption in [nameCaption, roleCaption] {
+            caption.font = .systemFont(ofSize: 11)
+            caption.textColor = .secondaryLabelColor
+        }
+
+        let stack = NSStackView(views: supportsRole
+            ? [nameCaption, nameField, roleCaption, roleScroll]
+            : [nameCaption, nameField])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 4
+        stack.setCustomSpacing(12, after: nameField)
+        stack.frame = NSRect(x: 0, y: 0, width: 320, height: supportsRole ? 140 : 46)
+        nameField.widthAnchor.constraint(equalToConstant: 320).isActive = true
+        roleScroll.widthAnchor.constraint(equalToConstant: 320).isActive = true
+        roleScroll.heightAnchor.constraint(equalToConstant: 68).isActive = true
+
         let alert = NSAlert()
-        alert.messageText = "セッション名を変更"
-        alert.informativeText = "空欄にすると種類名へ戻ります。"
-        alert.accessoryView = field
+        alert.messageText = "セッションの名前と役割"
+        alert.informativeText = supportsRole
+            ? "役割はこのフォルダのClaudeに残り、次に開始したときのシステムプロンプトへ足されます。走っている最中に変えても、そのセッションの振る舞いは変わりません。"
+            : "\(session.kind.displayName)には役割を渡す口が無いので、名前だけ決められます。"
+        alert.accessoryView = stack
         alert.addButton(withTitle: "保存")
         alert.addButton(withTitle: "キャンセル")
         alert.beginSheetModal(for: window) { [weak self] response in
-            guard response == .alertFirstButtonReturn else { return }
-            self?.sessionManager.renameSession(session, to: field.stringValue)
+            guard response == .alertFirstButtonReturn, let self else { return }
+            self.sessionManager.renameSession(session, to: nameField.stringValue)
+            if supportsRole {
+                self.sessionManager.setRole(for: session, to: roleField.string)
+            }
         }
     }
 

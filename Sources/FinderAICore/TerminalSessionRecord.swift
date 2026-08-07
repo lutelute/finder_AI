@@ -27,6 +27,13 @@ public struct TerminalSessionRecord: Codable, Equatable, Identifiable, Sendable 
     public var endedAt: Date?
     public var endReason: TerminalSessionEndReason?
     public var customName: String?
+    /// このフォルダのこのAIに持たせる役割。起動時にシステムプロンプトへ足す。
+    /// 台帳はフォルダ×種類で引き継がれるので、一度決めれば同じ場所で
+    /// 次に開始したAIも同じ役回りで立ち上がる。
+    ///
+    /// 効くのは起動の瞬間だけ——走っている最中に変えても、その場では
+    /// 変わらない（tmuxへの再アタッチもコマンドを渡さない）。UIはそう伝える。
+    public var role: String?
     public var isPinned: Bool
     public var lastTranscriptPath: String?
 
@@ -43,6 +50,7 @@ public struct TerminalSessionRecord: Codable, Equatable, Identifiable, Sendable 
         endedAt: Date? = nil,
         endReason: TerminalSessionEndReason? = nil,
         customName: String? = nil,
+        role: String? = nil,
         isPinned: Bool = false,
         lastTranscriptPath: String? = nil
     ) {
@@ -58,6 +66,7 @@ public struct TerminalSessionRecord: Codable, Equatable, Identifiable, Sendable 
         self.endedAt = endedAt
         self.endReason = endReason
         self.customName = customName
+        self.role = role
         self.isPinned = isPinned
         self.lastTranscriptPath = lastTranscriptPath
     }
