@@ -123,12 +123,13 @@ final class TerminalSessionManager: TerminalSessionManaging {
         kind: TerminalSessionKind,
         directoryURL: URL
     ) -> Bool {
-        // `--continue`を持つのはclaudeだけ。台帳の記録は「ここで動かしたことが
-        // ある」の証拠で、会話の実体はclaude側にある。実体が消えていても、
-        // claudeが「続きは無い」と穏当に伝えるだけで壊れはしない。
-        guard kind == .claude else { return false }
+        // 会話の再開手段を持つのはAIだけ（claude=--continue、codex=resume
+        // --last。どちらもそのフォルダに絞られる）。台帳の記録は「ここで
+        // 動かしたことがある」の証拠で、会話の実体はCLI側にある。実体が
+        // 消えていても、CLIが「続きは無い」と穏当に伝えるだけで壊れはしない。
+        guard kind != .shell else { return false }
         let path = directoryURL.standardizedFileURL.path
-        return sessionRecords.contains { $0.kind == .claude && $0.directoryPath == path }
+        return sessionRecords.contains { $0.kind == kind && $0.directoryPath == path }
     }
 
     var persistentSessions: [TmuxSessionInfo] {

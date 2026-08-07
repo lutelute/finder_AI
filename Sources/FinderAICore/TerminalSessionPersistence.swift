@@ -31,10 +31,12 @@ public enum TerminalLaunchPlanner {
     /// クラッシュ後の「再接続」に専用経路が要らない。`-c`は新規作成時だけ効き、
     /// 既存セッションへのアタッチでは無視される（それで正しい）。
     ///
-    /// `resumesConversation`はclaudeにだけ効く（`--continue`＝そのフォルダの
-    /// 直近の会話へ戻る）。tmux併用時はセッションコマンドに含める：生きている
-    /// tmuxへは-Aがアタッチするだけでコマンドは無視され、Macの再起動などで
-    /// tmuxごと消えた後は、新しいセッションが会話を引き継いで立ち上がる。
+    /// `resumesConversation`はAIにだけ効く。claudeは`--continue`、codexは
+    /// `resume --last`——どちらも「そのフォルダの直近の会話」へ戻る（codexの
+    /// pickerはcwdで絞られ、--lastはその中の直近を選ぶ）。tmux併用時は
+    /// セッションコマンドに含める：生きているtmuxへは-Aがアタッチするだけで
+    /// コマンドは無視され、Macの再起動などでtmuxごと消えた後は、新しい
+    /// セッションが会話を引き継いで立ち上がる。
     public static func plan(
         kind: TerminalSessionKind,
         commandURL: URL?,
@@ -48,7 +50,12 @@ public enum TerminalLaunchPlanner {
             base = Plan(executable: "/bin/zsh", arguments: ["-l"])
         case .codex, .claude:
             guard let commandURL else { return nil }
-            let arguments = (resumesConversation && kind == .claude) ? ["--continue"] : []
+            let arguments: [String]
+            if resumesConversation {
+                arguments = kind == .claude ? ["--continue"] : ["resume", "--last"]
+            } else {
+                arguments = []
+            }
             base = Plan(executable: commandURL.path, arguments: arguments)
         }
 
