@@ -16,11 +16,16 @@ struct ShellFollowIntegrationTests {
         return root.resolvingSymlinksInPath()
     }
 
+    /// 待つのは本物のzshの起動とプロンプト描画で、普段は0.5秒とかからない。
+    /// それでも60秒待つのは、この試験が落ちるのは遅いからではなく、機械が
+    /// 埋まっているときだからで——フルリビルド直後に20秒で力尽きて赤くなった
+    /// ——待ち足りずに嘘の赤を出すより、詰まった回だけ長く待つほうがいい。
+    /// 条件が満たされれば即座に返るので、通る回の時間は変わらない。
     private func waitUntil(
         _ what: Comment,
         _ condition: () -> Bool
     ) async throws {
-        for _ in 0..<2_000 {
+        for _ in 0..<6_000 {
             if condition() { return }
             try await Task.sleep(for: .milliseconds(10))
         }
