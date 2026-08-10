@@ -5,6 +5,9 @@ enum WorkspaceViewMode: String, CaseIterable {
     case list
     case column
     case gallery
+    /// 束を平面に散らす表示。一覧では二行に割れる「複数の束に属するもの」が、
+    /// ここでは束の間に立つ一点になる。
+    case map
 }
 
 /// Durable UI state. Everything here is a convenience the user re-establishes by

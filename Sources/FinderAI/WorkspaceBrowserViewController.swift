@@ -7,6 +7,7 @@ private final class WorkspaceNameCellView: NSTableCellView {
     private let iconView = NSImageView()
     private let label = FinderInlineRenameField()
     private let cloudView = NSImageView()
+    private let groupsLabel = NSTextField(labelWithString: "")
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -16,10 +17,18 @@ private final class WorkspaceNameCellView: NSTableCellView {
         label.textColor = IntegratedPanelTheme.text
         cloudView.imageScaling = .scaleProportionallyDown
         cloudView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
-        [iconView, label, cloudView].forEach {
+        // 同じ項目が別の束にも並んでいることの印。名前より弱く出す — 主役は名前で、
+        // これは「これは二つ目の実体ではない」と気づかせるためだけのもの。
+        groupsLabel.font = .systemFont(ofSize: 10.5)
+        groupsLabel.textColor = IntegratedPanelTheme.secondaryText
+        groupsLabel.lineBreakMode = .byTruncatingTail
+        [iconView, label, cloudView, groupsLabel].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             addSubview($0)
         }
+        // 名前が長ければ先に他所属のほうが削れる。どの束にも居ることより、
+        // 何という名前かのほうが先に要る。
+        groupsLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         // The badge sits after the name and is hugged tight, so a long name
         // truncates instead of pushing the badge out of the cell.
         cloudView.setContentHuggingPriority(.required, for: .horizontal)
@@ -32,9 +41,11 @@ private final class WorkspaceNameCellView: NSTableCellView {
             label.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 7),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
             cloudView.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 6),
-            cloudView.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -5),
             cloudView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            cloudView.widthAnchor.constraint(equalToConstant: 14)
+            cloudView.widthAnchor.constraint(equalToConstant: 14),
+            groupsLabel.leadingAnchor.constraint(equalTo: cloudView.trailingAnchor, constant: 4),
+            groupsLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -5),
+            groupsLabel.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
         imageView = iconView
         textField = label
@@ -48,10 +59,20 @@ private final class WorkspaceNameCellView: NSTableCellView {
     /// it before applying, so a reused cell never receives a stale icon.
     var representedURL: URL?
 
-    func configure(name: String, image: NSImage, cloud: WorkspaceCloudStatus) {
+    func configure(
+        name: String,
+        image: NSImage,
+        cloud: WorkspaceCloudStatus,
+        otherGroups: [String] = []
+    ) {
         label.show(name)
         iconView.image = image
         applyCloud(cloud)
+        groupsLabel.isHidden = otherGroups.isEmpty
+        groupsLabel.stringValue = otherGroups.isEmpty ? "" : "↳ " + otherGroups.joined(separator: ", ")
+        groupsLabel.toolTip = otherGroups.isEmpty
+            ? nil
+            : "同じものが「\(otherGroups.joined(separator: "」「"))」にも並んでいます"
     }
 
     func containsName(at point: NSPoint) -> Bool {
@@ -440,8 +461,9 @@ final class WorkspaceBrowserViewController: NSViewController {
         /// 束とは別物。同じ文字列で持つと、ユーザーが「未分類」という束を作った瞬間に
         /// 二つが同じ見出しになる。
         case header(String?)
-        /// `displayedItems`の添字。複数の束に属する項目は、同じ添字を複数の行が指す。
-        case item(Int)
+        /// `displayedItems`の添字と、この行が居る束**以外**の所属先。複数の束に属する
+        /// 項目は同じ添字を複数の行が指すので、行ごとに「他はどこか」が変わる。
+        case item(index: Int, otherGroups: [String])
     }
 
     private var fileRows: [FileRow] = []
@@ -485,6 +507,7 @@ final class WorkspaceBrowserViewController: NSViewController {
     private let columnView = WorkspaceColumnView()
     private var listScrollView: NSScrollView?
     private var galleryScrollView: NSScrollView?
+    private let mapView = WorkspaceMapView()
     private let ribbonPath = NSPathControl()
     private let listingErrorLabel = NSTextField(wrappingLabelWithString: "")
     private let openSettingsButton = NSButton()
@@ -749,7 +772,8 @@ final class WorkspaceBrowserViewController: NSViewController {
         fileArea.addSubview(listScroll)
         fileArea.addSubview(columnView)
         fileArea.addSubview(galleryScroll)
-        [listScroll, columnView, galleryScroll].forEach {
+        fileArea.addSubview(mapView)
+        [listScroll, columnView, galleryScroll, mapView].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([
                 $0.leadingAnchor.constraint(equalTo: fileArea.leadingAnchor),
@@ -891,6 +915,17 @@ final class WorkspaceBrowserViewController: NSViewController {
             self.columnView.reload(directory: destination)
         }
         columnView.contextMenuProvider = { [weak self] in self?.fileTable.menu }
+
+        mapView.onOpen = { [weak self] item in
+            guard let self else { return }
+            if item.isDirectory {
+                self.navigate(to: item.url)
+            } else {
+                NSWorkspace.shared.open(item.url)
+            }
+        }
+        mapView.onSelectionChange = { [weak self] _ in self?.updateStatus() }
+        mapView.contextMenuProvider = { [weak self] in self?.fileTable.menu }
     }
 
     private func syncAfterColumnNavigation(to url: URL) {
@@ -916,6 +951,7 @@ final class WorkspaceBrowserViewController: NSViewController {
     @objc func selectListView() { select(viewMode: .list) }
     @objc func selectColumnView() { select(viewMode: .column) }
     @objc func selectGalleryView() { select(viewMode: .gallery) }
+    @objc func selectMapView() { select(viewMode: .map) }
 
     private func select(viewMode: WorkspaceViewMode) {
         let selection = selectedItems.map(\.url)
@@ -953,12 +989,19 @@ final class WorkspaceBrowserViewController: NSViewController {
         columnView.isHidden = mode != .column
         listScrollView?.isHidden = mode != .list
         galleryScrollView?.isHidden = mode != .gallery
+        mapView.isHidden = mode != .map
         viewModeControl.selectedSegment = WorkspaceViewMode.allCases.firstIndex(of: mode) ?? 0
         if mode == .column {
             columnView.show(
                 directory: navigator.currentDirectory,
                 showHiddenFiles: preferences.showHiddenFiles
             )
+        }
+        // 見えていない地図を動かし続ける理由がない。開いたときに組み直す。
+        if mode == .map {
+            mapView.show(items: displayedItems, groups: itemGroups)
+        } else {
+            mapView.stopSettling()
         }
         galleryView.reloadData()
         updateStatus()
@@ -982,8 +1025,11 @@ final class WorkspaceBrowserViewController: NSViewController {
         )
         configureNavigationButton(newFolderButton, symbol: "folder.badge.plus", action: #selector(createFolder), label: "新規フォルダ")
 
-        viewModeControl.segmentCount = 3
-        for (index, symbol) in ["list.bullet", "rectangle.split.3x1", "square.grid.2x2"].enumerated() {
+        // セグメントの並びは WorkspaceViewMode.allCases と一対一。片方だけ足すと
+        // 選択の対応がずれる。
+        viewModeControl.segmentCount = WorkspaceViewMode.allCases.count
+        let symbols = ["list.bullet", "rectangle.split.3x1", "square.grid.2x2", "point.3.connected.trianglepath.dotted"]
+        for (index, symbol) in symbols.enumerated() {
             viewModeControl.setImage(
                 NSImage(systemSymbolName: symbol, accessibilityDescription: "表示モード"),
                 forSegment: index
@@ -993,7 +1039,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         viewModeControl.trackingMode = .selectOne
         viewModeControl.target = self
         viewModeControl.action = #selector(viewModeChanged)
-        viewModeControl.toolTip = "リスト／カラム／ギャラリー"
+        viewModeControl.toolTip = "リスト／カラム／ギャラリー／マップ"
 
         searchScopeControl.segmentCount = 2
         searchScopeControl.setLabel("直下", forSegment: 0)
@@ -1978,7 +2024,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         guard let groups = itemGroups,
               !groups.groups.isEmpty,
               !usesRecursiveSearch else {
-            fileRows = displayedItems.indices.map(FileRow.item)
+            fileRows = displayedItems.indices.map { .item(index: $0, otherGroups: []) }
             return
         }
 
@@ -1989,15 +2035,30 @@ final class WorkspaceBrowserViewController: NSViewController {
         var rows: [FileRow] = []
         for section in groups.sections(for: displayedItems) {
             rows.append(.header(section.name))
-            rows.append(contentsOf: section.items.compactMap { indexByURL[$0.url].map(FileRow.item) })
+            for item in section.items {
+                guard let index = indexByURL[item.url] else { continue }
+                // 未分類の行に他所属は出ない。どこにも属していないからそこに居る。
+                let others = section.name == nil
+                    ? []
+                    : groups.groupNames(for: item.name).filter { $0 != section.name }
+                rows.append(.item(index: index, otherGroups: others))
+            }
         }
         fileRows = rows
     }
 
     /// 行番号から項目を引く。見出しの行はnil。
     private func item(atRow row: Int) -> WorkspaceItem? {
-        guard fileRows.indices.contains(row), case .item(let index) = fileRows[row] else { return nil }
+        guard fileRows.indices.contains(row),
+              case .item(let index, _) = fileRows[row] else { return nil }
         return displayedItems.indices.contains(index) ? displayedItems[index] : nil
+    }
+
+    /// この行が居る束以外の所属先。見出しの無い一覧では常に空。
+    private func otherGroups(atRow row: Int) -> [String] {
+        guard fileRows.indices.contains(row),
+              case .item(_, let others) = fileRows[row] else { return [] }
+        return others
     }
 
     private func isHeaderRow(_ row: Int) -> Bool {
@@ -2282,6 +2343,8 @@ final class WorkspaceBrowserViewController: NSViewController {
                     ? displayedItems[indexPath.item]
                     : nil
             }
+        case .map:
+            return mapView.selectedItems
         case .list:
             break
         }
@@ -2305,6 +2368,7 @@ final class WorkspaceBrowserViewController: NSViewController {
                 .filter { wanted.contains(displayedItems[$0].url) }
                 .map { IndexPath(item: $0, section: 0) }
         )
+        mapView.select(urls: urls)
         updateStatus()
     }
 
@@ -2545,6 +2609,10 @@ final class WorkspaceBrowserViewController: NSViewController {
             beginGalleryRename(at: indexPath)
         case .list:
             beginListRename(at: fileTable.selectedRow)
+        case .map:
+            // 地図には名前を書き換える場所がない。点の脇のラベルは表示であって
+            // 入力欄ではないので、一覧に戻ってからにしてもらう。
+            break
         }
     }
 
@@ -2984,7 +3052,8 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
             cell.configure(
                 name: item.relativePath ?? item.name,
                 image: WorkspaceIconProvider.shared.quickIcon(for: item),
-                cloud: item.cloudStatus
+                cloud: item.cloudStatus,
+                otherGroups: otherGroups(atRow: row)
             )
             WorkspaceIconProvider.shared.resolveIcon(for: item) { [weak cell] image in
                 guard let cell, cell.representedURL == item.url else { return }
@@ -3377,6 +3446,9 @@ extension WorkspaceBrowserViewController: NSMenuItemValidation {
         // current folder.
         case #selector(duplicateSelection), #selector(makeAliasForSelection):
             return !selectedItems.isEmpty
+        // 地図には名前を書き換える場所がないので、押せるように見せない。
+        case #selector(renameSelection):
+            return effectiveViewMode != .map && selectedItems.count == 1
         // 束の操作は、いまのフォルダの直下を選んでいるときだけ。相対名で持つので
         // 別の階層のものは指せない。定義が読めていないときも触らせない。
         case #selector(createGroupWithSelection), #selector(removeSelectionFromAllGroups):

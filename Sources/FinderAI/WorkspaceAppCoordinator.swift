@@ -996,6 +996,8 @@ final class WorkspaceAppCoordinator {
         viewMenu.addItem(item("リスト表示", action: #selector(WorkspaceBrowserViewController.selectListView), key: "2"))
         viewMenu.addItem(item("カラム表示", action: #selector(WorkspaceBrowserViewController.selectColumnView), key: "3"))
         viewMenu.addItem(item("ギャラリー表示", action: #selector(WorkspaceBrowserViewController.selectGalleryView), key: "4"))
+        // Finderには対応するものが無いので、その次の番号を継ぐ。
+        viewMenu.addItem(item("マップ表示", action: #selector(WorkspaceBrowserViewController.selectMapView), key: "5"))
         let cycleView = item(
             "表示モードを切り替え",
             action: #selector(WorkspaceBrowserViewController.toggleColumnView),
