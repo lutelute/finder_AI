@@ -20,7 +20,9 @@ final class WorkspaceMapView: NSView {
 
     private var items: [WorkspaceItem] = []
     private var itemsByName: [String: WorkspaceItem] = [:]
+    /// その他の全部と、絞り込んだあと。表に出すのは`visibleOthers`。
     private var others: [WorkspaceItem] = []
+    private var visibleOthers: [WorkspaceItem] = []
     /// 束に属するものと、その定義。表示された瞬間はまだ大きさが決まっていないので、
     /// 組むのを`layout()`まで待てるように控えておく。
     private var groupedItems: [WorkspaceItem] = []
@@ -35,6 +37,7 @@ final class WorkspaceMapView: NSView {
     private let othersScroll = NSScrollView()
     private let othersTable = NSTableView()
     private let othersHeader = NSTextField(labelWithString: "")
+    private let othersFilter = NSSearchField()
     private let mapArea = WorkspaceMapCanvas()
 
     private static let nodeRadius: Double = 9.5
@@ -73,6 +76,17 @@ final class WorkspaceMapView: NSView {
         othersHeader.font = .systemFont(ofSize: 11, weight: .semibold)
         othersHeader.textColor = IntegratedPanelTheme.secondaryText
 
+        // 束に入れていないものは数が多い（この環境では123）。名前順に並べても
+        // 目で追うには長いので、絞り込みを付ける。地図の側は束が場所を示すから
+        // 要らないが、こちらは一覧なので要る。
+        othersFilter.placeholderString = "その他を絞り込む"
+        othersFilter.controlSize = .small
+        othersFilter.font = .systemFont(ofSize: 11)
+        othersFilter.sendsSearchStringImmediately = false
+        othersFilter.sendsWholeSearchString = false
+        othersFilter.target = self
+        othersFilter.action = #selector(othersFilterChanged)
+
         othersTable.headerView = nil
         othersTable.rowHeight = Self.othersRowHeight
         othersTable.backgroundColor = IntegratedPanelTheme.background
@@ -93,7 +107,7 @@ final class WorkspaceMapView: NSView {
         othersScroll.drawsBackground = true
         othersScroll.backgroundColor = IntegratedPanelTheme.background
 
-        [mapArea, othersHeader, othersScroll].forEach {
+        [mapArea, othersHeader, othersFilter, othersScroll].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             addSubview($0)
         }
@@ -111,10 +125,7 @@ final class WorkspaceMapView: NSView {
         others = split.others
         groupedItems = split.grouped
         itemGroups = groups
-        othersHeader.stringValue = others.isEmpty
-            ? "その他なし"
-            : "その他 \(others.count) · A–Z"
-        othersTable.reloadData()
+        applyOthersFilter()
         applyPaneLayout()
 
         // ここで組めなければ`layout()`が組む。表示された直後は、この欄の
@@ -137,6 +148,28 @@ final class WorkspaceMapView: NSView {
         }
     }
 
+    @objc private func othersFilterChanged() {
+        applyOthersFilter()
+    }
+
+    /// 絞り込みを反映する。見出しは「絞り込んだ数 / 全部」を出す — 数だけ変わると
+    /// 「消えた」のか「隠れている」のか分からない。
+    private func applyOthersFilter() {
+        let query = othersFilter.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        visibleOthers = query.isEmpty
+            ? others
+            : others.filter { $0.name.localizedCaseInsensitiveContains(query) }
+
+        if others.isEmpty {
+            othersHeader.stringValue = "その他なし"
+        } else if query.isEmpty {
+            othersHeader.stringValue = "その他 \(others.count) · A–Z"
+        } else {
+            othersHeader.stringValue = "その他 \(visibleOthers.count) / \(others.count)"
+        }
+        othersTable.reloadData()
+    }
+
     // MARK: - 欄割り
 
     private var paneConstraints: [NSLayoutConstraint] = []
@@ -147,6 +180,7 @@ final class WorkspaceMapView: NSView {
         let width = others.isEmpty ? 0 : Self.othersWidth(for: Double(bounds.width))
         let showsOthers = width > 0
         othersHeader.isHidden = !showsOthers
+        othersFilter.isHidden = !showsOthers
         othersScroll.isHidden = !showsOthers
 
         var constraints: [NSLayoutConstraint] = [
@@ -159,10 +193,13 @@ final class WorkspaceMapView: NSView {
                 mapArea.trailingAnchor.constraint(equalTo: othersHeader.leadingAnchor, constant: -1),
                 othersHeader.trailingAnchor.constraint(equalTo: trailingAnchor),
                 othersHeader.topAnchor.constraint(equalTo: topAnchor, constant: 10),
-                othersHeader.leadingAnchor.constraint(equalTo: othersScroll.leadingAnchor),
+                othersHeader.leadingAnchor.constraint(equalTo: othersScroll.leadingAnchor, constant: 12),
+                othersFilter.leadingAnchor.constraint(equalTo: othersScroll.leadingAnchor, constant: 10),
+                othersFilter.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+                othersFilter.topAnchor.constraint(equalTo: othersHeader.bottomAnchor, constant: 6),
                 othersScroll.widthAnchor.constraint(equalToConstant: width),
                 othersScroll.trailingAnchor.constraint(equalTo: trailingAnchor),
-                othersScroll.topAnchor.constraint(equalTo: topAnchor, constant: Self.othersHeaderHeight),
+                othersScroll.topAnchor.constraint(equalTo: othersFilter.bottomAnchor, constant: 6),
                 othersScroll.bottomAnchor.constraint(equalTo: bottomAnchor)
             ]
         } else {
@@ -451,26 +488,8 @@ final class WorkspaceMapView: NSView {
 
     // MARK: - 操作
 
-    private func mapPoint(from event: NSEvent) -> CGPoint {
-        mapArea.convert(event.locationInWindow, from: nil)
-    }
-
-    override func mouseMoved(with event: NSEvent) {
-        let name = clusterLayout?.node(at: mapPoint(from: event), radius: Self.hitRadius)?.name
-        guard name != hoveredName else { return }
-        hoveredName = name
-        mapArea.needsDisplay = true
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        guard hoveredName != nil else { return }
-        hoveredName = nil
-        mapArea.needsDisplay = true
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        let point = mapPoint(from: event)
-        guard mapArea.bounds.contains(point) else { return }
+    /// 地図の上のクリック。座標は地図の座標系で渡ってくる。
+    func handleMapClick(at point: CGPoint, event: NSEvent) {
         guard let node = clusterLayout?.node(at: point, radius: Self.hitRadius) else {
             selectedNames = []
             mapArea.needsDisplay = true
@@ -496,10 +515,15 @@ final class WorkspaceMapView: NSView {
         }
     }
 
-    override func menu(for event: NSEvent) -> NSMenu? {
-        let point = mapPoint(from: event)
-        if mapArea.bounds.contains(point),
-           let node = clusterLayout?.node(at: point, radius: Self.hitRadius),
+    func handleMapHover(at point: CGPoint) {
+        let name = clusterLayout?.node(at: point, radius: Self.hitRadius)?.name
+        guard name != hoveredName else { return }
+        hoveredName = name
+        mapArea.needsDisplay = true
+    }
+
+    func mapMenu(at point: CGPoint) -> NSMenu? {
+        if let node = clusterLayout?.node(at: point, radius: Self.hitRadius),
            !selectedNames.contains(node.name) {
             othersTable.deselectAll(nil)
             selectedNames = [node.name]
@@ -509,10 +533,16 @@ final class WorkspaceMapView: NSView {
         return contextMenuProvider?()
     }
 
+    override func mouseExited(with event: NSEvent) {
+        guard hoveredName != nil else { return }
+        hoveredName = nil
+        mapArea.needsDisplay = true
+    }
+
     @objc private func openOtherRow() {
         let row = othersTable.clickedRow
-        guard others.indices.contains(row) else { return }
-        onOpen?(others[row])
+        guard visibleOthers.indices.contains(row) else { return }
+        onOpen?(visibleOthers[row])
     }
 
     var selectedItems: [WorkspaceItem] {
@@ -524,7 +554,7 @@ final class WorkspaceMapView: NSView {
         let wanted = Set(urls)
         selectedNames = Set(items.filter { wanted.contains($0.url) }.map(\.name))
         mapArea.needsDisplay = true
-        let rows = others.indices.filter { wanted.contains(others[$0].url) }
+        let rows = visibleOthers.indices.filter { wanted.contains(visibleOthers[$0].url) }
         othersTable.selectRowIndexes(IndexSet(rows), byExtendingSelection: false)
     }
 }
@@ -532,15 +562,15 @@ final class WorkspaceMapView: NSView {
 // MARK: - その他の欄
 
 extension WorkspaceMapView: NSTableViewDataSource, NSTableViewDelegate {
-    func numberOfRows(in tableView: NSTableView) -> Int { others.count }
+    func numberOfRows(in tableView: NSTableView) -> Int { visibleOthers.count }
 
     func tableView(
         _ tableView: NSTableView,
         viewFor tableColumn: NSTableColumn?,
         row: Int
     ) -> NSView? {
-        guard others.indices.contains(row) else { return nil }
-        let item = others[row]
+        guard visibleOthers.indices.contains(row) else { return nil }
+        let item = visibleOthers[row]
         let cell = tableView.makeView(
             withIdentifier: NSUserInterfaceItemIdentifier("WorkspaceOtherCell"),
             owner: self
@@ -558,8 +588,8 @@ extension WorkspaceMapView: NSTableViewDataSource, NSTableViewDelegate {
         _ tableView: NSTableView,
         pasteboardWriterForRow row: Int
     ) -> (any NSPasteboardWriting)? {
-        guard others.indices.contains(row) else { return nil }
-        return WorkspaceDragDrop.pasteboardWriter(for: others[row].url)
+        guard visibleOthers.indices.contains(row) else { return nil }
+        return WorkspaceDragDrop.pasteboardWriter(for: visibleOthers[row].url)
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -567,7 +597,7 @@ extension WorkspaceMapView: NSTableViewDataSource, NSTableViewDelegate {
         let rows = othersTable.selectedRowIndexes
         guard !rows.isEmpty else { return }
         // 地図と一覧で同時に選ばせない。どちらが選択なのか分からなくなる。
-        selectedNames = Set(rows.compactMap { others.indices.contains($0) ? others[$0].name : nil })
+        selectedNames = Set(rows.compactMap { visibleOthers.indices.contains($0) ? visibleOthers[$0].name : nil })
         mapArea.needsDisplay = true
         onSelectionChange?(selectedItems)
     }
@@ -584,6 +614,24 @@ final class WorkspaceMapCanvas: NSView {
     override func draw(_ dirtyRect: NSRect) {
         owner?.drawMap(in: bounds)
     }
+
+    // クリックは親に渡す。NSResponderの既定の転送に任せていたら点が選べなかった
+    // ので、明示的に呼ぶ。判定に使う座標系はこのビューのものなので、
+    // 親の側で変換し直さない。
+    override func mouseDown(with event: NSEvent) {
+        owner?.handleMapClick(at: convert(event.locationInWindow, from: nil), event: event)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        owner?.handleMapHover(at: convert(event.locationInWindow, from: nil))
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        owner?.mapMenu(at: convert(event.locationInWindow, from: nil))
+    }
+
+    /// 背面のウィンドウを起こす一手目でも点が選べるように。
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
 /// 「その他」欄の一行。アイコンと名前だけ — ここは探すための一覧で、

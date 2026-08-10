@@ -176,6 +176,43 @@ struct WorkspaceClusterLayoutTests {
         }
     }
 
+    /// 三つ以上の束に属することもある。重心は枡の並び次第で**属していない島**の
+    /// 真ん中に落ちるので、そこに置くとその島のメンバーに見えてしまう。
+    @Test("三つの束に属するものが、属していない島の中に入らない")
+    func tripleSharedStaysOutOfForeignIslands() {
+        var groups = WorkspaceItemGroups()
+        for (index, name) in ["A", "B", "C", "D", "E", "F"].enumerated() {
+            groups.add("member\(index)", to: name)
+        }
+        // A・C・E の三つに属する。この三つは枡の上で離れている。
+        for name in ["A", "C", "E"] { groups.add("triple", to: name) }
+
+        let map = layout((0..<6).map { "member\($0)" } + ["triple"], groups)
+        let triple = try! #require(map.node(named: "triple"))
+
+        #expect(triple.groups.count == 3)
+        for island in map.islands where !triple.groups.contains(island.name) {
+            #expect(
+                !island.frame.contains(triple.position),
+                "属していない島「\(island.name)」の中に入った"
+            )
+        }
+    }
+
+    @Test("三つの束に属するものは、その三つ全部が橋になる")
+    func tripleSharedBridgesToAll() {
+        var groups = WorkspaceItemGroups()
+        for name in ["A", "B", "C"] {
+            groups.add("only-\(name)", to: name)
+            groups.add("triple", to: name)
+        }
+
+        let map = layout(["only-A", "only-B", "only-C", "triple"], groups)
+
+        #expect(map.bridges.count == 1)
+        #expect(Set(map.nodes[map.bridges[0]].groups) == ["A", "B", "C"])
+    }
+
     @Test("複数所属のものだけが橋として挙がる")
     func onlySharedNodesBecomeBridges() {
         var groups = twoGroups()

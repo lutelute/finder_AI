@@ -133,11 +133,12 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
             let start = -(Double(members.count) - 1) / 2
             for (index, item) in members.enumerated() {
                 let offset = (start + Double(index)) * spacing
+                let raw = CGPoint(x: anchor.x + axis.dx * offset, y: anchor.y + axis.dy * offset)
                 built.append(Node(
                     name: item.name,
                     isDirectory: item.isDirectory,
                     groups: groups?.groupNames(for: item.name) ?? [],
-                    position: CGPoint(x: anchor.x + axis.dx * offset, y: anchor.y + axis.dy * offset),
+                    position: pushedOutOfForeignIslands(raw, belongingTo: Set(belongs), islands: byName),
                     labelPlacement: .below
                 ))
             }
@@ -230,16 +231,61 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         )
     }
 
-    /// 島を結ぶ線に垂直な向き。ここへ等間隔にずらすと、境界に沿って並ぶ。
+    /// 島の並びに垂直な向き。ここへ等間隔にずらすと、境界に沿って並ぶ。
+    ///
+    /// 三つ以上の島に属する場合は、いちばん離れた二つの島を軸に取る。端から端まで
+    /// を軸にすれば、途中の島がどこにあっても大きく外れない。
     private static func spreadDirection(across centres: [CGPoint]) -> CGVector {
-        guard let first = centres.first, let last = centres.last, centres.count > 1 else {
-            return CGVector(dx: 1, dy: 0)
+        guard centres.count > 1 else { return CGVector(dx: 1, dy: 0) }
+        var best = (a: centres[0], b: centres[1], distance: -1.0)
+        for i in 0..<centres.count {
+            for j in (i + 1)..<centres.count {
+                let d = hypot(centres[i].x - centres[j].x, centres[i].y - centres[j].y)
+                if d > best.distance { best = (centres[i], centres[j], d) }
+            }
         }
-        let dx = last.x - first.x
-        let dy = last.y - first.y
+        let dx = best.b.x - best.a.x
+        let dy = best.b.y - best.a.y
         let length = (dx * dx + dy * dy).squareRoot()
         guard length > 0.01 else { return CGVector(dx: 1, dy: 0) }
         return CGVector(dx: -dy / length, dy: dx / length)
+    }
+
+    /// 属していない島の中に落ちたら、その外へ押し出す。
+    ///
+    /// 三つ以上の束に属する項目の置き場所は、属する島の中心の重心にしている。
+    /// ところが枡の並び次第で、その重心が**属していない島**の真ん中に落ちる。
+    /// 「電力系統と可視化と講義」のものが講義の隣に座ると、講義のメンバーに
+    /// 見えてしまう。いちばん近い縁の外へ逃がす。
+    ///
+    /// 二周するのは、逃がした先がまた別の島だったときのため。
+    private static func pushedOutOfForeignIslands(
+        _ point: CGPoint,
+        belongingTo mine: Set<String>,
+        islands: [String: CGRect]
+    ) -> CGPoint {
+        let margin: Double = 10
+        var result = point
+        for _ in 0..<2 {
+            var moved = false
+            // 順序を固定して、同じ入力なら必ず同じ結果になるようにする。
+            for name in islands.keys.sorted() where !mine.contains(name) {
+                guard let frame = islands[name], frame.contains(result) else { continue }
+                let left = result.x - frame.minX
+                let right = frame.maxX - result.x
+                let above = result.y - frame.minY
+                let below = frame.maxY - result.y
+                switch min(left, right, above, below) {
+                case left: result.x = frame.minX - margin
+                case right: result.x = frame.maxX + margin
+                case above: result.y = frame.minY - margin
+                default: result.y = frame.maxY + margin
+                }
+                moved = true
+            }
+            if !moved { break }
+        }
+        return result
     }
 
     // MARK: - 変化
