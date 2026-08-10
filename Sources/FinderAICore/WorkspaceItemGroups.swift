@@ -1,18 +1,18 @@
 import Foundation
 
-/// 一つのフォルダの中を、実体を動かさずに束ねる定義。
+/// 一つのフォルダの中を、実体を動かさずにまとめる定義。
 ///
 /// フォルダを作って中身を移す代わりに、そのフォルダ自身に置いた一枚のJSONが
-/// 「どれとどれが同じ束か」を持つ。`~/Documents/GitHub`のように146個のリポジトリが
-/// 平らに並ぶ場所で、gitのパスもsymlinkも壊さずに束ねるための入れ物。
+/// 「どれとどれが同じグループか」を持つ。`~/Documents/GitHub`のように146個のリポジトリが
+/// 平らに並ぶ場所で、gitのパスもsymlinkも壊さずにまとめるための入れ物。
 ///
 /// メンバーは**フォルダ直下の名前**であって絶対パスではない。フォルダごと移動しても
 /// 同期先の別マシンで開いても定義がそのまま生きるのは、これが相対名だから。
 ///
-/// 一つの項目が複数の束に属してよい。「ツール開発」であり同時に「Swift」でもある、
+/// 一つの項目が複数のグループに属してよい。「ツール開発」であり同時に「Swift」でもある、
 /// というのは分類の失敗ではなく普通のことで、排他にすると片方を選ばせることになる。
 public struct WorkspaceItemGroups: Equatable, Sendable, Codable {
-    /// 隠しファイルにしてあるのは、束ねられる対象と同じ場所に並べたくないから。
+    /// 隠しファイルにしてあるのは、まとめる相手と同じ場所に並べたくないから。
     /// 定義の存在は一覧の見出しとして見えるので、ファイルまで見せる必要はない。
     public static let fileName = ".finderai-groups.json"
 
@@ -20,10 +20,17 @@ public struct WorkspaceItemGroups: Equatable, Sendable, Codable {
         public var name: String
         /// フォルダ直下の名前。順序は表示順ではなく、追加された順。
         public var members: [String]
+        /// 親グループの名前。`nil`なら最上位。
+        ///
+        /// 「研究」の中に「電力系統」と「可視化」がある、という入れ子を表す。
+        /// 一つの親しか持てない — グループが二つの親に同時に属せると、一覧の
+        /// どこに出すべきかが決まらない（項目の複数所属とは事情が違う）。
+        public var parent: String?
 
-        public init(name: String, members: [String] = []) {
+        public init(name: String, members: [String] = [], parent: String? = nil) {
             self.name = name
             self.members = members
+            self.parent = parent
         }
     }
 
@@ -38,10 +45,10 @@ public struct WorkspaceItemGroups: Equatable, Sendable, Codable {
 
     // MARK: - 読み書き
 
-    /// 定義を読む。ファイルが無ければ`nil` — それは正常な状態で、束のないフォルダ。
+    /// 定義を読む。ファイルが無ければ`nil` — それは正常な状態で、グループのないフォルダ。
     ///
     /// 壊れたJSONは`nil`ではなく**throw**する。読めないものを「空の定義」として扱うと、
-    /// 次の保存が壊れたファイルを正常な空ファイルで上書きして、ユーザーが手で書いた束を
+    /// 次の保存が壊れたファイルを正常な空ファイルで上書きして、ユーザーが手で書いたグループを
     /// 本当に消してしまう。読めなかったことは読めなかったこととして返す。
     public static func load(
         from directory: URL,
@@ -67,17 +74,17 @@ public struct WorkspaceItemGroups: Equatable, Sendable, Codable {
 
     // MARK: - 問い合わせ
 
-    /// その名前が属する束を、表示順で返す。どこにも属さなければ空。
+    /// その名前が属するグループを、表示順で返す。どこにも属さなければ空。
     public func groupNames(for member: String) -> [String] {
         groups.filter { $0.members.contains(member) }.map(\.name)
     }
 
     // MARK: - 編集
 
-    /// 束に加える。すでに入っていれば何もしない — 同じ名前が二度並ぶと、
+    /// グループに加える。すでに入っていれば何もしない — 同じ名前が二度並ぶと、
     /// 一覧に同じ項目が二行出る。
     ///
-    /// 知らない束の名前を渡されたら、その束を作って末尾に置く。ドラッグ先が
+    /// 知らないグループの名前を渡されたら、そのグループを作って末尾に置く。ドラッグ先が
     /// 存在しない状況は呼び出し側では起きないが、手で書いたJSONとの往復では起きる。
     public mutating func add(_ member: String, to groupName: String) {
         guard let index = groups.firstIndex(where: { $0.name == groupName }) else {
@@ -88,26 +95,26 @@ public struct WorkspaceItemGroups: Equatable, Sendable, Codable {
         groups[index].members.append(member)
     }
 
-    /// 一つの束から外す。他の束に属したままなのは正しい状態で、
+    /// 一つのグループから外す。他のグループに属したままなのは正しい状態で、
     /// 「ツール開発から外したらSwiftからも消えた」は起きない。
     ///
-    /// 空になった束は残す。落とし先として見出しが要るし、消してしまうと
-    /// 「最後の一個を出したら束ごと消えた」という取り返しのつかない操作になる。
+    /// 空になったグループは残す。落とし先として見出しが要るし、消してしまうと
+    /// 「最後の一個を出したらグループごと消えた」という取り返しのつかない操作になる。
     public mutating func remove(_ member: String, from groupName: String) {
         guard let index = groups.firstIndex(where: { $0.name == groupName }) else { return }
         groups[index].members.removeAll { $0 == member }
     }
 
-    /// 名前ごと消えた項目を、全部の束から外す。フォルダを実際に削除したときに使う。
+    /// 名前ごと消えた項目を、全部のグループから外す。フォルダを実際に削除したときに使う。
     public mutating func removeFromAllGroups(_ member: String) {
         for index in groups.indices {
             groups[index].members.removeAll { $0 == member }
         }
     }
 
-    /// 束の名前を変える。並び順（＝地図での置き場所）は変わらない。
+    /// グループの名前を変える。並び順（＝地図での置き場所）は変わらない。
     ///
-    /// すでに同じ名前の束があれば**何もしない**。黙って統合すると、二つの束が
+    /// すでに同じ名前のグループがあれば**何もしない**。黙って統合すると、二つのグループが
     /// 一つに溶けて元に戻せない。呼び出し側が先に名前の重なりを確かめる。
     /// 戻り値は変えられたかどうか。
     @discardableResult
@@ -120,15 +127,96 @@ public struct WorkspaceItemGroups: Equatable, Sendable, Codable {
         return true
     }
 
-    /// 束そのものを消す。中のものはどこにも移らず、束から外れるだけ。
+    /// グループそのものを消す。中のものはどこにも移らず、グループから外れるだけ。
     ///
-    /// 実体には触れない。束は「どれとどれが同じか」の記述にすぎないので、
-    /// 束を消してもフォルダは一つも減らない。
+    /// 実体には触れない。グループは「どれとどれが同じか」の記述にすぎないので、
+    /// グループを消してもフォルダは一つも減らない。
     public mutating func removeGroup(_ groupName: String) {
         groups.removeAll { $0.name == groupName }
+        // 子は最上位へ引き上げる。親を消したせいで子が宙に浮くと、深さも並びも
+        // 決まらない（消したつもりのないものが消えたように見える）。
+        for index in groups.indices where groups[index].parent == groupName {
+            groups[index].parent = nil
+        }
     }
 
-    /// 束の並びを動かす。地図では枡の位置が、一覧では見出しの順が変わる。
+    /// グループを別のグループの中に入れる（`A ∈ B`）。`nil`を渡すと最上位へ戻す。
+    ///
+    /// **輪になる指定は断る。** `A ∈ B` のときに `B ∈ A` を許すと、親を辿る処理が
+    /// 無限に回る。自分自身を親にするのも同じこと。戻り値は入れられたかどうか。
+    @discardableResult
+    public mutating func nest(_ groupName: String, inside parentName: String?) -> Bool {
+        guard let index = groups.firstIndex(where: { $0.name == groupName }) else { return false }
+        guard let parentName else {
+            groups[index].parent = nil
+            return true
+        }
+        guard parentName != groupName else { return false }
+        guard groups.contains(where: { $0.name == parentName }) else { return false }
+        // 親をたどって自分に戻ってこないか確かめる。
+        guard !ancestors(of: parentName).contains(groupName) else { return false }
+        groups[index].parent = parentName
+        return true
+    }
+
+    /// そのグループの先祖を、近い順に。輪があっても止まる（見た名前で打ち切る）。
+    public func ancestors(of groupName: String) -> [String] {
+        let known = Set(groups.map(\.name))
+        var result: [String] = []
+        var seen: Set<String> = [groupName]
+        var current = groups.first { $0.name == groupName }?.parent
+        // 知らない親でも止める。手で書いたJSONが指し違えていても、深さが無限に
+        // 伸びるより最上位として扱うほうが安全。
+        while let name = current, known.contains(name), seen.insert(name).inserted {
+            result.append(name)
+            current = groups.first { $0.name == name }?.parent
+        }
+        return result
+    }
+
+    /// 入れ子の深さ。最上位は0。
+    public func depth(of groupName: String) -> Int {
+        ancestors(of: groupName).count
+    }
+
+    /// そのグループの直接の子。定義順。
+    public func children(of groupName: String?) -> [String] {
+        groups.filter { $0.parent == groupName }.map(\.name)
+    }
+
+    /// 入れ子を保ったまま、上から下へ並べた順序（深さ優先）。
+    ///
+    /// 一覧の見出しの順であり、地図で枡を割る順でもある。親のすぐ下に子が来る。
+    ///
+    /// 親が見つからない（消された親を指している）グループは最上位として扱う —
+    /// 親を消したせいで子が一覧から消えるのは、消したつもりのないものが消えること。
+    /// 輪の中にいるものも最上位として出す。**並べられないより、出るほうがまし。**
+    public func nestedOrderedNames() -> [String] {
+        let known = Set(groups.map(\.name))
+
+        func effectiveParent(_ group: Group) -> String? {
+            guard let parent = group.parent, known.contains(parent) else { return nil }
+            return ancestors(of: group.name).contains(group.name) ? nil : parent
+        }
+
+        var ordered: [String] = []
+        func visit(_ parent: String?) {
+            for group in groups where effectiveParent(group) == parent {
+                guard !ordered.contains(group.name) else { continue }
+                ordered.append(group.name)
+                visit(group.name)
+            }
+        }
+        visit(nil)
+
+        // 取りこぼしは末尾に足す。数が合わないほうが困る。
+        for group in groups where !ordered.contains(group.name) {
+            ordered.append(group.name)
+        }
+        return ordered
+    }
+
+    /// グループの並びを動かす。地図では枡の位置が、一覧では見出しの順が変わる。
     public mutating func move(_ groupName: String, by offset: Int) {
         guard let index = groups.firstIndex(where: { $0.name == groupName }) else { return }
         let target = index + offset
@@ -142,19 +230,22 @@ public struct WorkspaceItemGroups: Equatable, Sendable, Codable {
 public struct WorkspaceGroupSection: Equatable, Sendable {
     public let name: String?
     public let items: [WorkspaceItem]
+    /// 入れ子の深さ。最上位は0。一覧では見出しのインデントになる。
+    public let depth: Int
 
-    public init(name: String?, items: [WorkspaceItem]) {
+    public init(name: String?, items: [WorkspaceItem], depth: Int = 0) {
         self.name = name
         self.items = items
+        self.depth = depth
     }
 
     public var isUngrouped: Bool { name == nil }
 }
 
 public extension WorkspaceItemGroups {
-    /// 束に属するものと、そうでないものに分ける。
+    /// グループに属するものと、そうでないものに分ける。
     ///
-    /// 地図が使う。束に属さないものを力学配置に混ぜると、`~/Documents/GitHub` では
+    /// 地図が使う。グループに属さないものを力学配置に混ぜると、`~/Documents/GitHub` では
     /// 116個が29個を包囲して画面の八割を占め、見せたい重なりが埋もれた。関係が
     /// 無いものを散らしても情報は増えないので、名前順に並べて別の欄へ回す。
     func partition(
@@ -175,7 +266,7 @@ public extension WorkspaceItemGroups {
         )
     }
 
-    /// 定義にあるのに実物が無いメンバー。束ごと、名前順。
+    /// 定義にあるのに実物が無いメンバー。グループごと、名前順。
     ///
     /// 見出しを組むときは黙って落としている。別のマシンにしか無いフォルダの定義を
     /// 消さずに持っておくためで、それは正しい。ただし**本当に消したフォルダ**の
@@ -188,7 +279,7 @@ public extension WorkspaceItemGroups {
     /// 実在する名前を直接渡す版。
     ///
     /// **隠しファイルを含めた**名前を渡すこと。一覧に見えているものだけで判定すると、
-    /// 束に入れた `.claude` のような隠しフォルダが、隠し表示をオフにしただけで
+    /// グループに入れた `.claude` のような隠しフォルダが、隠し表示をオフにしただけで
     /// 「見つからない」に化ける。実在するかどうかは表示設定とは無関係。
     func missingMembers(amongNames present: Set<String>) -> [String: [String]] {
         var missing: [String: [String]] = [:]
@@ -200,17 +291,17 @@ public extension WorkspaceItemGroups {
         return missing
     }
 
-    /// 実物が無いメンバーを、全部の束から外す。名前は隠しファイルを含めて渡すこと。
+    /// 実物が無いメンバーを、全部のグループから外す。名前は隠しファイルを含めて渡すこと。
     mutating func pruneMissingMembers(amongNames present: Set<String>) {
         for index in groups.indices {
             groups[index].members.removeAll { !present.contains($0) }
         }
     }
 
-    /// 束を、共有でつながっているもの同士が隣り合う順に並べ替える。
+    /// グループを、共有でつながっているもの同士が隣り合う順に並べ替える。
     ///
-    /// 地図では束を格子に並べる。共有のある束が離れた枡に入ると橋が画面を横断して
-    /// 追いにくいので、つながっている束から先に並べる。
+    /// 地図ではグループを格子に並べる。共有のあるグループが離れた枡に入ると橋が画面を横断して
+    /// 追いにくいので、つながっているグループから先に並べる。
     func adjacencyOrderedNames() -> [String] {
         let names = groups.map(\.name)
         var sharedWith: [String: Set<String>] = [:]
@@ -244,29 +335,36 @@ public extension WorkspaceItemGroups {
 
     /// 一覧を見出し付きに組み直す。
     ///
-    /// 複数の束に属する項目は**その全部に現れる**。一つを選ばせないための複数所属なので、
+    /// 複数のグループに属する項目は**その全部に現れる**。一つを選ばせないための複数所属なので、
     /// 一箇所にしか出さないなら意味がない。同じ実体が二行に見えることになるが、
-    /// それはタグで束ねたものを平らに並べたときに必ず起きることで、隠す道がない。
+    /// それはタグでまとめたものを平らに並べたときに必ず起きることで、隠す道がない。
     ///
-    /// 空の束も見出しを出す。ドラッグの落とし先が無ければ、最初の一個を入れられない。
+    /// 空のグループも見出しを出す。ドラッグの落とし先が無ければ、最初の一個を入れられない。
     ///
     /// 定義にあるが実物が無い名前は黙って落ちる。別のマシンにしか無いフォルダの定義を
     /// 消さずに持っておけるのは、ここで存在を要求しないから。数は
     /// `missingMembers(among:)`で数えられる。
     ///
-    /// 束の**中**の順序は`items`の順序をそのまま引き継ぐ。名前で並べるか更新日で並べるかは
-    /// 一覧側がすでに決めていることで、束ねる側がそれを上書きすると、列見出しを
-    /// クリックしても束の中だけ並び替わらない、という妙な挙動になる。
-    /// 束**同士**の順序だけが定義の順。
+    /// グループの**中**の順序は`items`の順序をそのまま引き継ぐ。名前で並べるか更新日で並べるかは
+    /// 一覧側がすでに決めていることで、まとめる側がそれを上書きすると、列見出しを
+    /// クリックしてもグループの中だけ並び替わらない、という妙な挙動になる。
+    /// グループ**同士**の順序だけが定義の順。
     func sections(for items: [WorkspaceItem]) -> [WorkspaceGroupSection] {
         var grouped: [WorkspaceGroupSection] = []
         var claimed: Set<String> = []
+        let byName = Dictionary(groups.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
 
-        for group in groups {
+        // 入れ子を保った順（親のすぐ下に子）。平らなときは定義順と同じになる。
+        for name in nestedOrderedNames() {
+            guard let group = byName[name] else { continue }
             let members = Set(group.members)
             let matched = items.filter { members.contains($0.name) }
             matched.forEach { claimed.insert($0.name) }
-            grouped.append(WorkspaceGroupSection(name: group.name, items: matched))
+            grouped.append(WorkspaceGroupSection(
+                name: group.name,
+                items: matched,
+                depth: depth(of: group.name)
+            ))
         }
 
         let rest = items.filter { !claimed.contains($0.name) }

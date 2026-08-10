@@ -5,8 +5,8 @@ enum WorkspaceViewMode: String, CaseIterable {
     case list
     case column
     case gallery
-    /// 束を平面に散らす表示。一覧では二行に割れる「複数の束に属するもの」が、
-    /// ここでは束の間に立つ一点になる。
+    /// グループを平面に散らす表示。一覧では二行に割れる「複数のグループに属するもの」が、
+    /// ここではグループの間に立つ一点になる。
     case map
 }
 
@@ -29,6 +29,7 @@ struct WorkspacePreferences {
         static let listGrouping = "workspace.listGrouping"
         static let showsGroupColumn = "workspace.showsGroupColumn"
         static let mapShowsOthersOnly = "workspace.mapShowsOthersOnly"
+        static let listUngroupedOnly = "workspace.listUngroupedOnly"
         static let terminalHeight = "workspace.terminalHeight"
         static let terminalWidth = "workspace.terminalWidth"
         static let terminalEdge = "workspace.terminalEdge"
@@ -369,33 +370,42 @@ struct WorkspacePreferences {
         nonmutating set { defaults.set(newValue, forKey: Key.showHiddenFiles) }
     }
 
-    /// 一覧を束ごとの見出しで区切るか。
+    /// 一覧をグループごとの見出しで区切るか。
     ///
     /// 既定は入り。ただし切れるようにしてあるのが肝心で、見出しで区切ると
-    /// 並べ替えが束の中だけに効く — 名前順に通して眺めたいときに邪魔になる。
-    /// 切ってあっても「束」の列で所属は読めるし、その列で並べれば束ごとに寄る。
+    /// 並べ替えがグループの中だけに効く — 名前順に通して眺めたいときに邪魔になる。
+    /// 切ってあっても「グループ」の列で所属は読めるし、その列で並べればグループごとに寄る。
     var listGrouping: Bool {
         get { defaults.object(forKey: Key.listGrouping) as? Bool ?? true }
         nonmutating set { defaults.set(newValue, forKey: Key.listGrouping) }
     }
 
-    /// 一覧に「束」の列を出すか。既定は切り。
+    /// 一覧に「グループ」の列を出すか。既定は切り。
     ///
     /// 常に出すと名前の幅が150pt削られ、狭い窓では横スクロールが出た。所属は
     /// 見出しでも読めるので、列は要る人だけが出す。見出しを切って名前順に通して
-    /// 眺めたいときに、この列で並べれば束ごとに寄る。
+    /// 眺めたいときに、この列で並べればグループごとに寄る。
     var showsGroupColumn: Bool {
         get { defaults.bool(forKey: Key.showsGroupColumn) }
         nonmutating set { defaults.set(newValue, forKey: Key.showsGroupColumn) }
     }
 
-    /// 地図で、束に属さないものだけを見るか。既定は切り。
+    /// 地図で、グループに属さないものだけを見るか。既定は切り。
     ///
-    /// 入れると島を畳んで一覧が全幅になる。束に入れていないものを見渡して、
-    /// どれを束ねるか決めるための眺め方。
+    /// 入れると島を畳んで一覧が全幅になる。グループに入れていないものを見渡して、
+    /// どれをまとめるか決めるための眺め方。
     var mapShowsOthersOnly: Bool {
         get { defaults.bool(forKey: Key.mapShowsOthersOnly) }
         nonmutating set { defaults.set(newValue, forKey: Key.mapShowsOthersOnly) }
+    }
+
+    /// 一覧で、グループに属さないものだけを出すか。既定は切り。
+    ///
+    /// 「まだどこにも入れていないものを片付ける」ための眺め方。地図の「これだけ」と
+    /// 同じ考えで、こちらは一覧に効く。
+    var listUngroupedOnly: Bool {
+        get { defaults.bool(forKey: Key.listUngroupedOnly) }
+        nonmutating set { defaults.set(newValue, forKey: Key.listUngroupedOnly) }
     }
 
     // MARK: - Terminal

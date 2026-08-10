@@ -1,9 +1,9 @@
 import CoreGraphics
 import Foundation
 
-/// 束を「島」として並べ、複数の束に属するものをその境界に置く配置。
+/// グループを「島」として並べ、複数のグループに属するものをその境界に置く配置。
 ///
-/// 一覧は線形なので、二つの束に属するものは二行に割れる。同じ実体が二度並ぶだけで、
+/// 一覧は線形なので、二つのグループに属するものは二行に割れる。同じ実体が二度並ぶだけで、
 /// どこが重なりなのかは行からは読めない。平面ならそれが**位置**で出る — 両方の島に
 /// 属する項目は、その境界に立つ。それがこの表示の主題。
 ///
@@ -12,10 +12,10 @@ import Foundation
 /// はじめはばね・反発・アンカーで解いていた。三度作り直して、そのたびに実機で
 /// 別の破綻が出た。
 ///
-/// 1. 全152項目を力学に入れた → 束に属さない116個が29個を包囲し、画面の八割を
-///    無関係な点が占めた（「カツかつでえらい見辛い」）。束に属さないものは
+/// 1. 全152項目を力学に入れた → グループに属さない116個が29個を包囲し、画面の八割を
+///    無関係な点が占めた（「カツかつでえらい見辛い」）。グループに属さないものは
 ///    そもそも受け取らないことにした（`WorkspaceItemGroups.partition`）。
-/// 2. 束ごとのアンカーを置いた → 束は固まったが、点が島の端に寄って名前が枠から
+/// 2. グループごとのアンカーを置いた → グループは固まったが、点が島の端に寄って名前が枠から
 ///    漏れ、ラベル同士がぶつかって**7項目のうち3つしか名前が出なかった**。
 /// 3. 減衰と手数上限で止めた → 止まりはしたが、止まる場所が力の釣り合い次第で、
 ///    名前が読める配置になる保証がどこにも無かった。
@@ -28,7 +28,7 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
     public struct Node: Equatable, Sendable {
         public let name: String
         public let isDirectory: Bool
-        /// 属している束。ここに来るものは必ず一つ以上持つ。
+        /// 属しているグループ。ここに来るものは必ず一つ以上持つ。
         public let groups: [String]
         public let position: CGPoint
         /// 名前を置く向き。整列した島の中では点の右、境界では点の下。
@@ -48,10 +48,15 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         case below
     }
 
-    /// 一つの束と、その島の矩形。
+    /// 一つのグループと、その島の矩形。
     public struct Island: Equatable, Sendable {
         public let name: String
+        /// 島の枠。**子の島を含む**外周。
         public let frame: CGRect
+        /// 自分のメンバーを並べる領域。子がいる島では、子の枠と重ならない部分だけ。
+        public let contentFrame: CGRect
+        /// 入れ子の深さ。最上位は0。枠の濃さと字下げに使う。
+        public let depth: Int
         /// 島の中に並べきれなかった数。0でなければ「ほか N」と出す必要がある。
         public let overflow: Int
         /// 定義にあるのに実物が無い数。フォルダを消したり別の場所へ動かすと増える。
@@ -62,26 +67,26 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
     public private(set) var islands: [Island]
     public private(set) var size: CGSize
 
-    /// 複数の束に属するノードの添字。橋を描く相手。
+    /// 複数のグループに属するノードの添字。橋を描く相手。
     public private(set) var bridges: [Int]
 
-    /// 「新しい束」の枠。ここに落とせば束を作れる。
+    /// 「新しいグループ」の枠。ここに落とせばグループを作れる。
     ///
-    /// 束が一つも無いフォルダでは、これが唯一の入口になる（枡いっぱいに出る）。
-    /// 束があるときは最後の枡を空けて置く — 地図の上で作れないと、右クリックの
-    /// メニューを知っている人しか束を作れない。
+    /// グループが一つも無いフォルダでは、これが唯一の入口になる（枡いっぱいに出る）。
+    /// グループがあるときは最後の枡を空けて置く — 地図の上で作れないと、右クリックの
+    /// メニューを知っている人しかグループを作れない。
     public private(set) var newGroupSlot: CGRect?
 
     private let groupedItems: [WorkspaceItem]
     private let groups: WorkspaceItemGroups?
     private let presentNames: Set<String>?
 
-    /// 島の内側の余白と、束名の帯の高さ。
+    /// 島の内側の余白と、グループ名の帯の高さ。
     public static let islandInset = CGSize(width: 14, height: 12)
     public static let islandTitleHeight: Double = 23
     /// 島の中の一行。点と名前が並ぶ高さ。
     ///
-    /// 21ptだと、幅を優先して2列3行に割ったときに6行しか入らず、7項目の束から
+    /// 21ptだと、幅を優先して2列3行に割ったときに6行しか入らず、7項目のグループから
     /// 2つが「ほか」に落ちた。18ptなら7行入る。11ptの文字には詰まった値だが、
     /// 名前が読めないのと見えないのとでは、見えないほうが困る。
     public static let rowHeight: Double = 18
@@ -118,22 +123,27 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         let names = groups?.adjacencyOrderedNames() ?? []
         guard size.width > 1, size.height > 1 else { return ([], [], [], nil) }
 
-        // 「新しい束」は下端の帯に置く。
+        // 「新しいグループ」は下端の帯に置く。
         //
-        // 枡を一つ多く割って最後を充てていたが、6束のときに枡が3×2から3×3になり、
-        // 島の高さが三分の二に縮んで7項目のうち2つが「ほか」に落ちた。新しい束を
-        // 置ける代わりに既にある束が読めなくなるのは筋が悪い。帯なら島は縮まない。
+        // 枡を一つ多く割って最後を充てていたが、6グループのときに枡が3×2から3×3になり、
+        // 島の高さが三分の二に縮んで7項目のうち2つが「ほか」に落ちた。新しいグループを
+        // 置ける代わりに既にあるグループが読めなくなるのは筋が悪い。帯なら島は縮まない。
         let margin: Double = 14
         let slotHeight: Double = 44
         let slotGap: Double = 12
-        let newGroupSlot = CGRect(
-            x: margin,
-            y: size.height - margin - slotHeight,
-            width: max(size.width - margin * 2, 1),
-            height: slotHeight
-        )
+        // 狭すぎるときは帯を出さない。出すと島に残る高さが無くなり、グループが
+        // あるのに何も見えなくなる（実測: 60x50の窓で島がゼロになった）。
+        let hasRoomForSlot = size.height > margin * 2 + slotHeight + slotGap + rowHeight * 3
+        let newGroupSlot: CGRect? = hasRoomForSlot
+            ? CGRect(
+                x: margin,
+                y: size.height - margin - slotHeight,
+                width: max(size.width - margin * 2, 1),
+                height: slotHeight
+            )
+            : nil
 
-        // 束が一つも無ければ、帯ではなく全面を入口にする。ここしか入口がない。
+        // グループが一つも無ければ、帯ではなく全面を入口にする。ここしか入口がない。
         guard !names.isEmpty else {
             return ([], [], [], CGRect(
                 x: margin,
@@ -143,17 +153,8 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
             ))
         }
 
-        let frames = islandFrames(
-            count: names.count,
-            in: CGSize(width: size.width, height: max(size.height - slotHeight - slotGap, 1))
-        )
-        let byName = Dictionary(
-            zip(names, frames).map { ($0, $1) },
-            uniquingKeysWith: { first, _ in first }
-        )
-
-        // 定義にあるのに実物が無いものを数える。呼び出し側は束に属するものだけを
-        // 渡してくるので、ここで数えられるのは「束の定義に居るが実物が無い」名前。
+        // 定義にあるのに実物が無いものを数える。呼び出し側はグループに属するものだけを
+        // 渡してくるので、ここで数えられるのは「グループの定義に居るが実物が無い」名前。
         let missingByGroup = groups?.missingMembers(
             amongNames: presentNames ?? Set(items.map(\.name))
         ) ?? [:]
@@ -171,24 +172,52 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
             }
         }
 
-        var built: [Node] = []
+        // 入れ子のまま枠を割る。最上位だけが領域を取り合い、子は親の枠の内側を分ける。
+        // 平らな定義なら、これは今までどおりの格子と同じ結果になる。
+        let area = CGRect(
+            x: margin,
+            y: margin,
+            width: max(size.width - margin * 2, 1),
+            height: max(
+                size.height - margin * 2 - (hasRoomForSlot ? slotHeight + slotGap : 0),
+                1
+            )
+        )
         var islands: [Island] = []
+        if let groups {
+            islands = nestedIslands(
+                of: nil,
+                in: area,
+                groups: groups,
+                ownCounts: exclusive.mapValues(\.count),
+                missing: missingByGroup,
+                depth: 0
+            )
+        }
+        let byName = Dictionary(
+            islands.map { ($0.name, $0.frame) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        var built: [Node] = []
         /// 島ごとの、並べた行の下端。境界に立つ点をここより下に置く。
         var rowsBottom: [String: Double] = [:]
 
-        for name in names {
-            guard let frame = byName[name] else { continue }
-            let members = (exclusive[name] ?? [])
+        islands = islands.map { island in
+            let members = (exclusive[island.name] ?? [])
                 .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-            let (placed, overflow) = place(members, in: frame, groups: [name])
-            rowsBottom[name] = (placed.map { $0.position.y }.max() ?? frame.minY) + rowHeight / 2
+            let (placed, overflow) = place(members, in: island.contentFrame, groups: [island.name])
+            rowsBottom[island.name] =
+                (placed.map { $0.position.y }.max() ?? island.contentFrame.minY) + rowHeight / 2
             built.append(contentsOf: placed)
-            islands.append(Island(
-                name: name,
-                frame: frame,
+            return Island(
+                name: island.name,
+                frame: island.frame,
+                contentFrame: island.contentFrame,
+                depth: island.depth,
                 overflow: overflow,
-                missing: missingByGroup[name]?.count ?? 0
-            ))
+                missing: island.missing
+            )
         }
 
         // 複数所属は、属する島の中心を結んだ中点に置く。同じ組み合わせが複数あれば、
@@ -281,12 +310,12 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
 
     /// 島の最小幅。これを下回ると、島の中の名前が読めるだけの横幅が残らない。
     ///
-    /// 縦横比だけで枡を割ると、幅445ptの領域に6束で3列になり、1列155pt —
+    /// 縦横比だけで枡を割ると、幅445ptの領域に6グループで3列になり、1列155pt —
     /// 点と余白を引くと名前に100ptしか残らず `power-system-stabi…` と切れた。
     /// 行数が増えて「ほか N」が出るほうが、名前が読めないよりましなので幅を優先する。
     public static let minIslandWidth: Double = 196
 
-    /// 領域の縦横比に合わせて枡を割る。1束なら全面。
+    /// 領域の縦横比に合わせて枡を割る。1グループなら全面。
     /// ただし幅が足りないときは列を減らす — 名前が読めない列を増やしても意味がない。
     public static func gridShape(
         count: Int,
@@ -301,27 +330,141 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         return (columns, rows)
     }
 
-    private static func islandFrames(count: Int, in size: CGSize) -> [CGRect] {
-        let margin: Double = 14
-        let gap: Double = 12
-        let area = CGRect(
-            x: margin,
-            y: margin,
-            width: max(size.width - margin * 2, 1),
-            height: max(size.height - margin * 2, 1)
-        )
+    /// そのグループが抱えている子孫の数。枡の大きさを決める重みに使う。
+    private static func descendantCount(of name: String, in groups: WorkspaceItemGroups) -> Int {
+        var count = 0
+        var queue = groups.children(of: name)
+        var seen: Set<String> = [name]
+        while let current = queue.first {
+            queue.removeFirst()
+            guard seen.insert(current).inserted else { continue }
+            count += 1
+            queue.append(contentsOf: groups.children(of: current))
+        }
+        return count
+    }
+
+    /// 入れ子のまま枠を割る（`A ∈ B` を、Bの枠の内側にAの枠として描くための下ごしらえ）。
+    ///
+    /// 各段で領域を枡に割り、子を持つグループはその枡をさらに「自分のメンバーの場所」と
+    /// 「子の場所」に分ける。親の`frame`は子を含む外周で、`contentFrame`が自分の行の場所。
+    ///
+    /// 子に場所を譲るので、親自身のメンバーは入りきらないことがある（「ほか N」になる）。
+    /// **入れ子の形が見えることを優先する** — 親子が同列に並んでいると、それは嘘になる。
+    private static func nestedIslands(
+        of parent: String?,
+        in area: CGRect,
+        groups: WorkspaceItemGroups,
+        ownCounts: [String: Int],
+        missing: [String: [String]],
+        depth: Int
+    ) -> [Island] {
+        let names = depth == 0
+            // 最上位は、共有でつながったものを隣に寄せた順で並べる（橋を短くする）
+            ? groups.adjacencyOrderedNames().filter { groups.depth(of: $0) == 0 }
+            : groups.children(of: parent)
+        guard !names.isEmpty else { return [] }
+
+        // 子孫を抱えるほど場所が要る。抱えていないものは1。
+        let weights = names.map { 1.0 + Double(descendantCount(of: $0, in: groups)) * 1.4 }
+        let boxes = cells(weights: weights, in: area, gap: depth == 0 ? 12 : 8)
+        guard boxes.count == names.count else { return [] }
+
+        var result: [Island] = []
+        for (name, box) in zip(names, boxes) {
+            let children = groups.children(of: name)
+            let inset = box.insetBy(dx: islandInset.width, dy: islandInset.height)
+            // 余白を引いて潰れる枠でも、島そのものは作る（同じ理由）。
+            if children.isEmpty || inset.isNull || inset.height <= 0 {
+                result.append(Island(
+                    name: name,
+                    frame: box,
+                    contentFrame: box,
+                    depth: depth,
+                    overflow: 0,
+                    missing: missing[name]?.count ?? 0
+                ))
+                // 子がいるのに場所が無いときは、子も同じ枠に重ねず諦める（描けない）。
+                continue
+            }
+
+            // 自分の行に使う高さ。子の場所を残すため、最大でも枠の四割まで。
+            let wanted = islandTitleHeight + rowHeight * Double(ownCounts[name] ?? 0)
+            let ownHeight = min(max(wanted, islandTitleHeight), inset.height * 0.4)
+            let contentFrame = CGRect(
+                x: box.minX,
+                y: box.minY,
+                width: box.width,
+                height: ownHeight + islandInset.height * 2
+            )
+            let childArea = CGRect(
+                x: inset.minX,
+                y: contentFrame.maxY,
+                width: inset.width,
+                height: max(inset.maxY - contentFrame.maxY, 0)
+            )
+
+            result.append(Island(
+                name: name,
+                frame: box,
+                contentFrame: contentFrame,
+                depth: depth,
+                overflow: 0,
+                missing: missing[name]?.count ?? 0
+            ))
+            result += nestedIslands(
+                of: name,
+                in: childArea,
+                groups: groups,
+                ownCounts: ownCounts,
+                missing: missing,
+                depth: depth + 1
+            )
+        }
+        return result
+    }
+
+    /// 領域を枡に割る。入れ子の各段でこれを呼ぶ。
+    ///
+    /// `weights`は各枡の欲しい大きさ。**子を抱えた親は中に島を並べる場所が要る**ので、
+    /// 均等に割ると子が扁平になって中身が一行も入らなかった（実測: 子の島が高さ22ptに
+    /// なり「ほか 5」しか出なかった）。縦一列のときだけ重みで高さを配る — 横に並ぶときは
+    /// 幅が揃っているほうが読みやすいので均等のまま。
+    private static func cells(
+        weights: [Double],
+        in area: CGRect,
+        gap: Double = 12
+    ) -> [CGRect] {
+        let count = weights.count
+        // 潰れた領域でも枡は返す。ここで空を返すと島そのものが消え、
+        // 「グループがあるのに何も見えない」になる。
+        guard count > 0, area.width > 0, area.height > 0 else { return [] }
         let shape = gridShape(
             count: count,
             aspect: area.width / area.height,
             width: area.width
         )
-        let cellWidth = (area.width - gap * Double(shape.columns - 1)) / Double(shape.columns)
-        let cellHeight = (area.height - gap * Double(shape.rows - 1)) / Double(shape.rows)
+
+        if shape.columns == 1, count > 1 {
+            let usable = max(area.height - gap * Double(count - 1), 0)
+            let total = max(weights.reduce(0, +), 0.0001)
+            var y = area.minY
+            return weights.map { weight in
+                let height = usable * (weight / total)
+                let cell = CGRect(x: area.minX, y: y, width: area.width, height: max(height, 0))
+                y += height + gap
+                return cell
+            }
+        }
+        // 潰れた枡でも返す。狭いからと 島を落とすと「グループがあるのに何も
+        // 見えない」になる。中身が入らないことは`place`が「ほか N」として言う。
+        let cellWidth = max((area.width - gap * Double(shape.columns - 1)) / Double(shape.columns), 0)
+        let cellHeight = max((area.height - gap * Double(shape.rows - 1)) / Double(shape.rows), 0)
 
         return (0..<count).map { index in
             let row = index / shape.columns
-            // 蛇行して折り返す。行優先で素直に並べると、行末の束と次の行頭の束が
-            // 対角に離れる。共有のある束を隣の番号にしても、それが画面で隣に
+            // 蛇行して折り返す。行優先で素直に並べると、行末のグループと次の行頭のグループが
+            // 対角に離れる。共有のあるグループを隣の番号にしても、それが画面で隣に
             // ならず橋が地図を横断した。
             let raw = index % shape.columns
             let column = row.isMultiple(of: 2) ? raw : shape.columns - 1 - raw
@@ -364,7 +507,7 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
 
     /// 属していない島の中に落ちたら、その外へ押し出す。
     ///
-    /// 三つ以上の束に属する項目の置き場所は、属する島の中心の重心にしている。
+    /// 三つ以上のグループに属する項目の置き場所は、属する島の中心の重心にしている。
     /// ところが枡の並び次第で、その重心が**属していない島**の真ん中に落ちる。
     /// 「電力系統と可視化と講義」のものが講義の隣に座ると、講義のメンバーに
     /// 見えてしまう。いちばん近い縁の外へ逃がす。
@@ -468,7 +611,10 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
     }
 
     /// その点にある島。ドロップ先を決めるのに使う。
+    ///
+    /// 入れ子では親の枠が子を含むので、**いちばん内側（深い）島**を返す。親の枠に
+    /// 落ちたつもりで子に入る、あるいはその逆を防ぐ。
     public func island(at point: CGPoint) -> Island? {
-        islands.first { $0.frame.contains(point) }
+        islands.filter { $0.frame.contains(point) }.max { $0.depth < $1.depth }
     }
 }

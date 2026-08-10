@@ -17,7 +17,7 @@ private final class WorkspaceNameCellView: NSTableCellView {
         label.textColor = IntegratedPanelTheme.text
         cloudView.imageScaling = .scaleProportionallyDown
         cloudView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
-        // 同じ項目が別の束にも並んでいることの印。名前より弱く出す — 主役は名前で、
+        // 同じ項目が別のグループにも並んでいることの印。名前より弱く出す — 主役は名前で、
         // これは「これは二つ目の実体ではない」と気づかせるためだけのもの。
         groupsLabel.font = .systemFont(ofSize: 10.5)
         groupsLabel.textColor = IntegratedPanelTheme.secondaryText
@@ -26,7 +26,7 @@ private final class WorkspaceNameCellView: NSTableCellView {
             $0.translatesAutoresizingMaskIntoConstraints = false
             addSubview($0)
         }
-        // 名前が長ければ先に他所属のほうが削れる。どの束にも居ることより、
+        // 名前が長ければ先に他所属のほうが削れる。どのグループにも居ることより、
         // 何という名前かのほうが先に要る。
         groupsLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         // The badge sits after the name and is hugged tight, so a long name
@@ -190,15 +190,16 @@ private final class WorkspaceSidebarHeaderView: NSTableCellView {
     }
 }
 
-/// 一覧のなかの束の見出し。
+/// 一覧のなかのグループの見出し。
 ///
 /// サイドバーの見出しを流用していたが、あれは小さな全大文字のラベルで、
-/// 束の名前（多くは日本語）には合わなかった。ここでは束の色の丸と、下に続く数を
-/// 添える。色は地図の島と同じ（`WorkspaceGroupPalette`）ので、一覧と地図で同じ束が
+/// グループの名前（多くは日本語）には合わなかった。ここではグループの色の丸と、下に続く数を
+/// 添える。色は地図の島と同じ（`WorkspaceGroupPalette`）ので、一覧と地図で同じグループが
 /// 同じ色になる。色だけに頼らないよう、名前は必ず出す。
 @MainActor
 private final class WorkspaceGroupHeaderView: NSTableCellView {
     private let chevron = NSImageView()
+    private lazy var indent = chevron.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8)
     private let dot = NSView()
     private let label = NSTextField(labelWithString: "")
     private let countLabel = NSTextField(labelWithString: "")
@@ -225,7 +226,7 @@ private final class WorkspaceGroupHeaderView: NSTableCellView {
             addSubview($0)
         }
         NSLayoutConstraint.activate([
-            chevron.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            indent,
             chevron.centerYAnchor.constraint(equalTo: centerYAnchor),
             chevron.widthAnchor.constraint(equalToConstant: 10),
             dot.leadingAnchor.constraint(equalTo: chevron.trailingAnchor, constant: 5),
@@ -249,9 +250,12 @@ private final class WorkspaceGroupHeaderView: NSTableCellView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    /// - Parameter color: 束の色。`nil`は未分類 — 色を持たないことがその印になる。
+    /// - Parameter color: グループの色。`nil`は未分類 — 色を持たないことがその印になる。
     /// - Parameter isCollapsed: 畳んでいるか。三角の向きで示す。
-    func configure(title: String, count: Int, color: NSColor?, isCollapsed: Bool) {
+    /// - Parameter depth: 入れ子の深さ。`A ∈ B` の A は 1 で、その分だけ右へ寄せる。
+    func configure(title: String, count: Int, color: NSColor?, isCollapsed: Bool, depth: Int = 0) {
+        // 入れ子は字下げで示す。線で結ぶより、一覧の行の並びに馴染む。
+        indent.constant = 8 + CGFloat(min(depth, 4)) * 16
         label.stringValue = title
         countLabel.stringValue = "\(count)"
         chevron.image = NSImage(
@@ -276,12 +280,12 @@ private final class WorkspaceFileTableView: NSTableView {
     var onOpen: (() -> Void)?
     var onQuickLook: (() -> Void)?
     var onRenameRequested: ((Int) -> Void)?
-    /// 束の見出しを押したとき。行は選べないので、クリックはここで拾う。
+    /// グループの見出しを押したとき。行は選べないので、クリックはここで拾う。
     var onHeaderClicked: ((Int) -> Void)?
-    /// 束の見出しを右クリックしたときのメニュー。行が選べないので、
+    /// グループの見出しを右クリックしたときのメニュー。行が選べないので、
     /// ふつうのコンテキストメニューの経路には乗らない。
     var groupMenuProvider: ((Int) -> NSMenu?)?
-    /// その行が束の見出しかどうか。押されたときの振り分けに使う。
+    /// その行がグループの見出しかどうか。押されたときの振り分けに使う。
     var isHeaderRow: ((Int) -> Bool)?
     private let renameScheduler = FinderLikeRenameScheduler()
     private var dragOccurred = false
@@ -342,7 +346,7 @@ private final class WorkspaceFileTableView: NSTableView {
         }
     }
 
-    /// 束の見出しには専用のメニューを出す。行が選べないので、ふつうのファイル操作の
+    /// グループの見出しには専用のメニューを出す。行が選べないので、ふつうのファイル操作の
     /// メニューはどれも当てはまらない（選択がないので全部灰色になる）。
     override func menu(for event: NSEvent) -> NSMenu? {
         let row = self.row(at: convert(event.locationInWindow, from: nil))
@@ -541,7 +545,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         static let modified = NSUserInterfaceItemIdentifier("modified")
         static let size = NSUserInterfaceItemIdentifier("size")
         static let kind = NSUserInterfaceItemIdentifier("kind")
-        /// 所属する束。並べ替えの軸にもなる。
+        /// 所属するグループ。並べ替えの軸にもなる。
         static let groups = NSUserInterfaceItemIdentifier("groups")
     }
 
@@ -557,13 +561,13 @@ final class WorkspaceBrowserViewController: NSViewController {
     }
 
     /// listビューの行。見出しが挟まるので行番号と`displayedItems`の添字は一致しない。
-    /// 束の定義が無いフォルダでは見出しが0本になり、行番号＝添字に戻る。
+    /// グループの定義が無いフォルダでは見出しが0本になり、行番号＝添字に戻る。
     private enum FileRow: Equatable {
-        /// 束の名前。`nil`はどの束にも属さないものの見出しで、「未分類」という名前の
-        /// 束とは別物。同じ文字列で持つと、ユーザーが「未分類」という束を作った瞬間に
+        /// グループの名前。`nil`はどのグループにも属さないものの見出しで、「未分類」という名前の
+        /// グループとは別物。同じ文字列で持つと、ユーザーが「未分類」というグループを作った瞬間に
         /// 二つが同じ見出しになる。
-        case header(String?)
-        /// `displayedItems`の添字と、この行が居る束**以外**の所属先。複数の束に属する
+        case header(String?, depth: Int)
+        /// `displayedItems`の添字と、この行が居るグループ**以外**の所属先。複数のグループに属する
         /// 項目は同じ添字を複数の行が指すので、行ごとに「他はどこか」が変わる。
         case item(index: Int, otherGroups: [String])
     }
@@ -572,22 +576,23 @@ final class WorkspaceBrowserViewController: NSViewController {
     /// ⌘Gで地図から戻る先。地図しか見ていなければ一覧へ。
     private var modeBeforeMap: WorkspaceViewMode = .list
     private let groupingToggle = NSButton()
+    private let ungroupedOnlyToggle = NSButton()
     private var addToGroupItem = NSMenuItem()
     private var removeFromGroupItem = NSMenuItem()
     private var itemGroups: WorkspaceItemGroups?
-    /// このフォルダに実在する名前（隠しファイルも含む）。束の「見つからない」判定に使う。
+    /// このフォルダに実在する名前（隠しファイルも含む）。グループの「見つからない」判定に使う。
     /// 一覧に見えているものだけで判定すると、隠し表示をオフにしただけで
     /// 隠しフォルダが迷子に化ける。
     private var presentNames: Set<String> = []
     /// 定義が読めなかったときの理由。見出しは出さないが、黙って無かったことにはしない。
     private var itemGroupsError: String?
     private static let ungroupedTitle = "未分類"
-    /// 右クリックされた束の名前。見出し用のメニューが対象を知るために置く。
+    /// 右クリックされたグループの名前。見出し用のメニューが対象を知るために置く。
     private var contextGroupName: String?
-    /// 畳んである束。見出しだけ残して中身を隠す。
+    /// 畳んであるグループ。見出しだけ残して中身を隠す。
     ///
-    /// 束が増えると一覧が縦に長くなる。いま見ていない束を畳めれば、
-    /// 見たい束だけを目の前に置ける。フォルダを移っても覚えておく。
+    /// グループが増えると一覧が縦に長くなる。いま見ていないグループを畳めれば、
+    /// 見たいグループだけを目の前に置ける。フォルダを移っても覚えておく。
     private var collapsedGroups: Set<String> = []
     private var listingTask: Task<Void, Never>?
     private var cloudStatusTask: Task<Void, Never>?
@@ -639,6 +644,7 @@ final class WorkspaceBrowserViewController: NSViewController {
     private let appearanceButton = NSButton()
     private let copyCDButton = NSButton()
     private let newFolderButton = NSButton()
+    private let newGroupButton = NSButton()
     private let statusLabel = NSTextField(labelWithString: "")
     private let progress = NSProgressIndicator()
     private let splitView = NSSplitView()
@@ -1004,25 +1010,39 @@ final class WorkspaceBrowserViewController: NSViewController {
         // 見えるところに置く。隠れたメニューの奥だと、見出しが邪魔なときに
         // 切れることに気づけない。
         groupingToggle.setButtonType(.switch)
-        groupingToggle.title = "束でまとめる"
+        groupingToggle.title = "グループでまとめる"
         groupingToggle.font = .systemFont(ofSize: 10.5)
         groupingToggle.controlSize = .small
         groupingToggle.target = self
         groupingToggle.action = #selector(toggleListGrouping)
-        groupingToggle.toolTip = "切ると、名前や変更日で一覧ぜんぶを通して並べられます（束は「束」の列で読めます）"
+        groupingToggle.toolTip = "切ると、名前や変更日で一覧ぜんぶを通して並べられます（グループは「グループ」の列で読めます）"
         groupingToggle.state = preferences.listGrouping ? .on : .off
 
-        [ribbonPath, groupingToggle].forEach {
+        ungroupedOnlyToggle.setButtonType(.switch)
+        ungroupedOnlyToggle.title = "未分類だけ"
+        ungroupedOnlyToggle.font = .systemFont(ofSize: 10.5)
+        ungroupedOnlyToggle.controlSize = .small
+        ungroupedOnlyToggle.target = self
+        ungroupedOnlyToggle.action = #selector(toggleUngroupedOnly)
+        ungroupedOnlyToggle.toolTip = "どのグループにも入れていないものだけを出す"
+        ungroupedOnlyToggle.state = preferences.listUngroupedOnly ? .on : .off
+
+        [ribbonPath, ungroupedOnlyToggle, groupingToggle].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             bar.addSubview($0)
         }
         NSLayoutConstraint.activate([
             ribbonPath.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
             ribbonPath.trailingAnchor.constraint(
-                lessThanOrEqualTo: groupingToggle.leadingAnchor,
+                lessThanOrEqualTo: ungroupedOnlyToggle.leadingAnchor,
                 constant: -10
             ),
             ribbonPath.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            ungroupedOnlyToggle.trailingAnchor.constraint(
+                equalTo: groupingToggle.leadingAnchor,
+                constant: -12
+            ),
+            ungroupedOnlyToggle.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
             groupingToggle.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
             groupingToggle.centerYAnchor.constraint(equalTo: bar.centerYAnchor)
         ])
@@ -1066,7 +1086,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         }
         mapView.setShowsOthersOnly(preferences.mapShowsOthersOnly)
         mapView.onPruneMissing = { [weak self] in self?.pruneMissingGroupMembers() }
-        // 右の一覧から島へ引いて束に入れる。ファイルは動かないので、
+        // 右の一覧から島へ引いてグループに入れる。ファイルは動かないので、
         // 一覧の見出しへのドロップと同じ扱い。
         mapView.onLinkToGroup = { [weak self] urls, group in
             guard let self, let members = self.linkableNames(from: urls) else { return false }
@@ -1074,7 +1094,7 @@ final class WorkspaceBrowserViewController: NSViewController {
                 members.forEach { groups.add($0, to: group) }
             }
         }
-        // 「新しい束」の枠。落としたものが空なら、いま選んでいるもので作る。
+        // 「新しいグループ」の枠。落としたものが空なら、いま選んでいるもので作る。
         mapView.onCreateGroup = { [weak self] urls in
             guard let self else { return false }
             let source = urls.isEmpty ? self.selectedItems.map(\.url) : urls
@@ -1111,7 +1131,7 @@ final class WorkspaceBrowserViewController: NSViewController {
     @objc func selectGalleryView() { select(viewMode: .gallery) }
     @objc func selectMapView() { select(viewMode: .map) }
 
-    /// 「束」の列を出す／隠す。列見出しの右クリックと「表示」メニューの両方から。
+    /// 「グループ」の列を出す／隠す。列見出しの右クリックと「表示」メニューの両方から。
     @objc func toggleGroupColumn() {
         preferences.showsGroupColumn.toggle()
         applyGroupColumnVisibility()
@@ -1127,13 +1147,13 @@ final class WorkspaceBrowserViewController: NSViewController {
         fileTable.reloadData()
     }
 
-    /// 束の見出しを右クリックしたときのメニュー。
+    /// グループの見出しを右クリックしたときのメニュー。
     ///
-    /// 束を作れるのに名前を変えたり解いたりできないと、間違えた名前を直すには
+    /// グループを作れるのに名前を変えたり解いたりできないと、間違えた名前を直すには
     /// JSONを手で開くしかない。作れるものは、直せて、消せるべき。
     private func groupHeaderMenu(forRow row: Int) -> NSMenu? {
         guard fileRows.indices.contains(row),
-              case .header(let title) = fileRows[row],
+              case .header(let title, _) = fileRows[row],
               let name = title else { return nil }
         contextGroupName = name
 
@@ -1148,8 +1168,40 @@ final class WorkspaceBrowserViewController: NSViewController {
         add("名前を変更…", #selector(renameContextGroup))
         add("上へ", #selector(moveContextGroupUp))
         add("下へ", #selector(moveContextGroupDown))
+
+        // 「A ∈ B」を作る口。自分と自分の子孫は親にできない（輪になる）。
+        let nestItem = NSMenuItem(title: "このグループを入れる先", action: nil, keyEquivalent: "")
+        let nestMenu = NSMenu()
+        if let groups = itemGroups {
+            let forbidden = Set([name] + descendants(of: name, in: groups))
+            for candidate in groups.groups.map(\.name) where !forbidden.contains(candidate) {
+                let item = NSMenuItem(
+                    title: candidate,
+                    action: #selector(nestContextGroup(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = self
+                item.representedObject = candidate
+                item.state = groups.groups.first { $0.name == name }?.parent == candidate ? .on : .off
+                nestMenu.addItem(item)
+            }
+            if nestMenu.items.isEmpty {
+                nestMenu.addItem(NSMenuItem(title: "入れられる先がありません", action: nil, keyEquivalent: ""))
+            } else if groups.groups.first(where: { $0.name == name })?.parent != nil {
+                nestMenu.addItem(.separator())
+                let lift = NSMenuItem(
+                    title: "外へ出す（最上位へ）",
+                    action: #selector(unnestContextGroup),
+                    keyEquivalent: ""
+                )
+                lift.target = self
+                nestMenu.addItem(lift)
+            }
+        }
+        nestItem.submenu = nestMenu
+        menu.addItem(nestItem)
         menu.addItem(.separator())
-        add("この束を解く…", #selector(removeContextGroup))
+        add("このグループを解除…", #selector(removeContextGroup))
         return menu
     }
 
@@ -1164,12 +1216,40 @@ final class WorkspaceBrowserViewController: NSViewController {
     @objc private func renameContextGroup() {
         guard let name = contextGroupName else { return }
         guard let newName = askForGroupName(
-            title: "束の名前を変更",
+            title: "グループの名前を変更",
             message: "「\(name)」の新しい名前を入れてください。フォルダは動きません。",
             initial: name
         ) else { return }
-        mutateGroups(actionName: "束の名前を変更") { groups in
+        mutateGroups(actionName: "グループの名前を変更") { groups in
             groups.rename(name, to: newName)
+        }
+    }
+
+    /// そのグループの子孫。入れ先の候補から外すために使う（輪を作らせない）。
+    private func descendants(of name: String, in groups: WorkspaceItemGroups) -> [String] {
+        var result: [String] = []
+        var queue = groups.children(of: name)
+        while let current = queue.first {
+            queue.removeFirst()
+            guard !result.contains(current) else { continue }
+            result.append(current)
+            queue.append(contentsOf: groups.children(of: current))
+        }
+        return result
+    }
+
+    @objc private func nestContextGroup(_ sender: NSMenuItem) {
+        guard let name = contextGroupName,
+              let parent = sender.representedObject as? String else { return }
+        mutateGroups(actionName: "「\(name)」を「\(parent)」に入れる") { groups in
+            groups.nest(name, inside: parent)
+        }
+    }
+
+    @objc private func unnestContextGroup() {
+        guard let name = contextGroupName else { return }
+        mutateGroups(actionName: "「\(name)」を外へ出す") { groups in
+            groups.nest(name, inside: nil)
         }
     }
 
@@ -1178,34 +1258,34 @@ final class WorkspaceBrowserViewController: NSViewController {
 
     private func moveContextGroup(by offset: Int) {
         guard let name = contextGroupName else { return }
-        mutateGroups(actionName: "束の並びを変える") { groups in
+        mutateGroups(actionName: "グループの並びを変える") { groups in
             groups.move(name, by: offset)
         }
     }
 
-    /// 束を解く。中のものは束から外れるだけで、フォルダは一つも減らない。
-    /// それでも確かめるのは、束の定義そのものが手で作った資産だから。
+    /// グループを解く。中のものはグループから外れるだけで、フォルダは一つも減らない。
+    /// それでも確かめるのは、グループの定義そのものが手で作った資産だから。
     @objc private func removeContextGroup() {
         guard let name = contextGroupName, let groups = itemGroups else { return }
         let count = displayedItems.filter { groups.groupNames(for: $0.name).contains(name) }.count
 
         let alert = NSAlert()
-        alert.messageText = "「\(name)」を解きますか？"
-        alert.informativeText = "この束の\(count)項目は束から外れるだけです。"
+        alert.messageText = "「\(name)」を解除しますか？"
+        alert.informativeText = "このグループの\(count)項目はグループから外れるだけです。"
             + "フォルダは一つも減りません。取り消せます。"
-        alert.addButton(withTitle: "解く")
+        alert.addButton(withTitle: "解除")
         alert.addButton(withTitle: "やめる")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        mutateGroups(actionName: "「\(name)」を解く") { groups in
+        mutateGroups(actionName: "「\(name)」を解除") { groups in
             groups.removeGroup(name)
         }
         collapsedGroups.remove(name)
     }
 
-    /// 見出しを押して束を畳む・開く。
+    /// 見出しを押してグループを畳む・開く。
     private func toggleGroupCollapse(at row: Int) {
-        guard fileRows.indices.contains(row), case .header(let title) = fileRows[row] else { return }
+        guard fileRows.indices.contains(row), case .header(let title, _) = fileRows[row] else { return }
         let name = title ?? Self.ungroupedTitle
         if collapsedGroups.contains(name) {
             collapsedGroups.remove(name)
@@ -1219,10 +1299,22 @@ final class WorkspaceBrowserViewController: NSViewController {
         updateStatus()
     }
 
-    /// 一覧の束の見出しを入り切りする。
+    /// 「未分類だけ」を入り切りする。
     ///
-    /// 見出しで区切ると並べ替えが束の中だけに効く。名前順に通して眺めたいときは
-    /// 切る。切っても「束」の列で所属は読めるので、束が見えなくなるわけではない。
+    /// まだどこにも入れていないものを片付けるための眺め方。地図の「これだけ」と
+    /// 同じ考えで、こちらは一覧に効く。
+    @objc func toggleUngroupedOnly() {
+        preferences.listUngroupedOnly.toggle()
+        ungroupedOnlyToggle.state = preferences.listUngroupedOnly ? .on : .off
+        let selection = selectedItems.map(\.url)
+        applyFilterAndSort()
+        restoreFlatSelection(selection)
+    }
+
+    /// 一覧のグループの見出しを入り切りする。
+    ///
+    /// 見出しで区切ると並べ替えがグループの中だけに効く。名前順に通して眺めたいときは
+    /// 切る。切っても「グループ」の列で所属は読めるので、グループが見えなくなるわけではない。
     @objc func toggleListGrouping() {
         preferences.listGrouping.toggle()
         groupingToggle.state = preferences.listGrouping ? .on : .off
@@ -1294,8 +1386,9 @@ final class WorkspaceBrowserViewController: NSViewController {
         listScrollView?.isHidden = mode != .list
         galleryScrollView?.isHidden = mode != .gallery
         mapView.isHidden = mode != .map
-        // 束の見出しは一覧だけのもの。他の表示で出しても効かないので出さない。
+        // グループの見出しは一覧だけのもの。他の表示で出しても効かないので出さない。
         groupingToggle.isHidden = mode != .list
+        ungroupedOnlyToggle.isHidden = mode != .list
         viewModeControl.selectedSegment = WorkspaceViewMode.allCases.firstIndex(of: mode) ?? 0
         if mode == .column {
             columnView.show(
@@ -1332,6 +1425,14 @@ final class WorkspaceBrowserViewController: NSViewController {
             label: "“cd” コマンドをコピー — Terminalに貼るだけで移動"
         )
         configureNavigationButton(newFolderButton, symbol: "folder.badge.plus", action: #selector(createFolder), label: "新規フォルダ")
+        // 選んで押すだけでグループができる導線。右クリックのメニューと地図の枠にも
+        // 入口はあるが、どちらも「知っている人」しか辿れない。ここは見えている。
+        configureNavigationButton(
+            newGroupButton,
+            symbol: "rectangle.stack.badge.plus",
+            action: #selector(createGroupWithSelection),
+            label: "選んだものでグループを作る"
+        )
 
         // セグメントの並びは WorkspaceViewMode.allCases と一対一。片方だけ足すと
         // 選択の対応がずれる。
@@ -1396,7 +1497,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         configureAppearanceButton()
         let navigationStack = NSStackView(views: [
             backButton, forwardButton, upButton, pathSlot, copyCDButton,
-            refreshButton, newFolderButton, appearanceButton, viewModeControl
+            refreshButton, newFolderButton, newGroupButton, appearanceButton, viewModeControl
         ])
         navigationStack.orientation = .horizontal
         navigationStack.alignment = .centerY
@@ -1476,11 +1577,11 @@ final class WorkspaceBrowserViewController: NSViewController {
         kind.minWidth = 110
         kind.width = 145
         kind.sortDescriptorPrototype = NSSortDescriptor(key: Column.kind.rawValue, ascending: true)
-        // 束を属性の一つとして持つ。見出しで区切らなくても所属が読めるし、
-        // この列で並べれば束ごとにまとまる — 見出しを切るのとは違って、
+        // グループを属性の一つとして持つ。見出しで区切らなくても所属が読めるし、
+        // この列で並べればグループごとにまとまる — 見出しを切るのとは違って、
         // 名前や更新日での並べ替えを捨てずに済む。
         let groups = NSTableColumn(identifier: Column.groups)
-        groups.title = "束"
+        groups.title = "グループ"
         groups.minWidth = 90
         groups.width = 150
         // 既定は隠す。常に出すと名前の幅が150pt削られ、狭い窓では横スクロールが
@@ -1561,7 +1662,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         // 列見出しの右クリックで列を出し入れする（Finderと同じ場所）。
         let headerMenu = NSMenu(title: "列")
         let groupColumnItem = NSMenuItem(
-            title: "束",
+            title: "グループ",
             action: #selector(toggleGroupColumn),
             keyEquivalent: ""
         )
@@ -1637,11 +1738,11 @@ final class WorkspaceBrowserViewController: NSViewController {
         add("情報を見る", #selector(showInfo))
         add("Finderで表示", #selector(revealSelectionInFinder))
         add("サイドバーにピン留め", #selector(togglePin))
-        // Populated in menuWillOpen: どの束があるかはフォルダごとに違う。
-        addToGroupItem = NSMenuItem(title: "束に入れる", action: nil, keyEquivalent: "")
+        // Populated in menuWillOpen: どのグループがあるかはフォルダごとに違う。
+        addToGroupItem = NSMenuItem(title: "グループに入れる", action: nil, keyEquivalent: "")
         addToGroupItem.submenu = NSMenu()
         menu.addItem(addToGroupItem)
-        removeFromGroupItem = NSMenuItem(title: "束から外す", action: nil, keyEquivalent: "")
+        removeFromGroupItem = NSMenuItem(title: "グループから外す", action: nil, keyEquivalent: "")
         removeFromGroupItem.submenu = NSMenu()
         menu.addItem(removeFromGroupItem)
         add("見つからない項目を整理…", #selector(pruneMissingGroupMembers))
@@ -2045,7 +2146,7 @@ final class WorkspaceBrowserViewController: NSViewController {
                     of: directory,
                     showHiddenFiles: showHidden
                 )
-                // 束の定義は一覧と同じ往復で読む。小さなローカルファイルなので、
+                // グループの定義は一覧と同じ往復で読む。小さなローカルファイルなので、
                 // クラウドキーと違って一覧を待たせない。
                 let groups = Result { try WorkspaceItemGroups.load(from: directory) }
                 let presentNames = WorkspaceDirectoryListing.namesIncludingHidden(of: directory)
@@ -2085,8 +2186,8 @@ final class WorkspaceBrowserViewController: NSViewController {
         recursiveSearchErrorShown = false
         self.presentNames = presentNames
 
-        // 読めなかった定義は「束が無い」ことにしない。見出しは出せないが、
-        // 出せなかったことは状態行に残す — 黙って消えると、書いた束が
+        // 読めなかった定義は「グループが無い」ことにしない。見出しは出せないが、
+        // 出せなかったことは状態行に残す — 黙って消えると、書いたグループが
         // 失われたのか自分の書き方が悪いのか分からない。
         switch groups {
         case .success(let loaded):
@@ -2360,9 +2461,9 @@ final class WorkspaceBrowserViewController: NSViewController {
 
     /// 見出しを挟んだ行の並びを組み直す。
     ///
-    /// 束が定義されていなければ行と添字は一対一で、既存の一覧とまったく同じ形になる。
+    /// グループが定義されていなければ行と添字は一対一で、既存の一覧とまったく同じ形になる。
     /// 配下検索の結果にも見出しを出さない — 別の階層から集まった項目が並んでいて、
-    /// 「このフォルダの中をどう束ねたか」とは無関係だから。
+    /// 「このフォルダの中をどうまとめたか」とは無関係だから。
     private func rebuildFileRows() {
         guard preferences.listGrouping,
               let groups = itemGroups,
@@ -2378,7 +2479,7 @@ final class WorkspaceBrowserViewController: NSViewController {
 
         var rows: [FileRow] = []
         for section in groups.sections(for: displayedItems) {
-            rows.append(.header(section.name))
+            rows.append(.header(section.name, depth: section.depth))
             let collapsed = collapsedGroups.contains(section.name ?? Self.ungroupedTitle)
             for item in section.items where !collapsed {
                 guard let index = indexByURL[item.url] else { continue }
@@ -2399,18 +2500,18 @@ final class WorkspaceBrowserViewController: NSViewController {
         return displayedItems.indices.contains(index) ? displayedItems[index] : nil
     }
 
-    /// この行が居る束以外の所属先。見出しの無い一覧では常に空。
+    /// この行が居るグループ以外の所属先。見出しの無い一覧では常に空。
     private func otherGroups(atRow row: Int) -> [String] {
         guard fileRows.indices.contains(row),
               case .item(_, let others) = fileRows[row] else { return [] }
         return others
     }
 
-    /// 畳んである束の中身の数。行が無いので定義と一覧から数える。
+    /// 畳んであるグループの中身の数。行が無いので定義と一覧から数える。
     private func collapsedCount(of group: String?) -> Int {
         guard let groups = itemGroups else { return 0 }
         guard let group else {
-            // 未分類は、どの束にも属さないものの数。
+            // 未分類は、どのグループにも属さないものの数。
             return displayedItems.filter { groups.groupNames(for: $0.name).isEmpty }.count
         }
         return displayedItems.filter { groups.groupNames(for: $0.name).contains(group) }.count
@@ -2432,7 +2533,15 @@ final class WorkspaceBrowserViewController: NSViewController {
         return true
     }
 
-    /// 複数の束に属する項目は複数の行にいるので、URLひとつが複数の行番号を返しうる。
+    /// その行の見出しの名前（未分類は`nil`）。
+    private func headerName(atRow row: Int) -> String? {
+        guard fileRows.indices.contains(row), case .header(let title, _) = fileRows[row] else {
+            return nil
+        }
+        return title
+    }
+
+    /// 複数のグループに属する項目は複数の行にいるので、URLひとつが複数の行番号を返しうる。
     private func fileRowIndexes(matching urls: Set<URL>) -> IndexSet {
         IndexSet(fileRows.indices.filter { row in
             guard let item = item(atRow: row) else { return false }
@@ -2440,7 +2549,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         })
     }
 
-    /// 束に入れられるのは、いま開いているフォルダの直下にあるものだけ。メンバーを
+    /// グループに入れられるのは、いま開いているフォルダの直下にあるものだけ。メンバーを
     /// 相対名で持っているので、別の階層のものを入れても指せない。一つでも外から来て
     /// いれば`nil` — 半分だけ受け取ると、落とした本人には何が入ったか分からない。
     private func linkableNames(from sources: [URL]) -> [String]? {
@@ -2453,10 +2562,10 @@ final class WorkspaceBrowserViewController: NSViewController {
         return names.count == sources.count ? names : nil
     }
 
-    /// 束の定義を書き換えて保存する。
+    /// グループの定義を書き換えて保存する。
     ///
     /// 読めない定義があるときは断る。壊れたJSONの上から正常なJSONを書くと、
-    /// 手で書いた束が完全に消える — しかも「保存できた」ように見える。
+    /// 手で書いたグループが完全に消える — しかも「保存できた」ように見える。
     @discardableResult
     private func mutateGroups(
         actionName: String,
@@ -2464,9 +2573,9 @@ final class WorkspaceBrowserViewController: NSViewController {
     ) -> Bool {
         guard itemGroupsError == nil else {
             presentError(
-                title: "束を変更できません",
+                title: "グループを変更できません",
                 message: "\(WorkspaceItemGroups.fileName) が読めない状態です。"
-                    + "上書きすると、そこに書かれている束が失われます。先にファイルを直してください。"
+                    + "上書きすると、そこに書かれているグループが失われます。先にファイルを直してください。"
             )
             return false
         }
@@ -2476,7 +2585,7 @@ final class WorkspaceBrowserViewController: NSViewController {
     }
 
     /// 定義を差し替えて画面に反映する。`nil`は「定義そのものが無い状態」で、
-    /// 束を初めて作る操作を取り消したときにここへ戻る。
+    /// グループを初めて作る操作を取り消したときにここへ戻る。
     @discardableResult
     private func applyGroups(_ groups: WorkspaceItemGroups?, actionName: String) -> Bool {
         let directory = navigator.currentDirectory
@@ -2491,7 +2600,7 @@ final class WorkspaceBrowserViewController: NSViewController {
                 }
             }
         } catch {
-            presentError(title: "束を保存できません", message: error.localizedDescription)
+            presentError(title: "グループを保存できません", message: error.localizedDescription)
             return false
         }
 
@@ -2505,7 +2614,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         return true
     }
 
-    /// 束だけが変わったときの再描画。一覧の中身は同じなので読み直さない。
+    /// グループだけが変わったときの再描画。一覧の中身は同じなので読み直さない。
     private func refreshRowsPreservingSelection() {
         let selected = selectedItems.map(\.url)
         rebuildFileRows()
@@ -2514,10 +2623,10 @@ final class WorkspaceBrowserViewController: NSViewController {
         updateStatus()
     }
 
-    /// 束のメニューを、いまのフォルダの定義と選択に合わせて組み直す。
+    /// グループのメニューを、いまのフォルダの定義と選択に合わせて組み直す。
     ///
     /// ドラッグだけだと最初の一つを作れない — 落とす先の見出しがまだ無いので。
-    /// 「新しい束…」がその入口で、ここから作ればJSONを手で書かずに始められる。
+    /// 「新しいグループ…」がその入口で、ここから作ればJSONを手で書かずに始められる。
     private func rebuildGroupSubmenus(for selection: [WorkspaceItem]) {
         let names = linkableNames(from: selection.map(\.url))
         let canEdit = names != nil && itemGroupsError == nil
@@ -2526,7 +2635,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         addToGroupItem.isEnabled = canEdit
         let addMenu = NSMenu()
         for name in existing {
-            // すでに全員が入っている束は、選んでも何も起きない。
+            // すでに全員が入っているグループは、選んでも何も起きない。
             let allInside = names?.allSatisfy { member in
                 itemGroups?.groupNames(for: member).contains(name) == true
             } ?? false
@@ -2538,13 +2647,13 @@ final class WorkspaceBrowserViewController: NSViewController {
             addMenu.addItem(item)
         }
         if !existing.isEmpty { addMenu.addItem(.separator()) }
-        let newGroup = NSMenuItem(title: "新しい束…", action: #selector(createGroupWithSelection), keyEquivalent: "")
+        let newGroup = NSMenuItem(title: "新しいグループ…", action: #selector(createGroupWithSelection), keyEquivalent: "")
         newGroup.target = self
         newGroup.isEnabled = canEdit
         addMenu.addItem(newGroup)
         addToGroupItem.submenu = addMenu
 
-        // 外せる束は、選んだものが実際に入っている束だけ。
+        // 外せるグループは、選んだものが実際に入っているグループだけ。
         let joined = names.map { members in
             existing.filter { name in
                 members.contains { itemGroups?.groupNames(for: $0).contains(name) == true }
@@ -2565,7 +2674,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         if joined.count > 1 {
             removeMenu.addItem(.separator())
             let all = NSMenuItem(
-                title: "すべての束から外す",
+                title: "すべてのグループから外す",
                 action: #selector(removeSelectionFromAllGroups),
                 keyEquivalent: ""
             )
@@ -2593,7 +2702,7 @@ final class WorkspaceBrowserViewController: NSViewController {
 
     @objc private func removeSelectionFromAllGroups() {
         guard let members = linkableNames(from: selectedItems.map(\.url)) else { return }
-        mutateGroups(actionName: "すべての束から外す") { groups in
+        mutateGroups(actionName: "すべてのグループから外す") { groups in
             members.forEach { groups.removeFromAllGroups($0) }
         }
     }
@@ -2616,10 +2725,10 @@ final class WorkspaceBrowserViewController: NSViewController {
         }.joined(separator: "\n")
 
         let alert = NSAlert()
-        alert.messageText = "見つからない\(total)件を束から外しますか？"
+        alert.messageText = "見つからない\(total)件をグループから外しますか？"
         alert.informativeText = "定義に名前は残っていますが、このフォルダに実物がありません。"
             + "移動したか、消したか、別のマシンにしか無いかのどれかです。"
-            + "別のマシンにあるものを外すと、そちらでも束から消えます。\n\n"
+            + "別のマシンにあるものを外すと、そちらでもグループから消えます。\n\n"
             + detail
         alert.addButton(withTitle: "外す")
         alert.addButton(withTitle: "残す")
@@ -2631,7 +2740,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         }
     }
 
-    @objc private func createGroupWithSelection() {
+    @objc func createGroupWithSelection() {
         guard let members = linkableNames(from: selectedItems.map(\.url)) else { return }
         guard let name = askForGroupName() else { return }
         mutateGroups(actionName: "「\(name)」を作る") { groups in
@@ -2639,10 +2748,10 @@ final class WorkspaceBrowserViewController: NSViewController {
         }
     }
 
-    /// 束の名前を聞く。空白だけの名前と、すでにある名前は断る — 同じ名前の束が
+    /// グループの名前を聞く。空白だけの名前と、すでにある名前は断る — 同じ名前のグループが
     /// 二つあると、どちらの見出しに落としたのか区別できない。
     private func askForGroupName(
-        title: String = "新しい束",
+        title: String = "新しいグループ",
         message: String = "選んだものをまとめる名前を入れてください。フォルダは動きません。",
         initial: String = ""
     ) -> String? {
@@ -2665,7 +2774,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         guard name != initial else { return nil }
         guard itemGroups?.groups.contains(where: { $0.name == name }) != true else {
             presentError(
-                title: "同じ名前の束があります",
+                title: "同じ名前のグループがあります",
                 message: "「\(name)」はすでにあります。黙って一つにまとめると元に戻せません。"
             )
             return nil
@@ -2673,15 +2782,15 @@ final class WorkspaceBrowserViewController: NSViewController {
         return name
     }
 
-    /// 見出しに落とされたものを束に紐づける。ファイルは動かない。
+    /// 見出しに落とされたものをグループに紐づける。ファイルは動かない。
     private func linkSources(_ sources: [URL], toGroupAtRow row: Int) -> Bool {
         guard fileRows.indices.contains(row),
-              case .header(let title) = fileRows[row],
+              case .header(let title, _) = fileRows[row],
               let names = linkableNames(from: sources) else { return false }
 
-        // 未分類は束ではなく「どの束にも居ない場所」。そこへ落とすのは外す操作。
+        // 未分類はグループではなく「どのグループにも居ない場所」。そこへ落とすのは外す操作。
         guard let title else {
-            return mutateGroups(actionName: "束から外す") { groups in
+            return mutateGroups(actionName: "グループから外す") { groups in
                 names.forEach { groups.removeFromAllGroups($0) }
             }
         }
@@ -2692,9 +2801,13 @@ final class WorkspaceBrowserViewController: NSViewController {
 
     private func applyFilterAndSort() {
         let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        let items = query.isEmpty
+        var items = query.isEmpty
             ? allItems
             : allItems.filter { $0.name.localizedCaseInsensitiveContains(query) }
+        // 「未分類だけ」。まだどこにも入れていないものを片付けるための眺め方。
+        if preferences.listUngroupedOnly, let groups = itemGroups {
+            items = items.filter { groups.groupNames(for: $0.name).isEmpty }
+        }
         displayedItems = sortedItems(items)
         reloadResultViews()
         updateStatus()
@@ -2742,7 +2855,14 @@ final class WorkspaceBrowserViewController: NSViewController {
         }
     }
 
+    /// グループを作れるのは、いまのフォルダの直下を選んでいるときだけ。
+    /// 押せない理由が見えないので、押せないことを見せる。
+    private func updateNewGroupButton() {
+        newGroupButton.isEnabled = canEditGroupsForSelection
+    }
+
     private func updateStatus() {
+        updateNewGroupButton()
         let selectedCount = selectedItems.count
         let prefix = usesRecursiveSearch ? "配下検索: " : ""
         let truncation = recursiveSearchIsTruncated ? "（上限5,000件）" : ""
@@ -2769,7 +2889,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         case .list:
             break
         }
-        // 同じ項目が複数の束に並ぶので、行をそのまま集めると同じものが二度入る。
+        // 同じ項目が複数のグループに並ぶので、行をそのまま集めると同じものが二度入る。
         var seen: Set<URL> = []
         return fileTable.selectedRowIndexes.compactMap { row in
             guard let item = item(atRow: row), seen.insert(item.url).inserted else { return nil }
@@ -2781,7 +2901,7 @@ final class WorkspaceBrowserViewController: NSViewController {
     /// Columnの深い階層から来た項目は現在の結果に無ければ安全に無視する。
     private func restoreFlatSelection(_ urls: [URL]) {
         let wanted = Set(urls)
-        // listは見出しの分だけ行がずれ、複数の束に属する項目は複数の行にいる。
+        // listは見出しの分だけ行がずれ、複数のグループに属する項目は複数の行にいる。
         // galleryは見出しを持たないので添字のまま。
         fileTable.selectRowIndexes(fileRowIndexes(matching: wanted), byExtendingSelection: false)
         galleryView.selectionIndexPaths = Set(
@@ -3451,8 +3571,8 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
             }
         }
 
-        // 束の見出し。名前列を持たない一行で、列の途中から始まると見出しに見えない。
-        if fileRows.indices.contains(row), case .header(let title) = fileRows[row] {
+        // グループの見出し。名前列を持たない一行で、列の途中から始まると見出しに見えない。
+        if fileRows.indices.contains(row), case .header(let title, let depth) = fileRows[row] {
             let cell = tableView.makeView(
                 withIdentifier: NSUserInterfaceItemIdentifier("WorkspaceGroupHeader"),
                 owner: self
@@ -3466,7 +3586,8 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
                     ? collapsedCount(of: title)
                     : fileRowCount(ofSectionStartingAt: row),
                 color: title.flatMap { WorkspaceGroupPalette.color(for: $0, in: itemGroups) },
-                isCollapsed: collapsed
+                isCollapsed: collapsed,
+                depth: depth
             )
             return cell
         }
@@ -3601,7 +3722,7 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
         }
 
         guard tableView === fileTable else { return [] }
-        // 見出しへのドロップは束への紐づけ。ファイルは動かないので.link — 見た目にも
+        // 見出しへのドロップはグループへの紐づけ。ファイルは動かないので.link — 見た目にも
         // 移動やコピーと違う矢印が出て、手が滑ってファイルを動かしたのではないと分かる。
         if isHeaderRow(row) {
             guard itemGroupsError == nil, linkableNames(from: sources) != nil else { return [] }
@@ -3821,7 +3942,7 @@ extension WorkspaceBrowserViewController: NSSearchFieldDelegate {
 extension WorkspaceBrowserViewController: NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         if menu === fileTable.headerView?.menu {
-            menu.item(withTitle: "束")?.state = preferences.showsGroupColumn ? .on : .off
+            menu.item(withTitle: "グループ")?.state = preferences.showsGroupColumn ? .on : .off
             return
         }
 
@@ -3887,7 +4008,7 @@ extension WorkspaceBrowserViewController: NSMenuItemValidation {
         // 地図には名前を書き換える場所がないので、押せるように見せない。
         case #selector(renameSelection):
             return effectiveViewMode != .map && selectedItems.count == 1
-        // 束の操作は、いまのフォルダの直下を選んでいるときだけ。相対名で持つので
+        // グループの操作は、いまのフォルダの直下を選んでいるときだけ。相対名で持つので
         // 別の階層のものは指せない。定義が読めていないときも触らせない。
         case #selector(createGroupWithSelection), #selector(removeSelectionFromAllGroups):
             return canEditGroupsForSelection
@@ -3898,6 +4019,9 @@ extension WorkspaceBrowserViewController: NSMenuItemValidation {
         case #selector(toggleListGrouping):
             menuItem.state = preferences.listGrouping ? .on : .off
             return true
+        case #selector(toggleUngroupedOnly):
+            menuItem.state = preferences.listUngroupedOnly ? .on : .off
+            return true
         case #selector(pruneMissingGroupMembers):
             guard itemGroupsError == nil else { return false }
             return !(itemGroups?.missingMembers(amongNames: presentNames).isEmpty ?? true)
@@ -3905,7 +4029,7 @@ extension WorkspaceBrowserViewController: NSMenuItemValidation {
             guard canEditGroupsForSelection,
                   let members = linkableNames(from: selectedItems.map(\.url)),
                   let name = menuItem.representedObject as? String else { return false }
-            // 全員がもう入っている束は、選んでも何も起きない。
+            // 全員がもう入っているグループは、選んでも何も起きない。
             return !members.allSatisfy { itemGroups?.groupNames(for: $0).contains(name) == true }
         case #selector(removeSelectionFromGroup(_:)):
             guard canEditGroupsForSelection,

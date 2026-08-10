@@ -3,13 +3,13 @@ import FinderAICore
 import Foundation
 import Testing
 
-/// 一覧では表せない「重なり」を位置で見せるための配置。束を島として格子に並べ、
-/// 島の中は名前順に整列し、複数の束に属するものだけを島の境界に置く。
+/// 一覧では表せない「重なり」を位置で見せるための配置。グループを島として格子に並べ、
+/// 島の中は名前順に整列し、複数のグループに属するものだけを島の境界に置く。
 ///
 /// 力学で解いていたころのテストは「いつか止まる」「止まったら動かない」を確かめて
 /// いたが、止まる場所が読める配置とは限らなかった。決定的にしたので、確かめるのは
 /// 「必ず全部の名前に席がある」「同じフォルダなら同じ地図」になる。
-@Suite("束を島として並べる")
+@Suite("グループを島として並べる")
 struct WorkspaceClusterLayoutTests {
     private let size = CGSize(width: 875, height: 624)
 
@@ -50,7 +50,7 @@ struct WorkspaceClusterLayoutTests {
 
     // MARK: - 島
 
-    @Test("束ごとに島ができ、重ならない")
+    @Test("グループごとに島ができ、重ならない")
     func islandsDoNotOverlap() {
         let map = layout(["a1", "a2", "a3", "b1", "b2", "b3"], twoGroups())
 
@@ -63,16 +63,16 @@ struct WorkspaceClusterLayoutTests {
     @Test("島は領域の中に収まる")
     func islandsStayInsideTheArea() {
         var groups = WorkspaceItemGroups()
-        for index in 0..<9 { groups.add("n\(index)", to: "束\(index)") }
+        for index in 0..<9 { groups.add("n\(index)", to: "グループ\(index)") }
         let map = layout((0..<9).map { "n\($0)" }, groups)
 
         let bounds = CGRect(origin: .zero, size: size)
         #expect(map.islands.allSatisfy { bounds.contains($0.frame) })
     }
 
-    /// 円周に並べていたころは、2束だと中央が大きく空き、15束だと間隔が70ptまで
-    /// 詰まって束名が衝突した。格子は領域の縦横比に合わせて枡を割る。
-    @Test("束の数に応じて枡の割り方が変わる")
+    /// 円周に並べていたころは、2グループだと中央が大きく空き、15グループだと間隔が70ptまで
+    /// 詰まってグループ名が衝突した。格子は領域の縦横比に合わせて枡を割る。
+    @Test("グループの数に応じて枡の割り方が変わる")
     func gridAdaptsToCount() {
         let aspect = 875.0 / 624.0
         #expect(WorkspaceClusterLayout.gridShape(count: 1, aspect: aspect) == (1, 1))
@@ -81,7 +81,7 @@ struct WorkspaceClusterLayoutTests {
         #expect(WorkspaceClusterLayout.gridShape(count: 15, aspect: aspect) == (5, 3))
     }
 
-    @Test("枡はどの数でも全部の束を収められる")
+    @Test("枡はどの数でも全部のグループを収められる")
     func gridAlwaysFitsEveryGroup() {
         for count in 1...40 {
             let shape = WorkspaceClusterLayout.gridShape(count: count, aspect: 1.4)
@@ -97,7 +97,7 @@ struct WorkspaceClusterLayoutTests {
     func membersAreEvenlySpacedForLabels() {
         var groups = WorkspaceItemGroups()
         for name in ["gamma", "alpha", "beta", "delta", "epsilon", "zeta", "eta"] {
-            groups.add(name, to: "束")
+            groups.add(name, to: "グループ")
         }
         let map = layout(["gamma", "alpha", "beta", "delta", "epsilon", "zeta", "eta"], groups)
 
@@ -118,10 +118,10 @@ struct WorkspaceClusterLayoutTests {
     func overflowIsReported() {
         var groups = WorkspaceItemGroups()
         let names = (0..<80).map { "n\(String(format: "%02d", $0))" }
-        for name in names { groups.add(name, to: "束") }
+        for name in names { groups.add(name, to: "グループ") }
         let map = layout(names, groups)
 
-        let island = try! #require(map.island(named: "束"))
+        let island = try! #require(map.island(named: "グループ"))
         #expect(island.overflow > 0)
         // 見せた数と「ほか」の数を足せば、必ず元の数になる。
         #expect(map.nodes.count + island.overflow == names.count)
@@ -135,10 +135,67 @@ struct WorkspaceClusterLayoutTests {
         #expect(map.nodes.count == 6)
     }
 
+    // MARK: - 入れ子（A ∈ B を島の入れ子で見せる）
+
+    /// 親子が同列に並んでいると、それは嘘になる。子の枠は親の枠の**内側**に入る。
+    @Test("子の島は親の島の中に収まる")
+    func childIslandSitsInsideItsParent() {
+        var groups = WorkspaceItemGroups()
+        groups.add("x", to: "研究")
+        groups.add("y", to: "電力系統")
+        groups.nest("電力系統", inside: "研究")
+        let map = layout(["x", "y"], groups)
+
+        let parent = try! #require(map.island(named: "研究"))
+        let child = try! #require(map.island(named: "電力系統"))
+
+        #expect(parent.depth == 0)
+        #expect(child.depth == 1)
+        #expect(parent.frame.contains(child.frame))
+        // 親のメンバーを置く場所は、子の枠と重ならない
+        #expect(!parent.contentFrame.intersects(child.frame))
+    }
+
+    @Test("同じ親の子どもは、互いに重ならない")
+    func siblingsDoNotOverlap() {
+        var groups = WorkspaceItemGroups()
+        for name in ["研究", "電力系統", "可視化"] { groups.add("x-\(name)", to: name) }
+        groups.nest("電力系統", inside: "研究")
+        groups.nest("可視化", inside: "研究")
+        let map = layout(["x-研究", "x-電力系統", "x-可視化"], groups)
+
+        let a = try! #require(map.island(named: "電力系統")).frame
+        let b = try! #require(map.island(named: "可視化")).frame
+        #expect(!a.intersects(b))
+    }
+
+    /// 親の枠は子を含むので、点で島を引くときは内側から返す必要がある。
+    /// そうでないと、子に落としたつもりが親に入る。
+    @Test("島を点で引くと、いちばん内側の島が返る")
+    func islandHitTestPrefersTheInnermost() {
+        var groups = WorkspaceItemGroups()
+        groups.add("x", to: "研究")
+        groups.add("y", to: "電力系統")
+        groups.nest("電力系統", inside: "研究")
+        let map = layout(["x", "y"], groups)
+
+        let child = try! #require(map.island(named: "電力系統")).frame
+        let hit = map.island(at: CGPoint(x: child.midX, y: child.midY))
+        #expect(hit?.name == "電力系統")
+    }
+
+    @Test("入れ子が無ければ、今までどおり平らな格子になる")
+    func flatDefinitionKeepsTheOldLayout() {
+        let map = layout(["a1", "b1"], twoGroups())
+
+        #expect(map.islands.allSatisfy { $0.depth == 0 })
+        #expect(map.islands.allSatisfy { $0.frame == $0.contentFrame })
+    }
+
     // MARK: - 重なり
 
     /// 重なりの本題。両方の島に属する項目は、その間に立つ。
-    @Test("両方の束に属するものは、二つの島の間に来る")
+    @Test("両方のグループに属するものは、二つの島の間に来る")
     func sharedNodeSitsBetweenIslands() {
         var groups = twoGroups()
         groups.add("both", to: "A")
@@ -176,9 +233,9 @@ struct WorkspaceClusterLayoutTests {
         }
     }
 
-    /// 三つ以上の束に属することもある。重心は枡の並び次第で**属していない島**の
+    /// 三つ以上のグループに属することもある。重心は枡の並び次第で**属していない島**の
     /// 真ん中に落ちるので、そこに置くとその島のメンバーに見えてしまう。
-    @Test("三つの束に属するものが、属していない島の中に入らない")
+    @Test("三つのグループに属するものが、属していない島の中に入らない")
     func tripleSharedStaysOutOfForeignIslands() {
         var groups = WorkspaceItemGroups()
         for (index, name) in ["A", "B", "C", "D", "E", "F"].enumerated() {
@@ -199,7 +256,7 @@ struct WorkspaceClusterLayoutTests {
         }
     }
 
-    @Test("三つの束に属するものは、その三つ全部が橋になる")
+    @Test("三つのグループに属するものは、その三つ全部が橋になる")
     func tripleSharedBridgesToAll() {
         var groups = WorkspaceItemGroups()
         for name in ["A", "B", "C"] {
@@ -226,9 +283,9 @@ struct WorkspaceClusterLayoutTests {
         #expect(Set(bridged.groups) == ["A", "B"])
     }
 
-    /// 一つの束にしか属さないものは、その島から出ない。出ていたら、島という
+    /// 一つのグループにしか属さないものは、その島から出ない。出ていたら、島という
     /// 見せ方そのものが嘘になる。
-    @Test("一つの束のものは、その島から出ない")
+    @Test("一つのグループのものは、その島から出ない")
     func exclusiveMembersStayHome() {
         var groups = twoGroups()
         groups.add("both", to: "A")
@@ -244,7 +301,7 @@ struct WorkspaceClusterLayoutTests {
 
     // MARK: - 呼び出し側との分担
 
-    @Test("束に属さないものは受け取らない — 呼び出し側で分けてある")
+    @Test("グループに属さないものは受け取らない — 呼び出し側で分けてある")
     func partitionSeparatesGroupedFromOthers() {
         var groups = WorkspaceItemGroups()
         groups.add("a1", to: "A")
@@ -255,7 +312,7 @@ struct WorkspaceClusterLayoutTests {
         #expect(others.map(\.name) == ["apple", "zebra"])
     }
 
-    @Test("共有でつながった束が隣り合う順に並ぶ")
+    @Test("共有でつながったグループが隣り合う順に並ぶ")
     func adjacentOrderPutsSharedGroupsTogether() {
         var groups = WorkspaceItemGroups()
         groups.add("x", to: "先頭")
@@ -306,7 +363,7 @@ struct WorkspaceClusterLayoutTests {
 
         let a = try! #require(map.island(named: "A")).frame
         let b = try! #require(map.island(named: "B")).frame
-        // 2束なら横に並ぶ（A が左、B が右）
+        // 2グループなら横に並ぶ（A が左、B が右）
         #expect(a.midX < b.midX)
 
         let moved = try! #require(map.node(from: "a1", towards: .right))
@@ -361,7 +418,7 @@ struct WorkspaceClusterLayoutTests {
         #expect(forward.nodes.map(\.position) == shuffled.nodes.map(\.position))
     }
 
-    @Test("束がなければ島もノードも無い")
+    @Test("グループがなければ島もノードも無い")
     func emptyWithoutGroups() {
         let map = layout(["loose"], nil)
 
@@ -394,10 +451,10 @@ struct WorkspaceClusterLayoutTests {
     @Test("置く場所が無くても壊れない")
     func survivesAnImpossiblySmallArea() {
         var groups = WorkspaceItemGroups()
-        for name in ["a1", "a2"] { groups.add(name, to: "束") }
+        for name in ["a1", "a2"] { groups.add(name, to: "グループ") }
         let map = layout(["a1", "a2"], groups, size: CGSize(width: 60, height: 50))
 
-        #expect(map.nodes.count + (map.island(named: "束")?.overflow ?? 0) == 2)
+        #expect(map.nodes.count + (map.island(named: "グループ")?.overflow ?? 0) == 2)
     }
 
     /// 点だけを的にすると半径10ptを狙わせることになる。島の中は行として並んで

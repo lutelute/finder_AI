@@ -1006,13 +1006,18 @@ final class WorkspaceAppCoordinator {
         ))
         viewMenu.addItem(.separator())
         viewMenu.addItem(item(
-            "束でまとめる",
+            "グループでまとめる",
             action: #selector(WorkspaceBrowserViewController.toggleListGrouping),
             key: ""
         ))
         viewMenu.addItem(item(
-            "「束」の列を表示",
+            "「グループ」の列を表示",
             action: #selector(WorkspaceBrowserViewController.toggleGroupColumn),
+            key: ""
+        ))
+        viewMenu.addItem(item(
+            "未分類だけを表示",
+            action: #selector(WorkspaceBrowserViewController.toggleUngroupedOnly),
             key: ""
         ))
         let cycleView = item(

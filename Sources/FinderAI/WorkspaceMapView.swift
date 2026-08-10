@@ -1,25 +1,25 @@
 import AppKit
 import FinderAICore
 
-/// 束を「島」として並べ、複数の束に属するものをその境界に置く表示。
+/// グループを「島」として並べ、複数のグループに属するものをその境界に置く表示。
 ///
-/// 一覧は線形なので、二つの束に属するものは二行に割れる。ここでは一つの点で、
-/// 属する束の色に塗り分けられて島の境界に立つ。重なりが場所として見えるのが
+/// 一覧は線形なので、二つのグループに属するものは二行に割れる。ここでは一つの点で、
+/// 属するグループの色に塗り分けられて島の境界に立つ。重なりが場所として見えるのが
 /// この表示の全部で、それ以外の用途では一覧のほうが速く読める。
 ///
-/// 画面は二つに分かれる。左が島の地図、右が**束に属さないものの名前順の一覧**。
+/// 画面は二つに分かれる。左が島の地図、右が**グループに属さないものの名前順の一覧**。
 /// 最初は全項目を地図に散らしていたが、`~/Documents/GitHub` では116個の無関係な点が
-/// 29個の束を包囲して画面の八割を占め、見せたい重なりが埋もれた（「カツかつで
+/// 29個のグループを包囲して画面の八割を占め、見せたい重なりが埋もれた（「カツかつで
 /// えらい見辛い」）。関係が無いものを散らしても情報は増えない。ただし消さない —
-/// 束に入れていないものも、そこに在るとは見せる。
+/// グループに入れていないものも、そこに在るとは見せる。
 @MainActor
 final class WorkspaceMapView: NSView {
     var onOpen: ((WorkspaceItem) -> Void)?
     var onSelectionChange: (([WorkspaceItem]) -> Void)?
     var contextMenuProvider: (() -> NSMenu?)?
-    /// 島に落とされたものを束に入れる。実際に入ったら`true`。
+    /// 島に落とされたものをグループに入れる。実際に入ったら`true`。
     var onLinkToGroup: (([URL], String) -> Bool)?
-    /// 「新しい束」の枠に落とされた／押されたとき。空配列なら選択中のもので作る。
+    /// 「新しいグループ」の枠に落とされた／押されたとき。空配列なら選択中のもので作る。
     var onCreateGroup: (([URL]) -> Bool)?
     /// Spaceでのクイックルック。地図でもFinderの手癖が通るように。
     var onQuickLook: (() -> Void)?
@@ -33,7 +33,7 @@ final class WorkspaceMapView: NSView {
     /// その他の全部と、絞り込んだあと。表に出すのは`visibleOthers`。
     private var others: [WorkspaceItem] = []
     private var visibleOthers: [WorkspaceItem] = []
-    /// 束に属するものと、その定義。表示された瞬間はまだ大きさが決まっていないので、
+    /// グループに属するものと、その定義。表示された瞬間はまだ大きさが決まっていないので、
     /// 組むのを`layout()`まで待てるように控えておく。
     private var groupedItems: [WorkspaceItem] = []
     private var itemGroups: WorkspaceItemGroups?
@@ -44,7 +44,7 @@ final class WorkspaceMapView: NSView {
     private var hoveredName: String?
     /// ドラッグ中に狙っている島。枠を強くして、どこに入るか見せる。
     private var dropTargetIsland: String?
-    /// 「新しい束」の枠を狙っているか。
+    /// 「新しいグループ」の枠を狙っているか。
     private var dropTargetIsNewGroup = false
     /// 島を畳んで一覧だけを見ているか。
     private var showsOthersOnly = false
@@ -54,7 +54,7 @@ final class WorkspaceMapView: NSView {
 
     /// 右の「その他」欄。名前順の一覧なので、力学ではなく素直な表で出す。
     private let othersScroll = NSScrollView()
-    private let othersTable = NSTableView()
+    private let othersTable = WorkspaceOthersTable()
     private let othersHeader = NSTextField(labelWithString: "")
     private let othersFilter = NSSearchField()
     private let othersOnlyToggle = NSButton()
@@ -91,14 +91,14 @@ final class WorkspaceMapView: NSView {
         // 地図は自前で描く。背景はレイヤに持たせる — `draw`で塗ると自分の枠を
         // 越えて上のナビゲーションバーまで消してしまった。
         mapArea.layer?.backgroundColor = IntegratedPanelTheme.background.cgColor
-        // 右の一覧から島へ引いて束に入れられるように。ファイルは動かない。
+        // 右の一覧から島へ引いてグループに入れられるように。ファイルは動かない。
         mapArea.registerForDraggedTypes([.fileURL])
 
         othersHeader.font = .systemFont(ofSize: 11, weight: .semibold)
         othersHeader.textColor = IntegratedPanelTheme.secondaryText
 
-        // 束に入れていないものは数が多い（この環境では123）。名前順に並べても
-        // 目で追うには長いので、絞り込みを付ける。地図の側は束が場所を示すから
+        // グループに入れていないものは数が多い（この環境では123）。名前順に並べても
+        // 目で追うには長いので、絞り込みを付ける。地図の側はグループが場所を示すから
         // 要らないが、こちらは一覧なので要る。
         othersFilter.placeholderString = "その他を絞り込む"
         othersFilter.controlSize = .small
@@ -108,15 +108,15 @@ final class WorkspaceMapView: NSView {
         othersFilter.target = self
         othersFilter.action = #selector(othersFilterChanged)
 
-        // 島を畳んで一覧を全幅にする。束に入れていないものを見渡して、
-        // どれを束ねるか決めるための眺め方。
+        // 島を畳んで一覧を全幅にする。グループに入れていないものを見渡して、
+        // どれをまとめるか決めるための眺め方。
         othersOnlyToggle.setButtonType(.switch)
         othersOnlyToggle.title = "これだけ"
         othersOnlyToggle.font = .systemFont(ofSize: 10.5)
         othersOnlyToggle.controlSize = .small
         othersOnlyToggle.target = self
         othersOnlyToggle.action = #selector(toggleOthersOnly)
-        othersOnlyToggle.toolTip = "束に属さないものだけを、幅いっぱいで見る"
+        othersOnlyToggle.toolTip = "グループに属さないものだけを、幅いっぱいで見る"
 
         othersTable.headerView = nil
         othersTable.rowHeight = Self.othersRowHeight
@@ -129,6 +129,13 @@ final class WorkspaceMapView: NSView {
         othersTable.delegate = self
         othersTable.target = self
         othersTable.doubleAction = #selector(openOtherRow)
+        // 一覧でもSpaceでプレビューできるように。地図側と同じ手が通る。
+        othersTable.onQuickLook = { [weak self] in self?.onQuickLook?() }
+        othersTable.onOpen = { [weak self] in
+            guard let self, let row = self.othersTable.selectedRowIndexes.first,
+                  self.visibleOthers.indices.contains(row) else { return }
+            self.onOpen?(self.visibleOthers[row])
+        }
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("other"))
         column.resizingMask = .autoresizingMask
         othersTable.addTableColumn(column)
@@ -171,8 +178,8 @@ final class WorkspaceMapView: NSView {
         mapArea.needsDisplay = true
     }
 
-    /// 束の色は一覧の見出しと共有する（`WorkspaceGroupPalette`）。別々に配ると、
-    /// 一覧で青かった束が地図では緑になり、色を覚える意味がなくなる。
+    /// グループの色は一覧の見出しと共有する（`WorkspaceGroupPalette`）。別々に配ると、
+    /// 一覧で青かったグループが地図では緑になり、色を覚える意味がなくなる。
     private func assignColors(for groups: WorkspaceItemGroups?) {
         groupColors = WorkspaceGroupPalette.colors(for: groups)
     }
@@ -223,7 +230,7 @@ final class WorkspaceMapView: NSView {
         // その他が無いフォルダでは欄を出さない。空の帯は場所の無駄。
         let showsOthers = !others.isEmpty
         // 「これだけ」なら島を畳んで一覧を全幅にする。落とし先の島が無くなるので
-        // 束へ入れる操作はできなくなる — 見渡すための眺め方と割り切る。
+        // グループへ入れる操作はできなくなる — 見渡すための眺め方と割り切る。
         let othersOnly = showsOthersOnly && showsOthers
         let width = othersOnly
             ? max(Double(bounds.width), 1)
@@ -346,17 +353,19 @@ final class WorkspaceMapView: NSView {
         // どこを押したのか手応えが合わない。
         for node in clusterLayout.nodes { drawRowHighlight(node) }
         drawBridges(clusterLayout)
-        // 島の中は整列しているので、名前は場所を取り合わない。全部書ける。
-        for node in clusterLayout.nodes {
-            drawCircle(node)
-            drawLabel(node, in: clusterLayout)
+        // 島の中は整列しているので取り合わないが、境界に立つ点は互いに近づく。
+        // 置いた矩形を覚えながら描く。
+        var taken: [NSRect] = []
+        for node in clusterLayout.nodes { drawCircle(node) }
+        for node in clusterLayout.nodes.sorted(by: { labelPriority(of: $0) > labelPriority(of: $1) }) {
+            drawLabel(node, in: clusterLayout, avoiding: &taken)
         }
     }
 
     private func drawEmptyMessage(in rect: NSRect) {
         let text = others.isEmpty
             ? "このフォルダには何もありません"
-            : "束がありません。右クリックの「束に入れる」から作れます。"
+            : "グループがありません。右クリックの「グループに入れる」から作れます。"
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12),
             .foregroundColor: IntegratedPanelTheme.secondaryText
@@ -368,10 +377,10 @@ final class WorkspaceMapView: NSView {
         )
     }
 
-    /// 「新しい束」の枠。破線にしてあるのは、まだ何も無い場所だと分かるように。
+    /// 「新しいグループ」の枠。破線にしてあるのは、まだ何も無い場所だと分かるように。
     ///
-    /// 地図の上で束を作れないと、右クリックのメニューを知っている人しか束を
-    /// 作れない。束が一つも無いフォルダでは、これが唯一の入口になる。
+    /// 地図の上でグループを作れないと、右クリックのメニューを知っている人しかグループを
+    /// 作れない。グループが一つも無いフォルダでは、これが唯一の入口になる。
     private func drawNewGroupSlot(_ clusterLayout: WorkspaceClusterLayout) {
         guard let slot = clusterLayout.newGroupSlot else { return }
         let color = IntegratedPanelTheme.secondaryText
@@ -387,8 +396,8 @@ final class WorkspaceMapView: NSView {
         path.stroke()
 
         let text = clusterLayout.islands.isEmpty
-            ? "＋ ここに引いて最初の束を作る"
-            : "＋ 新しい束"
+            ? "＋ ここに引いて最初のグループを作る"
+            : "＋ 新しいグループ"
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12, weight: .medium),
             .foregroundColor: color.withAlphaComponent(dropTargetIsNewGroup ? 0.95 : 0.6)
@@ -406,24 +415,28 @@ final class WorkspaceMapView: NSView {
 
     private func titleRect(of island: WorkspaceClusterLayout.Island) -> NSRect {
         NSRect(
-            x: island.frame.minX + 12,
-            y: island.frame.minY + 6,
-            width: island.frame.width - 24,
+            x: island.contentFrame.minX + 12,
+            y: island.contentFrame.minY + 6,
+            width: max(island.contentFrame.width - 24, 1),
             height: WorkspaceClusterLayout.islandTitleHeight - 6
         )
     }
 
-    /// 島。薄い地色と、内側の上端に置いた束名。
+    /// 島。薄い地色と、内側の上端に置いたグループ名。
     ///
-    /// 束名を島の外に出していた時期があったが、場所を食うし束が増えると衝突する。
-    /// 内側に固定すれば、島がどこまでかと何の束かが一度に読める。
+    /// グループ名を島の外に出していた時期があったが、場所を食うしグループが増えると衝突する。
+    /// 内側に固定すれば、島がどこまでかと何のグループかが一度に読める。
     private func draw(_ island: WorkspaceClusterLayout.Island) {
         let color = groupColors[island.name] ?? .systemGray
         let isTarget = dropTargetIsland == island.name
-        let path = NSBezierPath(roundedRect: island.frame, xRadius: 12, yRadius: 12)
-        color.withAlphaComponent(isTarget ? 0.24 : 0.10).setFill()
+        let radius: CGFloat = island.depth == 0 ? 12 : 9
+        let path = NSBezierPath(roundedRect: island.frame, xRadius: radius, yRadius: radius)
+        // 入れ子は地色の濃さで示す。親（外）は薄く、子（内）は少し濃く — 内側が
+        // 前に出て見えるので、含まれている側が分かる。
+        let fill = island.depth == 0 ? 0.08 : 0.15
+        color.withAlphaComponent(isTarget ? 0.26 : fill).setFill()
         path.fill()
-        color.withAlphaComponent(isTarget ? 0.95 : 0.34).setStroke()
+        color.withAlphaComponent(isTarget ? 0.95 : (island.depth == 0 ? 0.28 : 0.42)).setStroke()
         path.lineWidth = isTarget ? 2.5 : 1
         path.stroke()
 
@@ -433,7 +446,7 @@ final class WorkspaceMapView: NSView {
         ]
         let rect = titleRect(of: island)
         var title = island.name
-        // 島が狭ければ束名を詰める。名前が枠を越えると隣の島に食い込む。
+        // 島が狭ければグループ名を詰める。名前が枠を越えると隣の島に食い込む。
         while title.size(withAttributes: attributes).width > rect.width, title.count > 2 {
             title = String(title.dropLast())
         }
@@ -441,9 +454,9 @@ final class WorkspaceMapView: NSView {
         title.draw(at: NSPoint(x: rect.minX, y: rect.minY), withAttributes: attributes)
     }
 
-    /// 橋。複数の束に属するノードから、属する島の中心へ引く。
+    /// 橋。複数のグループに属するノードから、属する島の中心へ引く。
     ///
-    /// 同じ束の全ペアを結んでいたころは6束29項目で百本を超え、それが密度の主因
+    /// 同じグループの全ペアを結んでいたころは6グループ29項目で百本を超え、それが密度の主因
     /// だった。ここで描くのは重なりのぶんだけ — この環境では4本になる。
     private func drawBridges(_ clusterLayout: WorkspaceClusterLayout) {
         for index in clusterLayout.bridges {
@@ -500,7 +513,7 @@ final class WorkspaceMapView: NSView {
         )
         let circle = NSBezierPath(ovalIn: rect)
 
-        // 複数の束に属するものは、その全部の色で塗り分ける。一覧では二行に
+        // 複数のグループに属するものは、その全部の色で塗り分ける。一覧では二行に
         // 割れてしまうものが、ここでは一つの点として両方の色を持つ。
         let colors = node.groups.compactMap { groupColors[$0] }
         if colors.count == 1 {
@@ -546,7 +559,11 @@ final class WorkspaceMapView: NSView {
     ///
     /// 島の中は等間隔に並んでいるので取り合いが起きず、**全部の名前が必ず出る**。
     /// 力学で散らしていたころは席が競合し、7項目のうち3つしか名前が出なかった。
-    private func drawLabel(_ node: WorkspaceClusterLayout.Node, in clusterLayout: WorkspaceClusterLayout) {
+    private func drawLabel(
+        _ node: WorkspaceClusterLayout.Node,
+        in clusterLayout: WorkspaceClusterLayout,
+        avoiding taken: inout [NSRect]
+    ) {
         let isProminent = hoveredName == node.name || selectedNames.contains(node.name)
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 11, weight: isProminent ? .semibold : .regular),
@@ -555,7 +572,7 @@ final class WorkspaceMapView: NSView {
                 : IntegratedPanelTheme.secondaryText
         ]
 
-        // 名前を置ける幅。島から出すと、どの束のものか分からなくなる。
+        // 名前を置ける幅。島から出すと、どのグループのものか分からなくなる。
         let frames = node.groups.compactMap { clusterLayout.island(named: $0)?.frame }
         var union = frames.first ?? mapArea.bounds
         for frame in frames.dropFirst() { union = union.union(frame) }
@@ -574,10 +591,9 @@ final class WorkspaceMapView: NSView {
 
         switch node.labelPlacement {
         case .trailing:
-            shown.draw(
-                at: NSPoint(x: node.position.x + r + 6, y: node.position.y - 7.5),
-                withAttributes: attributes
-            )
+            let origin = NSPoint(x: node.position.x + r + 6, y: node.position.y - 7.5)
+            taken.append(NSRect(origin: origin, size: size))
+            shown.draw(at: origin, withAttributes: attributes)
         case .below:
             // 境界に立つ点は島の**外**にいるので、名前も島の外へ置く。島の枠や
             // 中身に重ねると、どちらも読めないうえ、その島のメンバーに見えてしまう。
@@ -596,22 +612,28 @@ final class WorkspaceMapView: NSView {
             let clear = candidates.first { origin in
                 let rect = NSRect(origin: origin, size: size)
                 return !islands.contains { $0.intersects(rect) }
+                    && !taken.contains { $0.intersects(rect.insetBy(dx: -2, dy: -1)) }
                     && mapArea.bounds.contains(rect)
             }
-            shown.draw(at: clear ?? candidates[0], withAttributes: attributes)
+            let origin = clear ?? candidates[0]
+            taken.append(NSRect(origin: origin, size: size))
+            shown.draw(at: origin, withAttributes: attributes)
         }
     }
 
     /// 中身の無い島に、何をすればいいかを出す。
     ///
-    /// 束を作った直後は必ずこれになる。空の枠だけだと「作ったのに何も無い」と
+    /// グループを作った直後は必ずこれになる。空の枠だけだと「作ったのに何も無い」と
     /// 見えて、次に何をするのか分からない。
     private func drawEmptyIslandHint(
         _ island: WorkspaceClusterLayout.Island,
         in clusterLayout: WorkspaceClusterLayout
     ) {
+        // 「入りきらなくて出せていない」island と「本当に空」を混同しない。
+        // overflow があるのに「ここに引いて入れる」と出すと、入っているものを
+        // 無かったことにする。
         let hasMembers = clusterLayout.nodes.contains { $0.groups.contains(island.name) }
-        guard !hasMembers, island.missing == 0 else { return }
+        guard !hasMembers, island.overflow == 0, island.missing == 0 else { return }
         let color = groupColors[island.name] ?? .systemGray
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 11),
@@ -673,7 +695,7 @@ final class WorkspaceMapView: NSView {
 
     /// 地図の上のクリック。座標は地図の座標系で渡ってくる。
     func handleMapClick(at point: CGPoint, event: NSEvent) {
-        // 「新しい束」の枠を押したら、選んでいるもので束を作る。
+        // 「新しいグループ」の枠を押したら、選んでいるものでグループを作る。
         if clusterLayout?.node(at: point) == nil,
            clusterLayout?.island(at: point) == nil,
            clusterLayout?.newGroupSlot?.contains(point) == true {
@@ -685,7 +707,7 @@ final class WorkspaceMapView: NSView {
             onPruneMissing?()
             return
         }
-        // 束の名前を押したら、その束のものをまとめて選ぶ。束ごとに何かする
+        // グループの名前を押したら、そのグループのものをまとめて選ぶ。グループごとに何かする
         // （まとめて外す、まとめて開く）ときの入口になる。
         if clusterLayout?.node(at: point) == nil,
            let island = clusterLayout?.islands.first(where: { titleRect(of: $0).contains(point) }) {
@@ -878,6 +900,35 @@ extension WorkspaceMapView: NSTableViewDataSource, NSTableViewDelegate {
     }
 }
 
+/// 右の一覧。Spaceでプレビュー、⌘↓で開く。
+///
+/// 素の`NSTableView`はSpaceに何も割り当てていない。地図側でSpaceが効くのに一覧では
+/// 効かないと、同じ画面のなかで手が変わる。
+@MainActor
+private final class WorkspaceOthersTable: NSTableView {
+    var onQuickLook: (() -> Void)?
+    var onOpen: (() -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        switch FinderLikeBrowserKeyboard.action(
+            charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+            modifierFlags: event.modifierFlags
+        ) {
+        case .quickLook:
+            onQuickLook?()
+        case .rename:
+            // ここは眺めるための一覧。名前を変えるなら一覧表示へ戻ってもらう。
+            NSSound.beep()
+        case .forwardToAppKit:
+            if event.modifierFlags.contains(.command), event.specialKey == .downArrow {
+                onOpen?()
+            } else {
+                super.keyDown(with: event)
+            }
+        }
+    }
+}
+
 /// 地図の描画を受け持つだけのビュー。`WorkspaceMapView`本体に直接描くと、
 /// 右の一覧の下にまで地図が回り込む。
 @MainActor
@@ -966,7 +1017,7 @@ final class WorkspaceMapCanvas: NSView {
 }
 
 /// 「その他」欄の一行。アイコンと名前だけ — ここは探すための一覧で、
-/// 束との関係は無いので出すものがない。
+/// グループとの関係は無いので出すものがない。
 @MainActor
 private final class WorkspaceOtherCellView: NSTableCellView {
     private let iconView = NSImageView()

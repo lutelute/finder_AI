@@ -73,14 +73,14 @@ struct FileColumnLayoutTests {
         #expect(tight >= 220)
     }
 
-    /// 「束」の列を常に出すと、名前から150pt削られて狭い窓では横スクロールが出た。
+    /// 「グループ」の列を常に出すと、名前から150pt削られて狭い窓では横スクロールが出た。
     /// 所属は見出しでも読めるので、列は出したい人だけが出す。既定で出す形に戻すと
     /// このテストが落ちる。
-    @Test("「束」の列は既定で隠れている")
+    @Test("「グループ」の列は既定で隠れている")
     func groupColumnIsHiddenByDefault() {
         let all = Browser.makeFileColumns()
-        let groups = all.first { $0.title == "束" }
-        #expect(groups != nil, "束の列そのものは在る")
+        let groups = all.first { $0.title == "グループ" }
+        #expect(groups != nil, "グループの列そのものは在る")
         #expect(groups?.isHidden == true)
         #expect(columns().count == 4, "幅の計算に入るのは見えている4列だけ")
     }
