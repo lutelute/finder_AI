@@ -1,4 +1,5 @@
 import AppKit
+import FinderAICore
 import Testing
 
 @testable import FinderAIApp
@@ -104,6 +105,43 @@ struct MainMenuShortcutTests {
         let cycle = item("表示モードを切り替え")
         #expect(cycle?.keyEquivalent == "2")
         #expect(cycle?.keyEquivalentModifierMask == [.command, .option])
+    }
+
+    /// ⌥⌘Tと⌥⌘Sは、実機でキーを送って初めて「届いていない」と分かった。
+    /// 気付くまでに要ったのは人の手と時間で、しかも3回送るまでは自動操作の
+    /// 取りこぼしと見分けが付かなかった。
+    ///
+    /// システム環境設定に登録されているぶんだけは読めば分かるので、
+    /// 人手を待たずにここで突き合わせる。**通っても「届く」の証明にはならない**
+    /// ——AppKitが自前で足す項目（⌥⌘Tのツールバー等）や他の常駐アプリが
+    /// 握る鍵はここに現れない。潰せるのは一種類だけ。
+    @Test("macOSに登録済みの鍵を名乗っていない")
+    func noMenuKeyIsTakenBySystemSettings() {
+        let reserved = ReservedSystemShortcuts.current()
+        // 読めない環境（サンドボックス下など）で空振りしても意味が無いので、
+        // 何も読めなかったことが分かるようにしておく。
+        guard !reserved.isEmpty else { return }
+
+        for entry in items(in: menu()) where !entry.keyEquivalent.isEmpty {
+            var modifiers = UInt(entry.keyEquivalentModifierMask.rawValue)
+            // 大文字の鍵は⇧込みの意味になる。小文字へ落としたぶんを補う。
+            if entry.keyEquivalent.count == 1,
+               entry.keyEquivalent.uppercased() == entry.keyEquivalent,
+               entry.keyEquivalent.lowercased() != entry.keyEquivalent {
+                modifiers |= SystemShortcut.shift
+            }
+            let shortcut = SystemShortcut(
+                key: ReservedSystemShortcuts.normalizedKey(entry.keyEquivalent),
+                modifiers: modifiers
+            )
+            #expect(
+                !reserved.contains(shortcut),
+                """
+                \(shortcut.label)（“\(entry.title)”）はmacOS側が押さえている。
+                押しても項目まで届かないので、別の鍵へ移すこと。
+                """
+            )
+        }
     }
 
     @Test("commands that only existed in the context menu are now in ファイル")
