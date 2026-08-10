@@ -429,7 +429,23 @@ final class WorkspaceBrowserViewController: NSViewController {
     private let themePainter = ThemedLayerPainter()
     private let watcher = DirectoryWatcher()
     private var allItems: [WorkspaceItem] = []
-    private var displayedItems: [WorkspaceItem] = []
+    private var displayedItems: [WorkspaceItem] = [] {
+        didSet { rebuildFileRows() }
+    }
+
+    /// listビューの行。見出しが挟まるので行番号と`displayedItems`の添字は一致しない。
+    /// 束の定義が無いフォルダでは見出しが0本になり、行番号＝添字に戻る。
+    private enum FileRow: Equatable {
+        case header(String)
+        /// `displayedItems`の添字。複数の束に属する項目は、同じ添字を複数の行が指す。
+        case item(Int)
+    }
+
+    private var fileRows: [FileRow] = []
+    private var itemGroups: WorkspaceItemGroups?
+    /// 定義が読めなかったときの理由。見出しは出さないが、黙って無かったことにはしない。
+    private var itemGroupsError: String?
+    private static let ungroupedTitle = "未分類"
     private var listingTask: Task<Void, Never>?
     private var cloudStatusTask: Task<Void, Never>?
     private var loadingIndicatorTask: Task<Void, Never>?
@@ -1632,6 +1648,9 @@ final class WorkspaceBrowserViewController: NSViewController {
                     of: directory,
                     showHiddenFiles: showHidden
                 )
+                // 束の定義は一覧と同じ往復で読む。小さなローカルファイルなので、
+                // クラウドキーと違って一覧を待たせない。
+                let groups = Result { try WorkspaceItemGroups.load(from: directory) }
                 // A folder can look empty because every item carries the
                 // hidden flag (desktop-cleanup tools do this to ~/Desktop).
                 // Count what is really there — only for empty results, so the
@@ -1640,7 +1659,12 @@ final class WorkspaceBrowserViewController: NSViewController {
                     ? WorkspaceDirectoryListing.itemCountIncludingHidden(of: directory)
                     : 0
                 guard !Task.isCancelled else { return }
-                await self?.applyListing(items, for: directory, hiddenItemCount: hiddenCount)
+                await self?.applyListing(
+                    items,
+                    for: directory,
+                    hiddenItemCount: hiddenCount,
+                    groups: groups
+                )
             } catch is CancellationError {
                 return
             } catch {
@@ -1653,11 +1677,25 @@ final class WorkspaceBrowserViewController: NSViewController {
     private func applyListing(
         _ items: [WorkspaceItem],
         for directory: URL,
-        hiddenItemCount: Int = 0
+        hiddenItemCount: Int = 0,
+        groups: Result<WorkspaceItemGroups?, any Error> = .success(nil)
     ) {
         guard navigator.currentDirectory == directory else { return }
         endLoadingIndicator()
         recursiveSearchErrorShown = false
+
+        // 読めなかった定義は「束が無い」ことにしない。見出しは出せないが、
+        // 出せなかったことは状態行に残す — 黙って消えると、書いた束が
+        // 失われたのか自分の書き方が悪いのか分からない。
+        switch groups {
+        case .success(let loaded):
+            itemGroups = loaded
+            itemGroupsError = nil
+        case .failure(let error):
+            itemGroups = nil
+            itemGroupsError = "\(WorkspaceItemGroups.fileName) を読めません: \(error.localizedDescription)"
+        }
+
         allItems = items
         updateSearchResults()
         selectPendingItemIfNeeded()
@@ -1919,6 +1957,50 @@ final class WorkspaceBrowserViewController: NSViewController {
         updateStatus()
     }
 
+    /// 見出しを挟んだ行の並びを組み直す。
+    ///
+    /// 束が定義されていなければ行と添字は一対一で、既存の一覧とまったく同じ形になる。
+    /// 配下検索の結果にも見出しを出さない — 別の階層から集まった項目が並んでいて、
+    /// 「このフォルダの中をどう束ねたか」とは無関係だから。
+    private func rebuildFileRows() {
+        guard let groups = itemGroups,
+              !groups.groups.isEmpty,
+              !usesRecursiveSearch else {
+            fileRows = displayedItems.indices.map(FileRow.item)
+            return
+        }
+
+        var indexByURL: [URL: Int] = [:]
+        indexByURL.reserveCapacity(displayedItems.count)
+        for (index, item) in displayedItems.enumerated() { indexByURL[item.url] = index }
+
+        var rows: [FileRow] = []
+        for section in groups.sections(for: displayedItems) {
+            rows.append(.header(section.name ?? Self.ungroupedTitle))
+            rows.append(contentsOf: section.items.compactMap { indexByURL[$0.url].map(FileRow.item) })
+        }
+        fileRows = rows
+    }
+
+    /// 行番号から項目を引く。見出しの行はnil。
+    private func item(atRow row: Int) -> WorkspaceItem? {
+        guard fileRows.indices.contains(row), case .item(let index) = fileRows[row] else { return nil }
+        return displayedItems.indices.contains(index) ? displayedItems[index] : nil
+    }
+
+    private func isHeaderRow(_ row: Int) -> Bool {
+        guard fileRows.indices.contains(row), case .header = fileRows[row] else { return false }
+        return true
+    }
+
+    /// 複数の束に属する項目は複数の行にいるので、URLひとつが複数の行番号を返しうる。
+    private func fileRowIndexes(matching urls: Set<URL>) -> IndexSet {
+        IndexSet(fileRows.indices.filter { row in
+            guard let item = item(atRow: row) else { return false }
+            return urls.contains(item.url)
+        })
+    }
+
     private func applyFilterAndSort() {
         let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let items = query.isEmpty
@@ -1963,9 +2045,10 @@ final class WorkspaceBrowserViewController: NSViewController {
         let selectedCount = selectedItems.count
         let prefix = usesRecursiveSearch ? "配下検索: " : ""
         let truncation = recursiveSearchIsTruncated ? "（上限5,000件）" : ""
+        let warning = itemGroupsError.map { " ⚠︎ \($0)" } ?? ""
         statusLabel.stringValue = selectedCount > 0
-            ? "\(prefix)\(displayedItems.count)項目\(truncation) — \(selectedCount)項目を選択"
-            : "\(prefix)\(displayedItems.count)項目\(truncation)"
+            ? "\(prefix)\(displayedItems.count)項目\(truncation) — \(selectedCount)項目を選択\(warning)"
+            : "\(prefix)\(displayedItems.count)項目\(truncation)\(warning)"
     }
 
     private var selectedItems: [WorkspaceItem] {
@@ -1983,8 +2066,11 @@ final class WorkspaceBrowserViewController: NSViewController {
         case .list:
             break
         }
-        return fileTable.selectedRowIndexes.compactMap { index in
-            displayedItems.indices.contains(index) ? displayedItems[index] : nil
+        // 同じ項目が複数の束に並ぶので、行をそのまま集めると同じものが二度入る。
+        var seen: Set<URL> = []
+        return fileTable.selectedRowIndexes.compactMap { row in
+            guard let item = item(atRow: row), seen.insert(item.url).inserted else { return nil }
+            return item
         }
     }
 
@@ -1992,10 +2078,13 @@ final class WorkspaceBrowserViewController: NSViewController {
     /// Columnの深い階層から来た項目は現在の結果に無ければ安全に無視する。
     private func restoreFlatSelection(_ urls: [URL]) {
         let wanted = Set(urls)
-        let indexes = IndexSet(displayedItems.indices.filter { wanted.contains(displayedItems[$0].url) })
-        fileTable.selectRowIndexes(indexes, byExtendingSelection: false)
+        // listは見出しの分だけ行がずれ、複数の束に属する項目は複数の行にいる。
+        // galleryは見出しを持たないので添字のまま。
+        fileTable.selectRowIndexes(fileRowIndexes(matching: wanted), byExtendingSelection: false)
         galleryView.selectionIndexPaths = Set(
-            indexes.map { IndexPath(item: $0, section: 0) }
+            displayedItems.indices
+                .filter { wanted.contains(displayedItems[$0].url) }
+                .map { IndexPath(item: $0, section: 0) }
         )
         updateStatus()
     }
@@ -2129,14 +2218,12 @@ final class WorkspaceBrowserViewController: NSViewController {
     }
 
     private func beginListRename(at row: Int) {
-        guard displayedItems.indices.contains(row),
+        guard let item = item(atRow: row),
               fileTable.selectedRowIndexes == IndexSet(integer: row) else { return }
-        let item = displayedItems[row]
         fileTable.scrollRowToVisible(row)
         DispatchQueue.main.async { [weak self] in
             guard let self,
-                  self.displayedItems.indices.contains(row),
-                  self.displayedItems[row].url == item.url,
+                  self.item(atRow: row)?.url == item.url,
                   let nameColumn = self.fileTable.tableColumns.firstIndex(
                     where: { $0.identifier == Column.name }
                   ),
@@ -2609,23 +2696,25 @@ extension WorkspaceBrowserViewController: @preconcurrency QLPreviewPanelDataSour
 
 extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDelegate {
     func numberOfRows(in tableView: NSTableView) -> Int {
-        tableView === sidebarTable ? sidebarRows.count : displayedItems.count
+        tableView === sidebarTable ? sidebarRows.count : fileRows.count
     }
 
     func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool {
-        guard tableView === sidebarTable, sidebarRows.indices.contains(row) else { return false }
+        guard tableView === sidebarTable else { return isHeaderRow(row) }
+        guard sidebarRows.indices.contains(row) else { return false }
         if case .header = sidebarRows[row] { return true }
         return false
     }
 
     /// Headers are labels, not destinations.
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
-        guard tableView === sidebarTable else { return true }
-        return !self.tableView(tableView, isGroupRow: row)
+        !self.tableView(tableView, isGroupRow: row)
     }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        guard tableView === sidebarTable else { return 27 }
+        guard tableView === sidebarTable else {
+            return self.tableView(tableView, isGroupRow: row) ? 22 : 27
+        }
         // 詰めた行高: よく使うフォルダをスクロールなしで一覧できる数が優先。
         return self.tableView(tableView, isGroupRow: row) ? 20 : 23
     }
@@ -2656,8 +2745,17 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
             }
         }
 
-        guard displayedItems.indices.contains(row), let tableColumn else { return nil }
-        let item = displayedItems[row]
+        // 束の見出し。名前列を持たない一行で、列の途中から始まると見出しに見えない。
+        if fileRows.indices.contains(row), case .header(let title) = fileRows[row] {
+            let cell = tableView.makeView(
+                withIdentifier: NSUserInterfaceItemIdentifier("WorkspaceGroupHeader"),
+                owner: self
+            ) as? WorkspaceSidebarHeaderView ?? WorkspaceSidebarHeaderView()
+            cell.configure(title: title)
+            return cell
+        }
+
+        guard let item = item(atRow: row), let tableColumn else { return nil }
         if tableColumn.identifier == Column.name {
             let cell = tableView.makeView(
                 withIdentifier: NSUserInterfaceItemIdentifier("WorkspaceNameCell"),
@@ -2753,8 +2851,8 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
         _ tableView: NSTableView,
         pasteboardWriterForRow row: Int
     ) -> (any NSPasteboardWriting)? {
-        guard tableView === fileTable, displayedItems.indices.contains(row) else { return nil }
-        return WorkspaceDragDrop.pasteboardWriter(for: displayedItems[row].url)
+        guard tableView === fileTable, let item = item(atRow: row) else { return nil }
+        return WorkspaceDragDrop.pasteboardWriter(for: item.url)
     }
 
     func tableView(
@@ -2782,9 +2880,12 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
         }
 
         guard tableView === fileTable else { return [] }
+        // 束の見出しは今のところ落とし先ではない。ここで現在のフォルダへの移動に
+        // 落とすと、見出しを狙った手が黙ってファイルを動かすことになる。
+        if isHeaderRow(row), dropOperation == .on { return [] }
         let destination: URL
-        if displayedItems.indices.contains(row), displayedItems[row].isDirectory {
-            destination = displayedItems[row].url
+        if let item = item(atRow: row), item.isDirectory {
+            destination = item.url
             tableView.setDropRow(row, dropOperation: .on)
         } else {
             destination = navigator.currentDirectory
@@ -2805,8 +2906,10 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
             guard let sidebarDestination = sidebarDropDestination(at: row) else { return false }
             destination = sidebarDestination
         } else if tableView === fileTable {
-            destination = displayedItems.indices.contains(row) && displayedItems[row].isDirectory
-                ? displayedItems[row].url
+            if isHeaderRow(row), dropOperation == .on { return false }
+            let target = item(atRow: row)
+            destination = target?.isDirectory == true
+                ? (target?.url ?? navigator.currentDirectory)
                 : navigator.currentDirectory
         } else {
             return false

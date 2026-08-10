@@ -136,18 +136,38 @@ struct WorkspaceItemGroupsTests {
         #expect(groups.groups[0].members.contains("別マシンにしかない"))
     }
 
-    @Test("束の順序は定義した順、束の中は通常の並び順")
-    func orderFollowsDefinitionThenSort() {
+    @Test("束同士の順序は定義した順")
+    func groupOrderFollowsDefinition() {
         var groups = WorkspaceItemGroups()
         groups.add("zebra", to: "あとの束")
-        groups.add("apple", to: "あとの束")
         groups.add("mango", to: "さきの束")
         groups.groups.reverse()
 
-        let sections = groups.sections(for: [item("zebra"), item("apple"), item("mango")])
+        let sections = groups.sections(for: [item("zebra"), item("mango")])
 
         #expect(sections.map(\.name) == ["さきの束", "あとの束"])
-        #expect(sections[1].items.map(\.name) == ["apple", "zebra"])
+    }
+
+    /// 並び順を決めるのは一覧の列見出しであって、束ねる側ではない。ここで並べ替えると
+    /// 「更新日で並べたのに束の中だけ名前順のまま」になる。
+    @Test("束の中の順序は、渡された並びのまま")
+    func itemOrderIsPreserved() {
+        var groups = WorkspaceItemGroups()
+        for name in ["zebra", "apple", "mango"] { groups.add(name, to: "束") }
+
+        // 更新日順のつもりで、名前順ではない並びを渡す
+        let sections = groups.sections(for: [item("zebra"), item("mango"), item("apple")])
+
+        #expect(sections[0].items.map(\.name) == ["zebra", "mango", "apple"])
+    }
+
+    @Test("未分類の中も、渡された並びのまま")
+    func ungroupedOrderIsPreserved() {
+        let groups = WorkspaceItemGroups(groups: [.init(name: "束", members: ["mango"])])
+
+        let sections = groups.sections(for: [item("zebra"), item("mango"), item("apple")])
+
+        #expect(sections[1].items.map(\.name) == ["zebra", "apple"])
     }
 
     // MARK: - ファイル

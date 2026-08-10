@@ -130,30 +130,24 @@ public extension WorkspaceItemGroups {
     ///
     /// 定義にあるが実物が無い名前は黙って落ちる。別のマシンにしか無いフォルダの定義を
     /// 消さずに持っておけるのは、ここで存在を要求しないから。
-    func sections(
-        for items: [WorkspaceItem],
-        sortedBy areInIncreasingOrder: (WorkspaceItem, WorkspaceItem) -> Bool
-            = WorkspaceDirectoryListing.defaultSort
-    ) -> [WorkspaceGroupSection] {
-        let byName = Dictionary(items.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+    ///
+    /// 束の**中**の順序は`items`の順序をそのまま引き継ぐ。名前で並べるか更新日で並べるかは
+    /// 一覧側がすでに決めていることで、束ねる側がそれを上書きすると、列見出しを
+    /// クリックしても束の中だけ並び替わらない、という妙な挙動になる。
+    /// 束**同士**の順序だけが定義の順。
+    func sections(for items: [WorkspaceItem]) -> [WorkspaceGroupSection] {
         var grouped: [WorkspaceGroupSection] = []
         var claimed: Set<String> = []
 
         for group in groups {
-            let members = group.members.compactMap { byName[$0] }
-            members.forEach { claimed.insert($0.name) }
-            grouped.append(
-                WorkspaceGroupSection(
-                    name: group.name,
-                    items: members.sorted(by: areInIncreasingOrder)
-                )
-            )
+            let members = Set(group.members)
+            let matched = items.filter { members.contains($0.name) }
+            matched.forEach { claimed.insert($0.name) }
+            grouped.append(WorkspaceGroupSection(name: group.name, items: matched))
         }
 
         let rest = items.filter { !claimed.contains($0.name) }
         guard !rest.isEmpty else { return grouped }
-        return grouped + [
-            WorkspaceGroupSection(name: nil, items: rest.sorted(by: areInIncreasingOrder))
-        ]
+        return grouped + [WorkspaceGroupSection(name: nil, items: rest)]
     }
 }
