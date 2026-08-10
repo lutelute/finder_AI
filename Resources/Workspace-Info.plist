@@ -47,7 +47,16 @@
 		</dict>
 		<dict>
 			<!-- ファイルを渡されたら、その隣（入れ物のフォルダ）を開いて選ぶ。
-			     何も起きないより期待に近い。 -->
+			     何も起きないより期待に近い。
+
+			     ただし、これで増えるのは`open -a`とドックへのドロップの受け口
+			     だけ。ファイルを右クリックした「このアプリケーションで開く」に
+			     FinderAIは出ない——LaunchServicesは`public.item`のように
+			     抽象的すぎる主張を一覧から外す（.txt／拡張子なし／未知の拡張子の
+			     いずれでも0件。`scripts/check-launch-services.sh`で測れる）。
+			     `public.data`のように具体的な型へ落とせば載る余地はある（未検証）
+			     が、中身を開けもしないアプリが全ファイルの右クリックに並ぶのは
+			     邪魔なので、載せにいかない。 -->
 			<key>CFBundleTypeName</key>
 			<string>Any file</string>
 			<key>CFBundleTypeRole</key>
