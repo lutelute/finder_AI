@@ -431,6 +431,7 @@ final class WorkspaceBrowserViewController: NSViewController {
     private var allItems: [WorkspaceItem] = []
     private var displayedItems: [WorkspaceItem] = []
     private var listingTask: Task<Void, Never>?
+    private var cloudStatusTask: Task<Void, Never>?
     private var loadingIndicatorTask: Task<Void, Never>?
     private var filterTask: Task<Void, Never>?
     private var recursiveSearchTask: Task<Void, Never>?
@@ -1616,6 +1617,7 @@ final class WorkspaceBrowserViewController: NSViewController {
     /// concurrent enumerations on the same volume.
     private func reloadContents() {
         listingTask?.cancel()
+        cloudStatusTask?.cancel()
         recursiveSearchTask?.cancel()
         recursiveSearchTask = nil
         recursiveSearchGeneration &+= 1
@@ -1670,6 +1672,50 @@ final class WorkspaceBrowserViewController: NSViewController {
         listingErrorLabel.isHidden = !allHidden
         showHiddenButton.isHidden = !allHidden
         openSettingsButton.isHidden = true
+        startCloudStatusRefresh(for: items, in: directory)
+    }
+
+    /// クラウドバッジは一覧を出したあとで埋める。File Provider配下（OneDrive等）
+    /// では`ubiquitousItem*`の取得がプロバイダのデーモンとの往復になり、一覧の
+    /// プリフェッチに混ぜると~/Documents/GitHubで最大62秒フォルダが出てこなかった。
+    /// バッジは「いま無い」ことを伝える装飾で、一覧そのものより後でよい。
+    private func startCloudStatusRefresh(for items: [WorkspaceItem], in directory: URL) {
+        cloudStatusTask?.cancel()
+        guard !items.isEmpty else { return }
+        let urls = items.map(\.url)
+        cloudStatusTask = Task.detached(priority: .utility) { [weak self] in
+            guard let statuses = try? WorkspaceDirectoryListing.cloudStatuses(for: urls),
+                  !statuses.isEmpty,
+                  !Task.isCancelled else { return }
+            await self?.applyCloudStatuses(statuses, for: directory)
+        }
+    }
+
+    /// バッジが付く行だけを描き直す。`reloadData`は選択とスクロール位置を巻き戻す
+    /// ので、あとから届く装飾には使わない — 一覧を読んでいる最中に足元が動く。
+    private func applyCloudStatuses(
+        _ statuses: [URL: WorkspaceCloudStatus],
+        for directory: URL
+    ) {
+        guard navigator.currentDirectory == directory else { return }
+        allItems = allItems.map { statuses[$0.url].map($0.withCloudStatus) ?? $0 }
+
+        var changedRows = IndexSet()
+        displayedItems = displayedItems.enumerated().map { index, item in
+            guard let status = statuses[item.url] else { return item }
+            changedRows.insert(index)
+            return item.withCloudStatus(status)
+        }
+        guard !changedRows.isEmpty else { return }
+
+        let nameColumn = fileTable.column(withIdentifier: Column.name)
+        if nameColumn >= 0 {
+            fileTable.reloadData(
+                forRowIndexes: changedRows,
+                columnIndexes: IndexSet(integer: nameColumn)
+            )
+        }
+        galleryView.reloadItems(at: Set(changedRows.map { IndexPath(item: $0, section: 0) }))
     }
 
     /// The failure lives *in* the list, not in a transient alert. An alert is

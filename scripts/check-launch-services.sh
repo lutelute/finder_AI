@@ -61,16 +61,30 @@ echo "== ファイルを右クリック →「このアプリケーションで�
 echo "  FinderAIが候補に出る: ${file_count:-0}件（0が現状。public.itemは一覧に載らない）"
 
 echo "== 登録されているFinderAI =="
+# 2件までは正常。`/Applications`の本物と、`build-workspace-app.sh`が毎回
+# 作る`dist/FinderAI.app`は必ず登録される。これを「残骸」と呼ぶと、
+# 次に見た人がdistを消してビルドし直すだけの無駄が生まれる。
+# 数えるべきは、そのどちらでもないもの——解凍しなおした「FinderAI 2.app」や、
+# 版が古いまま残ったビルド。
+strays=0
 if [ -n "$folder_apps" ]; then
-    echo "$folder_apps" | sed 's/^/  /'
-    if [ "${folder_count:-0}" -gt 1 ]; then
-        echo
-        echo "  ⚠️ 同じ名前が${folder_count}件ある。「このアプリケーションで開く」に並ぶのはこの全部で、"
-        echo "     どれが今のものか見分けられない。open -a FinderAI が古いほうへ当たることもある。"
-        echo "     心当たり: $ROOT/dist/ に残ったビルドや、zipを解凍しなおした「FinderAI 2.app」。"
-        echo "     消してから次で作り直す: rm -rf '$ROOT/dist' && ./scripts/build-workspace-app.sh"
-        status=1
-    fi
+    echo "$folder_apps" | while IFS= read -r path; do
+        case "$path" in
+            /Applications/FinderAI.app) printf '  %s  ← 使っているもの\n' "$path" ;;
+            "$ROOT/dist/FinderAI.app") printf '  %s  ← ビルド出力。毎回できるので正常\n' "$path" ;;
+            *) printf '  %s  ← 残骸\n' "$path" ;;
+        esac
+    done
+    strays=$(echo "$folder_apps" | grep -vcx -e "/Applications/FinderAI.app" -e "$ROOT/dist/FinderAI.app" || true)
+fi
+
+if [ "${strays:-0}" -gt 0 ]; then
+    echo
+    echo "  ⚠️ 身に覚えのないFinderAIが${strays}件ある。「このアプリケーションで開く」には"
+    echo "     この全部が並ぶので、どれが今のものか見分けられない。"
+    echo "     心当たり: zipを解凍しなおした「FinderAI 2.app」や、版が古いまま残ったビルド。"
+    echo "     dist/のものなら消してよい。次のビルドで作り直せる。"
+    status=1
 fi
 
 exit "$status"

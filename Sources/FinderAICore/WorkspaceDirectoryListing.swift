@@ -50,6 +50,21 @@ public struct WorkspaceItem: Equatable, Sendable, Identifiable {
         self.cloudStatus = cloudStatus
         self.relativePath = relativePath
     }
+
+    /// The same item with its badge filled in, for the after-the-fact cloud pass.
+    public func withCloudStatus(_ status: WorkspaceCloudStatus) -> WorkspaceItem {
+        WorkspaceItem(
+            url: url,
+            name: name,
+            isDirectory: isDirectory,
+            isHidden: isHidden,
+            fileSize: fileSize,
+            modifiedAt: modifiedAt,
+            typeDescription: typeDescription,
+            cloudStatus: status,
+            relativePath: relativePath
+        )
+    }
 }
 
 public struct WorkspaceSearchResult: Equatable, Sendable {
@@ -63,6 +78,15 @@ public struct WorkspaceSearchResult: Equatable, Sendable {
 }
 
 public enum WorkspaceDirectoryListing {
+    /// What a listing prefetches. Deliberately free of the `ubiquitousItem*` keys —
+    /// see `cloudStatuses(for:)` for why they are resolved separately.
+    private static let listingKeys: [URLResourceKey] = [
+        .isDirectoryKey,
+        .isHiddenKey,
+        .fileSizeKey,
+        .contentModificationDateKey
+    ]
+
     /// 配下を深さ優先で検索する。列挙・resource value取得の各段階でcancelを確認し、
     /// File Providerや大規模treeで古い検索が後からUIを上書きしないようにする。
     public static func recursiveSearch(
@@ -78,16 +102,7 @@ public enum WorkspaceDirectoryListing {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return WorkspaceSearchResult(items: [], isTruncated: false) }
 
-        let keys: [URLResourceKey] = [
-            .isDirectoryKey,
-            .isHiddenKey,
-            .fileSizeKey,
-            .contentModificationDateKey,
-            .isUbiquitousItemKey,
-            .ubiquitousItemDownloadingStatusKey,
-            .ubiquitousItemIsDownloadingKey,
-            .ubiquitousItemIsUploadingKey
-        ]
+        let keys = listingKeys
         var options: FileManager.DirectoryEnumerationOptions = [.skipsPackageDescendants]
         if !showHiddenFiles { options.insert(.skipsHiddenFiles) }
         var rootEnumerationError: (any Error)?
@@ -137,7 +152,6 @@ public enum WorkspaceDirectoryListing {
                 fileSize: values?.fileSize.map(Int64.init),
                 modifiedAt: values?.contentModificationDate,
                 typeDescription: typeDescription(for: value, isDirectory: isDirectory),
-                cloudStatus: cloudStatus(from: values),
                 relativePath: relative
             ))
         }
@@ -167,18 +181,9 @@ public enum WorkspaceDirectoryListing {
             throw CocoaError(.fileReadUnsupportedScheme)
         }
 
-        // The ubiquitous keys come back with the rest of the prefetch, so cloud
-        // status costs no extra round-trip (measured at 0.1–1.4ms per folder).
-        let keys: [URLResourceKey] = [
-            .isDirectoryKey,
-            .isHiddenKey,
-            .fileSizeKey,
-            .contentModificationDateKey,
-            .isUbiquitousItemKey,
-            .ubiquitousItemDownloadingStatusKey,
-            .ubiquitousItemIsDownloadingKey,
-            .ubiquitousItemIsUploadingKey
-        ]
+        // Cloud status is *not* prefetched here; `cloudStatuses(for:)` resolves it
+        // afterwards, off the path that decides how fast a folder appears.
+        let keys = listingKeys
         let options: FileManager.DirectoryEnumerationOptions = showHiddenFiles
             ? []
             : [.skipsHiddenFiles]
@@ -204,14 +209,50 @@ public enum WorkspaceDirectoryListing {
                     isHidden: values?.isHidden ?? url.lastPathComponent.hasPrefix("."),
                     fileSize: values?.fileSize.map(Int64.init),
                     modifiedAt: values?.contentModificationDate,
-                    typeDescription: Self.typeDescription(for: url, isDirectory: isDirectory),
-                    cloudStatus: Self.cloudStatus(from: values)
+                    typeDescription: Self.typeDescription(for: url, isDirectory: isDirectory)
                 )
             )
         }
         try Task.checkCancellation()
         items.sort(by: defaultSort)
         return items
+    }
+
+    /// Cloud badges for an already-listed set of URLs, resolved after the fact.
+    ///
+    /// Kept out of the listing prefetch on purpose. Under a File Provider domain
+    /// (OneDrive, Google Drive, Dropbox) the four `ubiquitousItem*` keys are not
+    /// inode reads — each is an IPC round-trip to the provider's daemon. Asking
+    /// for all four inside `contentsOfDirectory` on this user's
+    /// `~/Documents/GitHub` (146 items, OneDrive) measured 300ms–62s, against
+    /// 0–1ms for the same listing without them; the cost was entirely the keys,
+    /// and it varies with the daemon's mood, which is why the slowness came and
+    /// went. Outside a File Provider domain the difference is ~20ms and this
+    /// pass is simply cheap.
+    ///
+    /// Only entries that need a badge come back. A folder pinned to "always keep
+    /// on this device" — which `~/Documents/GitHub` is — settles every item at
+    /// `.none`, so the caller gets an empty dictionary and redraws nothing.
+    ///
+    /// Throws `CancellationError` if the enclosing `Task` is cancelled: this runs
+    /// per item against the same slow daemon, so navigating away must stop it.
+    public static func cloudStatuses(
+        for urls: [URL]
+    ) throws -> [URL: WorkspaceCloudStatus] {
+        let keys: Set<URLResourceKey> = [
+            .isUbiquitousItemKey,
+            .ubiquitousItemDownloadingStatusKey,
+            .ubiquitousItemIsDownloadingKey,
+            .ubiquitousItemIsUploadingKey
+        ]
+        var statuses: [URL: WorkspaceCloudStatus] = [:]
+        for url in urls {
+            try Task.checkCancellation()
+            let status = cloudStatus(from: try? url.resourceValues(forKeys: keys))
+            guard status != .none else { continue }
+            statuses[url.standardizedFileURL] = status
+        }
+        return statuses
     }
 
     /// In-flight transfers win over the resting status: a file being downloaded
