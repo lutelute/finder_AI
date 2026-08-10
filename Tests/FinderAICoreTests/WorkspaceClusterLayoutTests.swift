@@ -273,6 +273,71 @@ struct WorkspaceClusterLayoutTests {
         #expect(Set(ordered) == ["先頭", "真ん中", "最後"])
     }
 
+    // MARK: - 矢印キーの行き先
+
+    /// 島の中は縦に並んでいるので、上下は素直に前後の行になる。
+    @Test("下は次の行、上は前の行")
+    func verticalMovesBetweenRows() {
+        var groups = WorkspaceItemGroups()
+        for name in ["a1", "a2", "a3"] { groups.add(name, to: "A") }
+        let map = layout(["a1", "a2", "a3"], groups)
+
+        #expect(map.node(from: "a1", towards: .down)?.name == "a2")
+        #expect(map.node(from: "a2", towards: .down)?.name == "a3")
+        #expect(map.node(from: "a3", towards: .up)?.name == "a2")
+    }
+
+    @Test("島の端では、その向きに何も無い")
+    func verticalStopsAtTheEdge() {
+        var groups = WorkspaceItemGroups()
+        for name in ["a1", "a2"] { groups.add(name, to: "A") }
+        let map = layout(["a1", "a2"], groups)
+
+        #expect(map.node(from: "a1", towards: .up) == nil)
+        #expect(map.node(from: "a2", towards: .down) == nil)
+    }
+
+    /// 配列の前後で動かすと、島をまたぐ瞬間に画面の反対側へ飛ぶ（`nodes`は島ごとに
+    /// 並び、島の並びは蛇行しているため）。位置で決めれば見えている通りに動く。
+    @Test("右へ動くと、右にある島のものへ移る")
+    func horizontalCrossesToTheNeighbourIsland() {
+        let groups = twoGroups()
+        let map = layout(["a1", "a2", "a3", "b1", "b2", "b3"], groups)
+
+        let a = try! #require(map.island(named: "A")).frame
+        let b = try! #require(map.island(named: "B")).frame
+        // 2束なら横に並ぶ（A が左、B が右）
+        #expect(a.midX < b.midX)
+
+        let moved = try! #require(map.node(from: "a1", towards: .right))
+        #expect(moved.groups == ["B"])
+    }
+
+    @Test("何も選んでいなければ、先頭が行き先になる")
+    func movingWithoutSelectionStartsAtTheFirst() {
+        let groups = twoGroups()
+        let map = layout(["a1", "a2", "b1"], groups)
+
+        // 知らない名前から動かそうとしたときも、止まらずに先頭を返す
+        #expect(map.node(from: "居ない", towards: .down)?.name == map.nodes.first?.name)
+    }
+
+    /// 境界に立つ点は島の中の行と横位置がずれている。真上・真下だけを見ると
+    /// そこから島へ戻れなくなるので、進む距離に応じて横のずれを許す。
+    @Test("境界に立つ点からも、島の中へ戻れる")
+    func canReturnFromTheBoundary() {
+        var groups = twoGroups()
+        groups.add("both", to: "A")
+        groups.add("both", to: "B")
+        let map = layout(["a1", "a2", "a3", "b1", "b2", "b3", "both"], groups)
+
+        let up = map.node(from: "both", towards: .up)
+        let left = map.node(from: "both", towards: .left)
+        let right = map.node(from: "both", towards: .right)
+        // どの向きかは配置次第だが、どこへも行けないのは行き止まりなので困る
+        #expect(up != nil || left != nil || right != nil)
+    }
+
     // MARK: - 素性
 
     /// 開き直すたびに配置が変わると「前はここにあった」が通じない。

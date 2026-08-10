@@ -428,6 +428,45 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         nodes.reversed().first { $0.hitRect.contains(point) }
     }
 
+    public enum Direction: Equatable, Sendable {
+        case up, down, left, right
+
+        var isVertical: Bool { self == .up || self == .down }
+    }
+
+    /// 矢印キーの行き先。位置で決める。
+    ///
+    /// 配列の前後で決めると、島をまたぐ瞬間に画面の反対側へ飛ぶ（`nodes`は島ごとに
+    /// 並んでいて、島の並びは蛇行しているため）。目で見えている通りに動かしたいので、
+    /// **その向きにあるもののうち、いちばん近いもの**を選ぶ。
+    ///
+    /// 横のずれに許容を持たせているのは、島の中の行と境界に立つ点で横位置が違うから。
+    /// 厳密に真上・真下だけを見ると、境界の点から島へ戻れなくなる。
+    public func node(from name: String, towards direction: Direction) -> Node? {
+        guard let current = node(named: name) else { return nodes.first }
+        let origin = current.position
+
+        let candidates = nodes.filter { node in
+            guard node.name != name else { return false }
+            let dx = node.position.x - origin.x
+            let dy = node.position.y - origin.y
+            let along = direction.isVertical ? dy : dx
+            let across = direction.isVertical ? dx : dy
+            let forward = switch direction {
+            case .down, .right: along > 1
+            case .up, .left: along < -1
+            }
+            // 進む向きの距離に応じて、横のずれを許す幅を広げる。近いものは真っ直ぐ、
+            // 遠いものは斜めでも拾う。
+            return forward && abs(across) <= max(abs(along) * 1.2, 44)
+        }
+
+        return candidates.min {
+            hypot($0.position.x - origin.x, $0.position.y - origin.y)
+                < hypot($1.position.x - origin.x, $1.position.y - origin.y)
+        }
+    }
+
     /// その点にある島。ドロップ先を決めるのに使う。
     public func island(at point: CGPoint) -> Island? {
         islands.first { $0.frame.contains(point) }

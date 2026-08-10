@@ -792,6 +792,28 @@ final class WorkspaceMapView: NSView {
     /// AppKitが勝手にそこへ移してくれる。
     var keyboardTarget: NSView { mapArea }
 
+    /// 矢印キーで選択を動かす。動かせたら`true`。
+    ///
+    /// 何も選んでいなければ先頭を選ぶ — 矢印を押した意図は「動かしたい」なので、
+    /// 何も起きないのが一番困る。
+    @discardableResult
+    func moveSelection(towards direction: WorkspaceClusterLayout.Direction) -> Bool {
+        guard let clusterLayout, !clusterLayout.nodes.isEmpty else { return false }
+        let next: WorkspaceClusterLayout.Node?
+        if let current = selectedNames.first, clusterLayout.node(named: current) != nil {
+            next = clusterLayout.node(from: current, towards: direction)
+        } else {
+            next = clusterLayout.nodes.first
+        }
+        guard let next else { return false }
+
+        selectedNames = [next.name]
+        othersTable.deselectAll(nil)
+        mapArea.needsDisplay = true
+        onSelectionChange?(selectedItems)
+        return true
+    }
+
     /// ⌘↓ と ダブルクリックの行き先。フォルダなら移動、ファイルなら開く。
     func openSelection() {
         guard let first = selectedItems.first else { return }
@@ -903,9 +925,18 @@ final class WorkspaceMapCanvas: NSView {
         case .forwardToAppKit:
             if event.modifierFlags.contains(.command), event.specialKey == .downArrow {
                 owner?.openSelection()
-            } else {
-                super.keyDown(with: event)
+                return
             }
+            // 矢印で島の中と島のあいだを歩く。Finderの一覧と同じ手つきで動かせる。
+            let direction: WorkspaceClusterLayout.Direction? = switch event.specialKey {
+            case .upArrow: .up
+            case .downArrow: .down
+            case .leftArrow: .left
+            case .rightArrow: .right
+            default: nil
+            }
+            if let direction, owner?.moveSelection(towards: direction) == true { return }
+            super.keyDown(with: event)
         }
     }
 
