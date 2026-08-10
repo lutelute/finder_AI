@@ -230,12 +230,17 @@ public enum WorkspaceDirectoryListing {
     /// went. Outside a File Provider domain the difference is ~20ms and this
     /// pass is simply cheap.
     ///
-    /// Only entries that need a badge come back. A folder pinned to "always keep
-    /// on this device" — which `~/Documents/GitHub` is — settles every item at
-    /// `.none`, so the caller gets an empty dictionary and redraws nothing.
+    /// Only entries that need a badge come back — 6 of 146 in that folder — so the
+    /// caller redraws a handful of rows instead of the whole list.
+    ///
+    /// This pass is slow too (measured 390ms–61s on the same folder). That is the
+    /// point: it is slow *behind* a list the user can already read, instead of in
+    /// front of it. Run it off the main thread at a low priority.
     ///
     /// Throws `CancellationError` if the enclosing `Task` is cancelled: this runs
-    /// per item against the same slow daemon, so navigating away must stop it.
+    /// per item against the same slow daemon, so navigating away must stop it —
+    /// otherwise an abandoned folder keeps the daemon busy and its badges land on
+    /// a list that has already moved on.
     public static func cloudStatuses(
         for urls: [URL]
     ) throws -> [URL: WorkspaceCloudStatus] {

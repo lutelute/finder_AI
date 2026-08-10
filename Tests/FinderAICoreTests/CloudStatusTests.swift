@@ -130,12 +130,15 @@ struct CloudStatusTests {
         try Data("x".utf8).write(to: root.appendingPathComponent("a.txt"))
         let urls = try WorkspaceDirectoryListing.contents(of: root).map(\.url)
 
+        // Wait for the cancellation first, so the call is guaranteed to start
+        // inside an already-cancelled task rather than racing it.
         let task = Task.detached {
             while !Task.isCancelled { await Task.yield() }
             return Result { try WorkspaceDirectoryListing.cloudStatuses(for: urls) }
         }
         task.cancel()
+        let result = await task.value
 
-        #expect(throws: CancellationError.self) { try task.value.get() }
+        #expect(throws: CancellationError.self) { try result.get() }
     }
 }
