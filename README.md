@@ -213,6 +213,8 @@ cd finder_AI
 ./scripts/install-workspace-app.sh   # /Applications へ反映
 ```
 
+`./scripts/check-working-state.sh`は、手を動かす前にいまどこに居るのかを読むだけの確認です。git、インストール済みアプリのcommit、**FinderAIが動いているかどうか**、tmuxに残っているセッションを並べます。動いている最中に`install-workspace-app.sh`を走らせると、使っている人の画面と生きているセッションを巻き込みます。
+
 生成物:
 
 - `dist/FinderAI.app`
