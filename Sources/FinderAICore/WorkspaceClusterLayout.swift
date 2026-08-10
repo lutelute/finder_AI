@@ -33,6 +33,12 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         public let position: CGPoint
         /// 名前を置く向き。整列した島の中では点の右、境界では点の下。
         public let labelPlacement: LabelPlacement
+        /// クリックを受ける範囲。
+        ///
+        /// 点だけを的にすると半径10ptを狙わせることになる。島の中は行として
+        /// 並んでいるので、**行ぜんぶ**を的にする — 名前をクリックしても
+        /// 選べるし、一覧の行をクリックするのと同じ感覚になる。
+        public let hitRect: CGRect
 
         public var isShared: Bool { groups.count > 1 }
     }
@@ -134,12 +140,15 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
             for (index, item) in members.enumerated() {
                 let offset = (start + Double(index)) * spacing
                 let raw = CGPoint(x: anchor.x + axis.dx * offset, y: anchor.y + axis.dy * offset)
+                let placed = pushedOutOfForeignIslands(raw, belongingTo: Set(belongs), islands: byName)
                 built.append(Node(
                     name: item.name,
                     isDirectory: item.isDirectory,
                     groups: groups?.groupNames(for: item.name) ?? [],
-                    position: pushedOutOfForeignIslands(raw, belongingTo: Set(belongs), islands: byName),
-                    labelPlacement: .below
+                    position: placed,
+                    labelPlacement: .below,
+                    // 境界に立つものは行に属さないので、点のまわりを的にする。
+                    hitRect: CGRect(x: placed.x - 17, y: placed.y - 17, width: 34, height: 34)
                 ))
             }
         }
@@ -172,15 +181,19 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         // 入りきらないときは、最後の一行を「ほか N」に譲る。
         let shown = items.count <= capacity ? items : Array(items.prefix(max(capacity - 1, 0)))
         let nodes = shown.enumerated().map { index, item in
-            Node(
+            let centreY = top + rowHeight * (Double(index) + 0.5)
+            return Node(
                 name: item.name,
                 isDirectory: item.isDirectory,
                 groups: groups,
-                position: CGPoint(
-                    x: usable.minX + 8,
-                    y: top + rowHeight * (Double(index) + 0.5)
-                ),
-                labelPlacement: .trailing
+                position: CGPoint(x: usable.minX + 8, y: centreY),
+                labelPlacement: .trailing,
+                hitRect: CGRect(
+                    x: usable.minX,
+                    y: centreY - rowHeight / 2,
+                    width: usable.width,
+                    height: rowHeight
+                )
             )
         }
         return (nodes, items.count - shown.count)
@@ -312,11 +325,12 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
     }
 
     /// その点にあるノード。境界に立つもの（後に置かれるもの）から探す。
-    public func node(at point: CGPoint, radius: Double) -> Node? {
-        nodes.reversed().first { node in
-            let dx = node.position.x - point.x
-            let dy = node.position.y - point.y
-            return dx * dx + dy * dy <= radius * radius
-        }
+    public func node(at point: CGPoint) -> Node? {
+        nodes.reversed().first { $0.hitRect.contains(point) }
+    }
+
+    /// その点にある島。ドロップ先を決めるのに使う。
+    public func island(at point: CGPoint) -> Island? {
+        islands.first { $0.frame.contains(point) }
     }
 }

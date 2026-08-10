@@ -17,6 +17,8 @@ final class WorkspaceMapView: NSView {
     var onOpen: ((WorkspaceItem) -> Void)?
     var onSelectionChange: (([WorkspaceItem]) -> Void)?
     var contextMenuProvider: (() -> NSMenu?)?
+    /// 島に落とされたものを束に入れる。実際に入ったら`true`。
+    var onLinkToGroup: (([URL], String) -> Bool)?
 
     private var items: [WorkspaceItem] = []
     private var itemsByName: [String: WorkspaceItem] = [:]
@@ -31,6 +33,8 @@ final class WorkspaceMapView: NSView {
     private var groupColors: [String: NSColor] = [:]
     private var selectedNames: Set<String> = []
     private var hoveredName: String?
+    /// ドラッグ中に狙っている島。枠を強くして、どこに入るか見せる。
+    private var dropTargetIsland: String?
     private var trackingArea: NSTrackingArea?
 
     /// 右の「その他」欄。名前順の一覧なので、力学ではなく素直な表で出す。
@@ -42,8 +46,6 @@ final class WorkspaceMapView: NSView {
 
     private static let nodeRadius: Double = 9.5
     private static let sharedNodeRadius: Double = 12.5
-    /// 見た目より広く取る。小さい点をぴったり狙わせるのは辛い。
-    private static let hitRadius: Double = 16
     private static let othersHeaderHeight: Double = 34
     private static let othersRowHeight: Double = 22
 
@@ -72,6 +74,8 @@ final class WorkspaceMapView: NSView {
         // 地図は自前で描く。背景はレイヤに持たせる — `draw`で塗ると自分の枠を
         // 越えて上のナビゲーションバーまで消してしまった。
         mapArea.layer?.backgroundColor = IntegratedPanelTheme.background.cgColor
+        // 右の一覧から島へ引いて束に入れられるように。ファイルは動かない。
+        mapArea.registerForDraggedTypes([.fileURL])
 
         othersHeader.font = .systemFont(ofSize: 11, weight: .semibold)
         othersHeader.textColor = IntegratedPanelTheme.secondaryText
@@ -311,11 +315,12 @@ final class WorkspaceMapView: NSView {
     /// 内側に固定すれば、島がどこまでかと何の束かが一度に読める。
     private func draw(_ island: WorkspaceClusterLayout.Island) {
         let color = groupColors[island.name] ?? .systemGray
+        let isTarget = dropTargetIsland == island.name
         let path = NSBezierPath(roundedRect: island.frame, xRadius: 12, yRadius: 12)
-        color.withAlphaComponent(0.10).setFill()
+        color.withAlphaComponent(isTarget ? 0.24 : 0.10).setFill()
         path.fill()
-        color.withAlphaComponent(0.34).setStroke()
-        path.lineWidth = 1
+        color.withAlphaComponent(isTarget ? 0.95 : 0.34).setStroke()
+        path.lineWidth = isTarget ? 2.5 : 1
         path.stroke()
 
         let attributes: [NSAttributedString.Key: Any] = [
@@ -490,7 +495,7 @@ final class WorkspaceMapView: NSView {
 
     /// 地図の上のクリック。座標は地図の座標系で渡ってくる。
     func handleMapClick(at point: CGPoint, event: NSEvent) {
-        guard let node = clusterLayout?.node(at: point, radius: Self.hitRadius) else {
+        guard let node = clusterLayout?.node(at: point) else {
             selectedNames = []
             mapArea.needsDisplay = true
             onSelectionChange?([])
@@ -516,14 +521,40 @@ final class WorkspaceMapView: NSView {
     }
 
     func handleMapHover(at point: CGPoint) {
-        let name = clusterLayout?.node(at: point, radius: Self.hitRadius)?.name
+        let name = clusterLayout?.node(at: point)?.name
         guard name != hoveredName else { return }
         hoveredName = name
         mapArea.needsDisplay = true
     }
 
+    /// ドラッグ中。狙っている島が変わったら描き直す。
+    func mapDragUpdated(at point: CGPoint) -> NSDragOperation {
+        let island = clusterLayout?.island(at: point)
+        if dropTargetIsland != island?.name {
+            dropTargetIsland = island?.name
+            mapArea.needsDisplay = true
+        }
+        // 移動でもコピーでもないので.link。矢印が変わって、ファイルが動くのでは
+        // ないと見た目で分かる。
+        return island == nil ? [] : .link
+    }
+
+    func mapDragExited() {
+        guard dropTargetIsland != nil else { return }
+        dropTargetIsland = nil
+        mapArea.needsDisplay = true
+    }
+
+    func performMapDrop(at point: CGPoint, pasteboard: NSPasteboard) -> Bool {
+        defer { mapDragExited() }
+        guard let island = clusterLayout?.island(at: point) else { return false }
+        let urls = WorkspaceDragDrop.fileURLs(from: pasteboard)
+        guard !urls.isEmpty else { return false }
+        return onLinkToGroup?(urls, island.name) ?? false
+    }
+
     func mapMenu(at point: CGPoint) -> NSMenu? {
-        if let node = clusterLayout?.node(at: point, radius: Self.hitRadius),
+        if let node = clusterLayout?.node(at: point),
            !selectedNames.contains(node.name) {
             othersTable.deselectAll(nil)
             selectedNames = [node.name]
@@ -632,6 +663,30 @@ final class WorkspaceMapCanvas: NSView {
 
     /// 背面のウィンドウを起こす一手目でも点が選べるように。
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    // 右の一覧から島へのドラッグ。判定はこのビューの座標系で行う。
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        owner?.mapDragUpdated(at: convert(sender.draggingLocation, from: nil)) ?? []
+    }
+
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        owner?.mapDragUpdated(at: convert(sender.draggingLocation, from: nil)) ?? []
+    }
+
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        owner?.mapDragExited()
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        owner?.performMapDrop(
+            at: convert(sender.draggingLocation, from: nil),
+            pasteboard: sender.draggingPasteboard
+        ) ?? false
+    }
+
+    override func draggingEnded(_ sender: any NSDraggingInfo) {
+        owner?.mapDragExited()
+    }
 }
 
 /// 「その他」欄の一行。アイコンと名前だけ — ここは探すための一覧で、

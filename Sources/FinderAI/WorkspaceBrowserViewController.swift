@@ -928,6 +928,14 @@ final class WorkspaceBrowserViewController: NSViewController {
         }
         mapView.onSelectionChange = { [weak self] _ in self?.updateStatus() }
         mapView.contextMenuProvider = { [weak self] in self?.fileTable.menu }
+        // 右の一覧から島へ引いて束に入れる。ファイルは動かないので、
+        // 一覧の見出しへのドロップと同じ扱い。
+        mapView.onLinkToGroup = { [weak self] urls, group in
+            guard let self, let members = self.linkableNames(from: urls) else { return false }
+            return self.mutateGroups(actionName: "「\(group)」に入れる") { groups in
+                members.forEach { groups.add($0, to: group) }
+            }
+        }
     }
 
     private func syncAfterColumnNavigation(to url: URL) {

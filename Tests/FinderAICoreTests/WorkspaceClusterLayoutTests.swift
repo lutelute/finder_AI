@@ -335,17 +335,37 @@ struct WorkspaceClusterLayoutTests {
         #expect(map.nodes.count + (map.island(named: "束")?.overflow ?? 0) == 2)
     }
 
-    @Test("その点にあるノードを拾える")
-    func hitTesting() {
+    /// 点だけを的にすると半径10ptを狙わせることになる。島の中は行として並んで
+    /// いるので、行ぜんぶ — 名前の上をクリックしても選べる。
+    @Test("行のどこをクリックしても、その項目が拾える")
+    func hitTestingCoversTheWholeRow() {
         var groups = WorkspaceItemGroups()
         groups.add("only", to: "A")
         let map = layout(["only"], groups)
         let node = try! #require(map.node(named: "only"))
+        let island = try! #require(map.island(named: "A")).frame
 
-        #expect(map.node(at: node.position, radius: 16)?.name == "only")
+        // 点の上
+        #expect(map.node(at: node.position)?.name == "only")
+        // 名前が並ぶあたり（点より右）
+        #expect(map.node(at: CGPoint(x: node.position.x + 60, y: node.position.y))?.name == "only")
+        // 行の右端近く
         #expect(map.node(
-            at: CGPoint(x: node.position.x + 300, y: node.position.y),
-            radius: 16
-        ) == nil)
+            at: CGPoint(x: island.maxX - WorkspaceClusterLayout.islandInset.width - 2, y: node.position.y)
+        )?.name == "only")
+        // 別の行の高さには無い
+        #expect(map.node(at: CGPoint(
+            x: node.position.x,
+            y: node.position.y + WorkspaceClusterLayout.rowHeight * 3
+        )) == nil)
+    }
+
+    @Test("島の上の点から、その島を引ける — ドロップ先の判定に使う")
+    func islandHitTesting() {
+        let map = layout(["a1", "b1"], twoGroups())
+        let island = try! #require(map.island(named: "A")).frame
+
+        #expect(map.island(at: CGPoint(x: island.midX, y: island.midY))?.name == "A")
+        #expect(map.island(at: CGPoint(x: island.minX - 6, y: island.midY))?.name != "A")
     }
 }
