@@ -190,6 +190,71 @@ private final class WorkspaceSidebarHeaderView: NSTableCellView {
     }
 }
 
+/// 一覧のなかの束の見出し。
+///
+/// サイドバーの見出しを流用していたが、あれは小さな全大文字のラベルで、
+/// 束の名前（多くは日本語）には合わなかった。ここでは束の色の丸と、下に続く数を
+/// 添える。色は地図の島と同じ（`WorkspaceGroupPalette`）ので、一覧と地図で同じ束が
+/// 同じ色になる。色だけに頼らないよう、名前は必ず出す。
+@MainActor
+private final class WorkspaceGroupHeaderView: NSTableCellView {
+    private let dot = NSView()
+    private let label = NSTextField(labelWithString: "")
+    private let countLabel = NSTextField(labelWithString: "")
+    private let rule = NSView()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        identifier = NSUserInterfaceItemIdentifier("WorkspaceGroupHeader")
+        dot.wantsLayer = true
+        dot.layer?.cornerRadius = 4
+        label.font = .systemFont(ofSize: 11.5, weight: .semibold)
+        label.textColor = IntegratedPanelTheme.text
+        countLabel.font = .systemFont(ofSize: 10.5)
+        countLabel.textColor = IntegratedPanelTheme.secondaryText
+        rule.wantsLayer = true
+        rule.layer?.backgroundColor = IntegratedPanelTheme.border
+            .withAlphaComponent(0.5).cgColor
+
+        [dot, label, countLabel, rule].forEach {
+            $0.translatesAutoresizingMaskIntoConstraints = false
+            addSubview($0)
+        }
+        NSLayoutConstraint.activate([
+            dot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            dot.centerYAnchor.constraint(equalTo: centerYAnchor),
+            dot.widthAnchor.constraint(equalToConstant: 8),
+            dot.heightAnchor.constraint(equalToConstant: 8),
+            label.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: 7),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            countLabel.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 6),
+            countLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            // 罫線は名前の右から端まで。見出しの帯がどこまで続くかが分かる。
+            rule.leadingAnchor.constraint(equalTo: countLabel.trailingAnchor, constant: 8),
+            rule.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            rule.centerYAnchor.constraint(equalTo: centerYAnchor),
+            rule.heightAnchor.constraint(equalToConstant: 1)
+        ])
+        textField = label
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    /// - Parameter color: 束の色。`nil`は未分類 — 色を持たないことがその印になる。
+    func configure(title: String, count: Int, color: NSColor?) {
+        label.stringValue = title
+        countLabel.stringValue = "\(count)"
+        dot.isHidden = color == nil
+        dot.layer?.backgroundColor = color?.cgColor
+        // 未分類は丸のぶん左に寄らないよう、ラベルの色で弱く見せる。
+        label.textColor = color == nil
+            ? IntegratedPanelTheme.secondaryText
+            : IntegratedPanelTheme.text
+    }
+}
+
 /// Table subclass that routes the keys a file list is expected to answer.
 /// `NSTableView` has no built-in notion of "open the selection", so Return and
 /// Space have to be claimed here rather than left to the responder chain.
@@ -954,6 +1019,11 @@ final class WorkspaceBrowserViewController: NSViewController {
         mapView.onSelectionChange = { [weak self] _ in self?.updateStatus() }
         mapView.contextMenuProvider = { [weak self] in self?.fileTable.menu }
         mapView.onQuickLook = { [weak self] in self?.toggleQuickLook() }
+        mapView.onOthersOnlyChanged = { [weak self] value in
+            self?.preferences.mapShowsOthersOnly = value
+        }
+        mapView.setShowsOthersOnly(preferences.mapShowsOthersOnly)
+        mapView.onPruneMissing = { [weak self] in self?.pruneMissingGroupMembers() }
         // 右の一覧から島へ引いて束に入れる。ファイルは動かないので、
         // 一覧の見出しへのドロップと同じ扱い。
         mapView.onLinkToGroup = { [weak self] urls, group in
@@ -1090,6 +1160,8 @@ final class WorkspaceBrowserViewController: NSViewController {
         listScrollView?.isHidden = mode != .list
         galleryScrollView?.isHidden = mode != .gallery
         mapView.isHidden = mode != .map
+        // 束の見出しは一覧だけのもの。他の表示で出しても効かないので出さない。
+        groupingToggle.isHidden = mode != .list
         viewModeControl.selectedSegment = WorkspaceViewMode.allCases.firstIndex(of: mode) ?? 0
         if mode == .column {
             columnView.show(
@@ -2196,6 +2268,17 @@ final class WorkspaceBrowserViewController: NSViewController {
         return others
     }
 
+    /// その見出しの下に何行続くか。見出しに数を出すために数える。
+    private func fileRowCount(ofSectionStartingAt row: Int) -> Int {
+        var count = 0
+        var index = row + 1
+        while index < fileRows.count, case .item = fileRows[index] {
+            count += 1
+            index += 1
+        }
+        return count
+    }
+
     private func isHeaderRow(_ row: Int) -> Bool {
         guard fileRows.indices.contains(row), case .header = fileRows[row] else { return false }
         return true
@@ -2374,7 +2457,7 @@ final class WorkspaceBrowserViewController: NSViewController {
     /// ゴミが残り続けても気づけない。かといって勝手に消すのも危ない — 向こうの
     /// マシンではまだ使っている。数を島に出して気づけるようにし、外すかどうかは
     /// 一覧を見せてから本人に決めてもらう。
-    @objc private func pruneMissingGroupMembers() {
+    @objc func pruneMissingGroupMembers() {
         guard itemGroupsError == nil else { return }
         let missing = itemGroups?.missingMembers(amongNames: presentNames) ?? [:]
         guard !missing.isEmpty else { return }
@@ -3178,7 +3261,7 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         guard tableView === sidebarTable else {
-            return self.tableView(tableView, isGroupRow: row) ? 22 : 27
+            return self.tableView(tableView, isGroupRow: row) ? 26 : 27
         }
         // 詰めた行高: よく使うフォルダをスクロールなしで一覧できる数が優先。
         return self.tableView(tableView, isGroupRow: row) ? 20 : 23
@@ -3215,8 +3298,13 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
             let cell = tableView.makeView(
                 withIdentifier: NSUserInterfaceItemIdentifier("WorkspaceGroupHeader"),
                 owner: self
-            ) as? WorkspaceSidebarHeaderView ?? WorkspaceSidebarHeaderView()
-            cell.configure(title: title ?? Self.ungroupedTitle)
+            ) as? WorkspaceGroupHeaderView ?? WorkspaceGroupHeaderView()
+            let count = fileRowCount(ofSectionStartingAt: row)
+            cell.configure(
+                title: title ?? Self.ungroupedTitle,
+                count: count,
+                color: title.flatMap { WorkspaceGroupPalette.color(for: $0, in: itemGroups) }
+            )
             return cell
         }
 

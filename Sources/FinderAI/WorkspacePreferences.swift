@@ -28,6 +28,7 @@ struct WorkspacePreferences {
         static let showHiddenFiles = "workspace.showHiddenFiles"
         static let listGrouping = "workspace.listGrouping"
         static let showsGroupColumn = "workspace.showsGroupColumn"
+        static let mapShowsOthersOnly = "workspace.mapShowsOthersOnly"
         static let terminalHeight = "workspace.terminalHeight"
         static let terminalWidth = "workspace.terminalWidth"
         static let terminalEdge = "workspace.terminalEdge"
@@ -386,6 +387,15 @@ struct WorkspacePreferences {
     var showsGroupColumn: Bool {
         get { defaults.bool(forKey: Key.showsGroupColumn) }
         nonmutating set { defaults.set(newValue, forKey: Key.showsGroupColumn) }
+    }
+
+    /// 地図で、束に属さないものだけを見るか。既定は切り。
+    ///
+    /// 入れると島を畳んで一覧が全幅になる。束に入れていないものを見渡して、
+    /// どれを束ねるか決めるための眺め方。
+    var mapShowsOthersOnly: Bool {
+        get { defaults.bool(forKey: Key.mapShowsOthersOnly) }
+        nonmutating set { defaults.set(newValue, forKey: Key.mapShowsOthersOnly) }
     }
 
     // MARK: - Terminal

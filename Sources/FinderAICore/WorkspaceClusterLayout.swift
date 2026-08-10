@@ -78,9 +78,13 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
 
     /// 島の内側の余白と、束名の帯の高さ。
     public static let islandInset = CGSize(width: 14, height: 12)
-    public static let islandTitleHeight: Double = 26
+    public static let islandTitleHeight: Double = 23
     /// 島の中の一行。点と名前が並ぶ高さ。
-    public static let rowHeight: Double = 21
+    ///
+    /// 21ptだと、幅を優先して2列3行に割ったときに6行しか入らず、7項目の束から
+    /// 2つが「ほか」に落ちた。18ptなら7行入る。11ptの文字には詰まった値だが、
+    /// 名前が読めないのと見えないのとでは、見えないほうが困る。
+    public static let rowHeight: Double = 18
 
     /// - Parameter presentNames: このフォルダに実在する名前。**隠しファイルも含める**。
     ///   省略すると`groupedItems`の名前を使うが、それだと隠し表示をオフにしただけで
@@ -275,10 +279,24 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         return (nodes, items.count - shown.count)
     }
 
+    /// 島の最小幅。これを下回ると、島の中の名前が読めるだけの横幅が残らない。
+    ///
+    /// 縦横比だけで枡を割ると、幅445ptの領域に6束で3列になり、1列155pt —
+    /// 点と余白を引くと名前に100ptしか残らず `power-system-stabi…` と切れた。
+    /// 行数が増えて「ほか N」が出るほうが、名前が読めないよりましなので幅を優先する。
+    public static let minIslandWidth: Double = 196
+
     /// 領域の縦横比に合わせて枡を割る。1束なら全面。
-    public static func gridShape(count: Int, aspect: Double) -> (columns: Int, rows: Int) {
+    /// ただし幅が足りないときは列を減らす — 名前が読めない列を増やしても意味がない。
+    public static func gridShape(
+        count: Int,
+        aspect: Double,
+        width: Double = .infinity
+    ) -> (columns: Int, rows: Int) {
         guard count > 1 else { return (1, 1) }
-        let columns = max(1, Int(ceil((Double(count) * max(aspect, 0.2)).squareRoot())))
+        let byAspect = max(1, Int(ceil((Double(count) * max(aspect, 0.2)).squareRoot())))
+        let byWidth = width.isFinite ? max(1, Int(width / minIslandWidth)) : byAspect
+        let columns = max(1, min(byAspect, byWidth))
         let rows = max(1, Int(ceil(Double(count) / Double(columns))))
         return (columns, rows)
     }
@@ -292,7 +310,11 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
             width: max(size.width - margin * 2, 1),
             height: max(size.height - margin * 2, 1)
         )
-        let shape = gridShape(count: count, aspect: area.width / area.height)
+        let shape = gridShape(
+            count: count,
+            aspect: area.width / area.height,
+            width: area.width
+        )
         let cellWidth = (area.width - gap * Double(shape.columns - 1)) / Double(shape.columns)
         let cellHeight = (area.height - gap * Double(shape.rows - 1)) / Double(shape.rows)
 

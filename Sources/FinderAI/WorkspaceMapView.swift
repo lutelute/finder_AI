@@ -23,6 +23,10 @@ final class WorkspaceMapView: NSView {
     var onCreateGroup: (([URL]) -> Bool)?
     /// Spaceでのクイックルック。地図でもFinderの手癖が通るように。
     var onQuickLook: (() -> Void)?
+    /// 「これだけ」の入り切り。覚えておくのは呼び出し側（設定に残す）。
+    var onOthersOnlyChanged: ((Bool) -> Void)?
+    /// 「見つからない N」を押したとき。定義に残った行方不明を整理する。
+    var onPruneMissing: (() -> Void)?
 
     private var items: [WorkspaceItem] = []
     private var itemsByName: [String: WorkspaceItem] = [:]
@@ -42,6 +46,10 @@ final class WorkspaceMapView: NSView {
     private var dropTargetIsland: String?
     /// 「新しい束」の枠を狙っているか。
     private var dropTargetIsNewGroup = false
+    /// 島を畳んで一覧だけを見ているか。
+    private var showsOthersOnly = false
+    /// 「見つからない N」の文字が占める場所。押せるようにするため描画時に覚える。
+    private var missingHitRects: [String: NSRect] = [:]
     private var trackingArea: NSTrackingArea?
 
     /// 右の「その他」欄。名前順の一覧なので、力学ではなく素直な表で出す。
@@ -49,6 +57,7 @@ final class WorkspaceMapView: NSView {
     private let othersTable = NSTableView()
     private let othersHeader = NSTextField(labelWithString: "")
     private let othersFilter = NSSearchField()
+    private let othersOnlyToggle = NSButton()
     private let mapArea = WorkspaceMapCanvas()
 
     private static let nodeRadius: Double = 9.5
@@ -57,9 +66,10 @@ final class WorkspaceMapView: NSView {
     private static let othersRowHeight: Double = 22
 
     /// 右欄の幅。名前に250pt残るのが目安。これを下回ると名前が切れて、
-    /// 名前順に並べた意味が薄れる。
+    /// 名前順に並べた意味が薄れる。上限を340に抑えているのは、地図側にも
+    /// 名前が読める幅を残すため — 島が狭いと島の中の名前が先に切れる。
     private static func othersWidth(for totalWidth: Double) -> Double {
-        min(max(totalWidth * 0.26, 280), 360)
+        min(max(totalWidth * 0.26, 280), 340)
     }
 
     override var isFlipped: Bool { true }
@@ -98,6 +108,16 @@ final class WorkspaceMapView: NSView {
         othersFilter.target = self
         othersFilter.action = #selector(othersFilterChanged)
 
+        // 島を畳んで一覧を全幅にする。束に入れていないものを見渡して、
+        // どれを束ねるか決めるための眺め方。
+        othersOnlyToggle.setButtonType(.switch)
+        othersOnlyToggle.title = "これだけ"
+        othersOnlyToggle.font = .systemFont(ofSize: 10.5)
+        othersOnlyToggle.controlSize = .small
+        othersOnlyToggle.target = self
+        othersOnlyToggle.action = #selector(toggleOthersOnly)
+        othersOnlyToggle.toolTip = "束に属さないものだけを、幅いっぱいで見る"
+
         othersTable.headerView = nil
         othersTable.rowHeight = Self.othersRowHeight
         othersTable.backgroundColor = IntegratedPanelTheme.background
@@ -118,7 +138,7 @@ final class WorkspaceMapView: NSView {
         othersScroll.drawsBackground = true
         othersScroll.backgroundColor = IntegratedPanelTheme.background
 
-        [mapArea, othersHeader, othersFilter, othersScroll].forEach {
+        [mapArea, othersHeader, othersFilter, othersOnlyToggle, othersScroll].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             addSubview($0)
         }
@@ -151,21 +171,29 @@ final class WorkspaceMapView: NSView {
         mapArea.needsDisplay = true
     }
 
-    /// 束の色。定義された順に配り、同じフォルダなら毎回同じ色になる。
-    /// 色が回るたびに変わると、地図の色を覚える意味がなくなる。
+    /// 束の色は一覧の見出しと共有する（`WorkspaceGroupPalette`）。別々に配ると、
+    /// 一覧で青かった束が地図では緑になり、色を覚える意味がなくなる。
     private func assignColors(for groups: WorkspaceItemGroups?) {
-        let palette: [NSColor] = [
-            .systemBlue, .systemGreen, .systemOrange, .systemPurple,
-            .systemPink, .systemTeal, .systemYellow, .systemIndigo
-        ]
-        groupColors = [:]
-        for (index, group) in (groups?.groups ?? []).enumerated() {
-            groupColors[group.name] = palette[index % palette.count]
-        }
+        groupColors = WorkspaceGroupPalette.colors(for: groups)
     }
 
     @objc private func othersFilterChanged() {
         applyOthersFilter()
+    }
+
+    @objc private func toggleOthersOnly() {
+        showsOthersOnly = othersOnlyToggle.state == .on
+        onOthersOnlyChanged?(showsOthersOnly)
+        applyPaneLayout()
+        needsDisplay = true
+    }
+
+    /// 設定から復元するとき用。
+    func setShowsOthersOnly(_ value: Bool) {
+        guard showsOthersOnly != value else { return }
+        showsOthersOnly = value
+        applyPaneLayout()
+        needsDisplay = true
     }
 
     /// 絞り込みを反映する。見出しは「絞り込んだ数 / 全部」を出す — 数だけ変わると
@@ -193,11 +221,20 @@ final class WorkspaceMapView: NSView {
     private func applyPaneLayout() {
         NSLayoutConstraint.deactivate(paneConstraints)
         // その他が無いフォルダでは欄を出さない。空の帯は場所の無駄。
-        let width = others.isEmpty ? 0 : Self.othersWidth(for: Double(bounds.width))
-        let showsOthers = width > 0
+        let showsOthers = !others.isEmpty
+        // 「これだけ」なら島を畳んで一覧を全幅にする。落とし先の島が無くなるので
+        // 束へ入れる操作はできなくなる — 見渡すための眺め方と割り切る。
+        let othersOnly = showsOthersOnly && showsOthers
+        let width = othersOnly
+            ? max(Double(bounds.width), 1)
+            : (showsOthers ? Self.othersWidth(for: Double(bounds.width)) : 0)
+
         othersHeader.isHidden = !showsOthers
         othersFilter.isHidden = !showsOthers
+        othersOnlyToggle.isHidden = !showsOthers
         othersScroll.isHidden = !showsOthers
+        mapArea.isHidden = othersOnly
+        othersOnlyToggle.state = othersOnly ? .on : .off
 
         var constraints: [NSLayoutConstraint] = [
             mapArea.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -206,10 +243,14 @@ final class WorkspaceMapView: NSView {
         ]
         if showsOthers {
             constraints += [
-                mapArea.trailingAnchor.constraint(equalTo: othersHeader.leadingAnchor, constant: -1),
-                othersHeader.trailingAnchor.constraint(equalTo: trailingAnchor),
                 othersHeader.topAnchor.constraint(equalTo: topAnchor, constant: 10),
                 othersHeader.leadingAnchor.constraint(equalTo: othersScroll.leadingAnchor, constant: 12),
+                othersHeader.trailingAnchor.constraint(
+                    lessThanOrEqualTo: othersOnlyToggle.leadingAnchor,
+                    constant: -8
+                ),
+                othersOnlyToggle.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+                othersOnlyToggle.centerYAnchor.constraint(equalTo: othersHeader.centerYAnchor),
                 othersFilter.leadingAnchor.constraint(equalTo: othersScroll.leadingAnchor, constant: 10),
                 othersFilter.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
                 othersFilter.topAnchor.constraint(equalTo: othersHeader.bottomAnchor, constant: 6),
@@ -218,6 +259,15 @@ final class WorkspaceMapView: NSView {
                 othersScroll.topAnchor.constraint(equalTo: othersFilter.bottomAnchor, constant: 6),
                 othersScroll.bottomAnchor.constraint(equalTo: bottomAnchor)
             ]
+            // 畳むときは地図の幅をゼロにする（隠すだけでは制約が残る）。
+            constraints.append(
+                othersOnly
+                    ? mapArea.trailingAnchor.constraint(equalTo: leadingAnchor)
+                    : mapArea.trailingAnchor.constraint(
+                        equalTo: othersScroll.leadingAnchor,
+                        constant: -1
+                    )
+            )
         } else {
             constraints.append(mapArea.trailingAnchor.constraint(equalTo: trailingAnchor))
         }
@@ -273,7 +323,7 @@ final class WorkspaceMapView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         layer?.backgroundColor = IntegratedPanelTheme.background.cgColor
-        guard !othersScroll.isHidden else { return }
+        guard !othersScroll.isHidden, !mapArea.isHidden else { return }
         // 地図と一覧の境目。1ptの線だけ引く。
         IntegratedPanelTheme.secondaryText.withAlphaComponent(0.22).setFill()
         NSRect(x: mapArea.frame.maxX, y: 0, width: 1, height: bounds.height).fill()
@@ -291,6 +341,9 @@ final class WorkspaceMapView: NSView {
             drawOverflow(island)
         }
         drawNewGroupSlot(clusterLayout)
+        // 触っている行・選んだ行を敷く。的が行ぜんぶなのに光るのが点だけだと、
+        // どこを押したのか手応えが合わない。
+        for node in clusterLayout.nodes { drawRowHighlight(node) }
         drawBridges(clusterLayout)
         // 島の中は整列しているので、名前は場所を取り合わない。全部書ける。
         for node in clusterLayout.nodes {
@@ -422,6 +475,20 @@ final class WorkspaceMapView: NSView {
         node.isShared ? Self.sharedNodeRadius : Self.nodeRadius
     }
 
+    private func drawRowHighlight(_ node: WorkspaceClusterLayout.Node) {
+        let selected = selectedNames.contains(node.name)
+        let hovered = hoveredName == node.name
+        guard selected || hovered else { return }
+        let base = selected
+            ? (node.groups.compactMap { groupColors[$0] }.first ?? IntegratedPanelTheme.text)
+            : IntegratedPanelTheme.secondaryText
+        base.withAlphaComponent(selected ? 0.30 : 0.12).setFill()
+        let rect = node.labelPlacement == .below
+            ? node.hitRect.insetBy(dx: 4, dy: 4)
+            : node.hitRect.insetBy(dx: 2, dy: 1)
+        NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6).fill()
+    }
+
     private func drawCircle(_ node: WorkspaceClusterLayout.Node) {
         let radius = radius(of: node)
         let rect = NSRect(
@@ -511,14 +578,26 @@ final class WorkspaceMapView: NSView {
                 withAttributes: attributes
             )
         case .below:
-            // 境界に立つ点は行に属さないので、名前は点を中心に置く。
-            // 下は隣の島の束名の帯とぶつかるので、空いていれば上に逃がす。
-            let x = min(max(node.position.x - size.width / 2, union.minX + 6), union.maxX - size.width - 6)
-            let below = NSRect(x: x, y: node.position.y + r + 3, width: size.width, height: size.height)
-            let above = NSRect(x: x, y: node.position.y - r - size.height - 3, width: size.width, height: size.height)
-            let titles = clusterLayout.islands.map(titleRect(of:))
-            let rect = titles.contains(where: { $0.intersects(below) }) ? above : below
-            shown.draw(at: rect.origin, withAttributes: attributes)
+            // 境界に立つ点は島の**外**にいるので、名前も島の外へ置く。島の枠や
+            // 中身に重ねると、どちらも読めないうえ、その島のメンバーに見えてしまう。
+            // 下・上・右・左と試して、どの島にも重ならない場所を選ぶ。
+            let centred = min(
+                max(node.position.x - size.width / 2, mapArea.bounds.minX + 4),
+                mapArea.bounds.maxX - size.width - 4
+            )
+            let candidates = [
+                NSPoint(x: centred, y: node.position.y + r + 3),
+                NSPoint(x: centred, y: node.position.y - r - size.height - 3),
+                NSPoint(x: node.position.x + r + 5, y: node.position.y - size.height / 2),
+                NSPoint(x: node.position.x - r - 5 - size.width, y: node.position.y - size.height / 2)
+            ]
+            let islands = clusterLayout.islands.map(\.frame)
+            let clear = candidates.first { origin in
+                let rect = NSRect(origin: origin, size: size)
+                return !islands.contains { $0.intersects(rect) }
+                    && mapArea.bounds.contains(rect)
+            }
+            shown.draw(at: clear ?? candidates[0], withAttributes: attributes)
         }
     }
 
@@ -528,26 +607,36 @@ final class WorkspaceMapView: NSView {
     /// 無いフォルダの定義を守るためだが、**本当に消したフォルダ**の名前も同じように
     /// 落ちる。黙っていると定義にゴミが残り続けても気づけないので、数を出す。
     private func drawOverflow(_ island: WorkspaceClusterLayout.Island) {
-        var notes: [(String, NSColor)] = []
+        missingHitRects[island.name] = nil
+        var notes: [(text: String, color: NSColor, isMissing: Bool)] = []
         if island.overflow > 0 {
-            notes.append(("ほか \(island.overflow)", (groupColors[island.name] ?? .systemGray)))
+            notes.append((
+                "ほか \(island.overflow)",
+                groupColors[island.name] ?? .systemGray,
+                false
+            ))
         }
         if island.missing > 0 {
-            notes.append(("見つからない \(island.missing)", .systemOrange))
+            notes.append(("見つからない \(island.missing) →", .systemOrange, true))
         }
         guard !notes.isEmpty else { return }
 
         let inset = WorkspaceClusterLayout.islandInset
         var y = island.frame.maxY - inset.height - 15
-        for (text, color) in notes.reversed() {
+        for note in notes.reversed() {
             let attributes: [NSAttributedString.Key: Any] = [
                 .font: NSFont.systemFont(ofSize: 10.5, weight: .medium),
-                .foregroundColor: color.withAlphaComponent(0.9)
+                .foregroundColor: note.color.withAlphaComponent(0.9)
             ]
-            text.draw(
-                at: NSPoint(x: island.frame.minX + inset.width + 8, y: y),
-                withAttributes: attributes
-            )
+            let origin = NSPoint(x: island.frame.minX + inset.width + 8, y: y)
+            note.text.draw(at: origin, withAttributes: attributes)
+            if note.isMissing {
+                // 押せる場所として覚えておく。数を見せるだけだと、直す手が無い。
+                missingHitRects[island.name] = NSRect(
+                    origin: origin,
+                    size: note.text.size(withAttributes: attributes)
+                ).insetBy(dx: -4, dy: -3)
+            }
             y -= 15
         }
     }
@@ -561,6 +650,25 @@ final class WorkspaceMapView: NSView {
            clusterLayout?.island(at: point) == nil,
            clusterLayout?.newGroupSlot?.contains(point) == true {
             _ = onCreateGroup?([])
+            return
+        }
+        // 「見つからない N →」を押したら整理へ。
+        if missingHitRects.values.contains(where: { $0.contains(point) }) {
+            onPruneMissing?()
+            return
+        }
+        // 束の名前を押したら、その束のものをまとめて選ぶ。束ごとに何かする
+        // （まとめて外す、まとめて開く）ときの入口になる。
+        if clusterLayout?.node(at: point) == nil,
+           let island = clusterLayout?.islands.first(where: { titleRect(of: $0).contains(point) }) {
+            selectedNames = Set(
+                (clusterLayout?.nodes ?? [])
+                    .filter { $0.groups.contains(island.name) }
+                    .map(\.name)
+            )
+            othersTable.deselectAll(nil)
+            mapArea.needsDisplay = true
+            onSelectionChange?(selectedItems)
             return
         }
         guard let node = clusterLayout?.node(at: point) else {
