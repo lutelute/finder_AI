@@ -107,22 +107,9 @@ struct MainMenuShortcutTests {
         #expect(cycle?.keyEquivalentModifierMask == [.command, .option])
     }
 
-    /// ⌥⌘Tと⌥⌘Sは、実機でキーを送って初めて「届いていない」と分かった。
-    /// 気付くまでに要ったのは人の手と時間で、しかも3回送るまでは自動操作の
-    /// 取りこぼしと見分けが付かなかった。
-    ///
-    /// システム環境設定に登録されているぶんだけは読めば分かるので、
-    /// 人手を待たずにここで突き合わせる。**通っても「届く」の証明にはならない**
-    /// ——AppKitが自前で足す項目（⌥⌘Tのツールバー等）や他の常駐アプリが
-    /// 握る鍵はここに現れない。潰せるのは一種類だけ。
-    @Test("macOSに登録済みの鍵を名乗っていない")
-    func noMenuKeyIsTakenBySystemSettings() {
-        let reserved = ReservedSystemShortcuts.current()
-        // 読めない環境（サンドボックス下など）で空振りしても意味が無いので、
-        // 何も読めなかったことが分かるようにしておく。
-        guard !reserved.isEmpty else { return }
-
-        for entry in items(in: menu()) where !entry.keyEquivalent.isEmpty {
+    /// メニュー項目が名乗っている鍵を、突き合わせできる形に直す。
+    private func declaredShortcuts() -> [(shortcut: SystemShortcut, title: String)] {
+        items(in: menu()).filter { !$0.keyEquivalent.isEmpty }.map { entry in
             var modifiers = UInt(entry.keyEquivalentModifierMask.rawValue)
             // 大文字の鍵は⇧込みの意味になる。小文字へ落としたぶんを補う。
             if entry.keyEquivalent.count == 1,
@@ -134,14 +121,68 @@ struct MainMenuShortcutTests {
                 key: ReservedSystemShortcuts.normalizedKey(entry.keyEquivalent),
                 modifiers: modifiers
             )
-            #expect(
-                !reserved.contains(shortcut),
-                """
-                \(shortcut.label)（“\(entry.title)”）はmacOS側が押さえている。
-                押しても項目まで届かないので、別の鍵へ移すこと。
-                """
-            )
+            return (shortcut, entry.title)
         }
+    }
+
+    private func conflicts(with reserved: Set<SystemShortcut>) -> [String] {
+        declaredShortcuts()
+            .filter { reserved.contains($0.shortcut) }
+            .map { "\($0.shortcut.label)（“\($0.title)”）" }
+    }
+
+    /// 突き合わせそのものが働くか。**渡す側は作り物**で、動いている機械の
+    /// 設定は読まない。
+    ///
+    /// 最初はここで`ReservedSystemShortcuts.current()`を読んでいた。便利では
+    /// あるが、試験の結果が動かした機械の環境設定で変わってしまう——読めない
+    /// 機械では黙って素通りし、合格と見分けが付かない。実機を測るのは
+    /// `swift test`の仕事ではない（測り方は下の`.enabled(if:)`付きのほう）。
+    @Test("押さえられている鍵を名乗っていたら見つける")
+    func reservedShortcutsAreDetected() {
+        // ⇧⌘Tはセッション管理が名乗っている鍵。押さえられていることにすれば、
+        // 突き合わせは必ずこれを拾わなければならない。
+        let pretendReserved: Set<SystemShortcut> = [
+            SystemShortcut(key: "t", modifiers: SystemShortcut.shift | SystemShortcut.command)
+        ]
+        let found = conflicts(with: pretendReserved)
+        #expect(found.count == 1)
+        #expect(found.first?.contains("Terminalセッションを管理") == true)
+
+        // 誰も名乗っていない鍵なら何も出ない。
+        #expect(conflicts(with: [SystemShortcut(key: "8", modifiers: SystemShortcut.control)]).isEmpty)
+    }
+
+    /// 動いているMacの設定と突き合わせる。**既定では走らない。**
+    ///
+    /// ⌥⌘Tと⌥⌘Sは、実機でキーを送って初めて「届いていない」と分かった。
+    /// 気付くまでに要ったのは人の手と時間で、しかも3回送るまでは自動操作の
+    /// 取りこぼしと見分けが付かなかった。システム環境設定に登録されているぶん
+    /// だけは読めば分かるので、その手間は機械に渡せる——ただし**測りたいと
+    /// 言ったときだけ**。
+    ///
+    ///     FINDERAI_AUDIT_SYSTEM_SHORTCUTS=1 swift test --filter noMenuKeyIsTakenBySystemSettings
+    ///
+    /// **通っても「届く」の証明にはならない。** AppKitが自前で足す項目
+    /// （⌥⌘Tのツールバー等）や他の常駐アプリが握る鍵はここに現れない。
+    /// 実際、⌥⌘T／⌥⌘S自身もこの登録には入っていなかった。
+    @Test(
+        "このMacの設定に登録済みの鍵を名乗っていない",
+        .enabled(if: ProcessInfo.processInfo.environment["FINDERAI_AUDIT_SYSTEM_SHORTCUTS"] != nil)
+    )
+    func noMenuKeyIsTakenBySystemSettings() throws {
+        let reserved = ReservedSystemShortcuts.current()
+        // 読めなかったのを「衝突なし」と言わない。空振りは失敗として出す。
+        try #require(!reserved.isEmpty, "システム環境設定の登録を1件も読めなかった")
+
+        let found = conflicts(with: reserved)
+        #expect(
+            found.isEmpty,
+            """
+            macOS側が押さえている鍵を名乗っている: \(found.joined(separator: "、"))
+            押しても項目まで届かないので、別の鍵へ移すこと。
+            """
+        )
     }
 
     @Test("commands that only existed in the context menu are now in ファイル")
