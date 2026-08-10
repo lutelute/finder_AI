@@ -7,14 +7,57 @@
 # かった。作業中にアプリを入れ替えていれば、使っている最中の人の画面と
 # 生きているtmuxセッションを巻き込んでいた。
 #
-# 揮発するのはこの3つ:
+# 揮発するのはこの4つ:
+#   - **同じツリーで他のClaudeセッションが動いていないか**（居るなら`git add -A`は禁物）
 #   - FinderAIが動いているか（動いていたら入れ替えない）
 #   - tmuxに誰のセッションが居るか（FinderAI由来のものは触らない）
 #   - インストール済みアプリがどのcommitか（mainと違っても、急ぐとは限らない）
+#
+# 4つ目を最初の版で書き忘れ、その日のうちに代償を払った。`git status`を見ずに
+# `git add -A`して、隣のセッションのコミット前の作業3ファイルを巻き込み、
+# 未コンパイルのテストごとmainへ流してリモートを赤くした。
 set -eu
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
+
+echo "== 同じツリーに誰が居るか =="
+# Claudeのセッションは`/tmp/cc-socks/<pid>.sock`を置く。そのpidの作業フォルダを
+# 引けば、このツリーを共有している相手が分かる。自分は親を辿って除く。
+SOCKS=/tmp/cc-socks
+self=""
+pid=$$
+while [ "${pid:-0}" -gt 1 ]; do
+    if [ -S "$SOCKS/$pid.sock" ]; then self="$pid"; break; fi
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ' || true)
+    [ -n "$pid" ] || break
+done
+
+others=0
+if [ -d "$SOCKS" ]; then
+    for sock in "$SOCKS"/*.sock; do
+        [ -S "$sock" ] || continue
+        other=$(basename "$sock" .sock)
+        [ "$other" = "$self" ] && continue
+        cwd=$(lsof -a -p "$other" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+        [ "$cwd" = "$ROOT" ] || continue
+        others=$((others + 1))
+        printf '  pid %s がこのツリーで動いている\n' "$other"
+    done
+fi
+
+if [ "$others" -eq 0 ]; then
+    echo "  自分だけ"
+else
+    echo
+    echo "  ⚠️ **\`git add -A\` と \`git commit -a\` を使わないこと。**"
+    echo "     作業ツリーの変更は相手のものかもしれない。必ず \`git add <パス>\` で名指しする。"
+    echo "     相手のファイルを直したくなったら、手を入れる前に SendMessage で伝える。"
+    echo
+    echo "     腰を据えて直すなら、ツリーを分けるのがいちばん確か:"
+    echo "       git worktree add ../finder_AI-<用件> -b <ブランチ> origin/main"
+    echo "     ブランチの切り替えも stash も、共有しているツリーでは相手の手元を動かす。"
+fi
 
 echo "== git =="
 printf '  ブランチ: %s\n' "$(git branch --show-current 2>/dev/null || echo '(不明)')"

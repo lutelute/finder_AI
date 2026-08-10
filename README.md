@@ -213,7 +213,11 @@ cd finder_AI
 ./scripts/install-workspace-app.sh   # /Applications へ反映
 ```
 
-`./scripts/check-working-state.sh`は、手を動かす前にいまどこに居るのかを読むだけの確認です。git、インストール済みアプリのcommit、**FinderAIが動いているかどうか**、tmuxに残っているセッションを並べます。動いている最中に`install-workspace-app.sh`を走らせると、使っている人の画面と生きているセッションを巻き込みます。
+`./scripts/check-working-state.sh`は、手を動かす前にいまどこに居るのかを読むだけの確認です。**同じ作業ツリーで他のClaudeセッションが動いていないか**、git、インストール済みアプリのcommit、**FinderAIが動いているかどうか**、tmuxに残っているセッションを並べます。
+
+このリポジトリは1つの作業ツリーを複数のセッションが共有することがあります。相手が居るときに`git add -A`を使うと、コミット前の他人の作業を巻き込んでmainへ流してしまいます（実際に起きました）。腰を据えて直すなら`git worktree add`でツリーを分けてください——ブランチの切り替えもstashも、共有しているツリーでは相手の手元を動かします。
+
+FinderAIが動いている最中に`install-workspace-app.sh`を走らせると、使っている人の画面と生きているセッションを巻き込みます。
 
 生成物:
 
