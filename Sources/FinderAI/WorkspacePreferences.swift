@@ -26,6 +26,8 @@ struct WorkspacePreferences {
         static let sortColumn = "workspace.sortColumn"
         static let sortAscending = "workspace.sortAscending"
         static let showHiddenFiles = "workspace.showHiddenFiles"
+        static let listGrouping = "workspace.listGrouping"
+        static let showsGroupColumn = "workspace.showsGroupColumn"
         static let terminalHeight = "workspace.terminalHeight"
         static let terminalWidth = "workspace.terminalWidth"
         static let terminalEdge = "workspace.terminalEdge"
@@ -364,6 +366,26 @@ struct WorkspacePreferences {
     var showHiddenFiles: Bool {
         get { defaults.bool(forKey: Key.showHiddenFiles) }
         nonmutating set { defaults.set(newValue, forKey: Key.showHiddenFiles) }
+    }
+
+    /// 一覧を束ごとの見出しで区切るか。
+    ///
+    /// 既定は入り。ただし切れるようにしてあるのが肝心で、見出しで区切ると
+    /// 並べ替えが束の中だけに効く — 名前順に通して眺めたいときに邪魔になる。
+    /// 切ってあっても「束」の列で所属は読めるし、その列で並べれば束ごとに寄る。
+    var listGrouping: Bool {
+        get { defaults.object(forKey: Key.listGrouping) as? Bool ?? true }
+        nonmutating set { defaults.set(newValue, forKey: Key.listGrouping) }
+    }
+
+    /// 一覧に「束」の列を出すか。既定は切り。
+    ///
+    /// 常に出すと名前の幅が150pt削られ、狭い窓では横スクロールが出た。所属は
+    /// 見出しでも読めるので、列は要る人だけが出す。見出しを切って名前順に通して
+    /// 眺めたいときに、この列で並べれば束ごとに寄る。
+    var showsGroupColumn: Bool {
+        get { defaults.bool(forKey: Key.showsGroupColumn) }
+        nonmutating set { defaults.set(newValue, forKey: Key.showsGroupColumn) }
     }
 
     // MARK: - Terminal

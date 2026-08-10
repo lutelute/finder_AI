@@ -441,6 +441,8 @@ final class WorkspaceBrowserViewController: NSViewController {
         static let modified = NSUserInterfaceItemIdentifier("modified")
         static let size = NSUserInterfaceItemIdentifier("size")
         static let kind = NSUserInterfaceItemIdentifier("kind")
+        /// 所属する束。並べ替えの軸にもなる。
+        static let groups = NSUserInterfaceItemIdentifier("groups")
     }
 
     private var navigator: WorkspaceNavigator
@@ -469,6 +471,7 @@ final class WorkspaceBrowserViewController: NSViewController {
     private var fileRows: [FileRow] = []
     /// ⌘Gで地図から戻る先。地図しか見ていなければ一覧へ。
     private var modeBeforeMap: WorkspaceViewMode = .list
+    private let groupingToggle = NSButton()
     private var addToGroupItem = NSMenuItem()
     private var removeFromGroupItem = NSMenuItem()
     private var itemGroups: WorkspaceItemGroups?
@@ -649,6 +652,7 @@ final class WorkspaceBrowserViewController: NSViewController {
     override func viewDidAppear() {
         super.viewDidAppear()
         view.window?.makeFirstResponder(firstResponderForCurrentMode)
+        applyGroupColumnVisibility()
         observeVolumeChanges()
         observeFocusChanges()
     }
@@ -889,12 +893,31 @@ final class WorkspaceBrowserViewController: NSViewController {
         pathMenu.addItem(copyCDItem)
         ribbonPath.menu = pathMenu
         ribbonPath.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        ribbonPath.translatesAutoresizingMaskIntoConstraints = false
-        bar.addSubview(ribbonPath)
+
+        // 見えるところに置く。隠れたメニューの奥だと、見出しが邪魔なときに
+        // 切れることに気づけない。
+        groupingToggle.setButtonType(.switch)
+        groupingToggle.title = "束でまとめる"
+        groupingToggle.font = .systemFont(ofSize: 10.5)
+        groupingToggle.controlSize = .small
+        groupingToggle.target = self
+        groupingToggle.action = #selector(toggleListGrouping)
+        groupingToggle.toolTip = "切ると、名前や変更日で一覧ぜんぶを通して並べられます（束は「束」の列で読めます）"
+        groupingToggle.state = preferences.listGrouping ? .on : .off
+
+        [ribbonPath, groupingToggle].forEach {
+            $0.translatesAutoresizingMaskIntoConstraints = false
+            bar.addSubview($0)
+        }
         NSLayoutConstraint.activate([
             ribbonPath.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
-            ribbonPath.trailingAnchor.constraint(lessThanOrEqualTo: bar.trailingAnchor, constant: -10),
-            ribbonPath.centerYAnchor.constraint(equalTo: bar.centerYAnchor)
+            ribbonPath.trailingAnchor.constraint(
+                lessThanOrEqualTo: groupingToggle.leadingAnchor,
+                constant: -10
+            ),
+            ribbonPath.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            groupingToggle.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
+            groupingToggle.centerYAnchor.constraint(equalTo: bar.centerYAnchor)
         ])
         return bar
     }
@@ -975,6 +998,36 @@ final class WorkspaceBrowserViewController: NSViewController {
     @objc func selectColumnView() { select(viewMode: .column) }
     @objc func selectGalleryView() { select(viewMode: .gallery) }
     @objc func selectMapView() { select(viewMode: .map) }
+
+    /// 「束」の列を出す／隠す。列見出しの右クリックと「表示」メニューの両方から。
+    @objc func toggleGroupColumn() {
+        preferences.showsGroupColumn.toggle()
+        applyGroupColumnVisibility()
+    }
+
+    private func applyGroupColumnVisibility() {
+        guard let column = fileTable.tableColumns.first(where: { $0.identifier == Column.groups })
+        else { return }
+        let shows = preferences.showsGroupColumn
+        guard column.isHidden == shows else { return }
+        column.isHidden = !shows
+        layoutFileColumns()
+        fileTable.reloadData()
+    }
+
+    /// 一覧の束の見出しを入り切りする。
+    ///
+    /// 見出しで区切ると並べ替えが束の中だけに効く。名前順に通して眺めたいときは
+    /// 切る。切っても「束」の列で所属は読めるので、束が見えなくなるわけではない。
+    @objc func toggleListGrouping() {
+        preferences.listGrouping.toggle()
+        groupingToggle.state = preferences.listGrouping ? .on : .off
+        let selection = selectedItems.map(\.url)
+        rebuildFileRows()
+        fileTable.reloadData()
+        restoreFlatSelection(selection)
+        updateStatus()
+    }
 
     /// 地図と、その前に見ていた表示を行き来する（⌘G）。
     ///
@@ -1217,7 +1270,22 @@ final class WorkspaceBrowserViewController: NSViewController {
         kind.minWidth = 110
         kind.width = 145
         kind.sortDescriptorPrototype = NSSortDescriptor(key: Column.kind.rawValue, ascending: true)
-        return [name, modified, size, kind]
+        // 束を属性の一つとして持つ。見出しで区切らなくても所属が読めるし、
+        // この列で並べれば束ごとにまとまる — 見出しを切るのとは違って、
+        // 名前や更新日での並べ替えを捨てずに済む。
+        let groups = NSTableColumn(identifier: Column.groups)
+        groups.title = "束"
+        groups.minWidth = 90
+        groups.width = 150
+        // 既定は隠す。常に出すと名前の幅が150pt削られ、狭い窓では横スクロールが
+        // 出た。所属は見出しでも読めるので、列は要る人だけが出す。
+        groups.isHidden = true
+        groups.sortDescriptorPrototype = NSSortDescriptor(
+            key: Column.groups.rawValue,
+            ascending: true,
+            selector: #selector(NSString.localizedStandardCompare(_:))
+        )
+        return [name, modified, size, kind, groups]
     }
 
     /// When the list is wider than the columns need, the leftover belongs to
@@ -1249,7 +1317,8 @@ final class WorkspaceBrowserViewController: NSViewController {
     /// actually changes — assigning a column width re-enters layout.
     private func layoutFileColumns() {
         guard let viewport = listScrollView?.contentView.bounds.width else { return }
-        let columns = fileTable.tableColumns
+        // 隠れている列は場所を取らない。数に入れると名前が要らぬぶん縮む。
+        let columns = fileTable.tableColumns.filter { !$0.isHidden }
         guard let name = columns.first, columns.count > 1, viewport > 0 else { return }
         let target = Self.nameColumnWidth(
             viewport: viewport,
@@ -1283,6 +1352,17 @@ final class WorkspaceBrowserViewController: NSViewController {
             WorkspaceDragDrop.externalSourceOperations,
             forLocal: false
         )
+        // 列見出しの右クリックで列を出し入れする（Finderと同じ場所）。
+        let headerMenu = NSMenu(title: "列")
+        let groupColumnItem = NSMenuItem(
+            title: "束",
+            action: #selector(toggleGroupColumn),
+            keyEquivalent: ""
+        )
+        groupColumnItem.target = self
+        headerMenu.addItem(groupColumnItem)
+        fileTable.headerView?.menu = headerMenu
+
         fileTable.onOpen = { [weak self] in self?.openSelection() }
         fileTable.onQuickLook = { [weak self] in self?.toggleQuickLook() }
         fileTable.onRenameRequested = { [weak self] row in
@@ -2075,7 +2155,8 @@ final class WorkspaceBrowserViewController: NSViewController {
     /// 配下検索の結果にも見出しを出さない — 別の階層から集まった項目が並んでいて、
     /// 「このフォルダの中をどう束ねたか」とは無関係だから。
     private func rebuildFileRows() {
-        guard let groups = itemGroups,
+        guard preferences.listGrouping,
+              let groups = itemGroups,
               !groups.groups.isEmpty,
               !usesRecursiveSearch else {
             fileRows = displayedItems.indices.map { .item(index: $0, otherGroups: []) }
@@ -2392,6 +2473,12 @@ final class WorkspaceBrowserViewController: NSViewController {
                 comparison = left == right ? .orderedSame : (left < right ? .orderedAscending : .orderedDescending)
             case Column.kind:
                 comparison = (lhs.typeDescription ?? "").localizedStandardCompare(rhs.typeDescription ?? "")
+            case Column.groups:
+                // どこにも属さないものは末尾へ。空文字は先頭に来てしまう。
+                let left = itemGroups?.groupNames(for: lhs.name).joined(separator: ", ") ?? ""
+                let right = itemGroups?.groupNames(for: rhs.name).joined(separator: ", ") ?? ""
+                comparison = (left.isEmpty ? "\u{10FFFF}" : left)
+                    .localizedStandardCompare(right.isEmpty ? "\u{10FFFF}" : right)
             default:
                 comparison = lhs.name.localizedStandardCompare(rhs.name)
             }
@@ -3182,6 +3269,10 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
                 : item.fileSize.map(Self.byteFormatter.string(fromByteCount:)) ?? "—"
         case Column.kind:
             cell.textField?.stringValue = item.typeDescription ?? "—"
+        case Column.groups:
+            let names = itemGroups?.groupNames(for: item.name) ?? []
+            cell.textField?.stringValue = names.isEmpty ? "—" : names.joined(separator: ", ")
+            cell.toolTip = names.isEmpty ? nil : names.joined(separator: "、")
         default:
             cell.textField?.stringValue = ""
         }
@@ -3478,6 +3569,11 @@ extension WorkspaceBrowserViewController: NSSearchFieldDelegate {
 
 extension WorkspaceBrowserViewController: NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
+        if menu === fileTable.headerView?.menu {
+            menu.item(withTitle: "束")?.state = preferences.showsGroupColumn ? .on : .off
+            return
+        }
+
         if menu === sidebarTable.menu {
             let item = clickedSidebarItem
             let pins = preferences.pins
@@ -3545,6 +3641,12 @@ extension WorkspaceBrowserViewController: NSMenuItemValidation {
         case #selector(createGroupWithSelection), #selector(removeSelectionFromAllGroups):
             return canEditGroupsForSelection
         // 迷子がいなければ整理するものが無い。押せるように見せない。
+        case #selector(toggleGroupColumn):
+            menuItem.state = preferences.showsGroupColumn ? .on : .off
+            return true
+        case #selector(toggleListGrouping):
+            menuItem.state = preferences.listGrouping ? .on : .off
+            return true
         case #selector(pruneMissingGroupMembers):
             guard itemGroupsError == nil else { return false }
             return !(itemGroups?.missingMembers(amongNames: presentNames).isEmpty ?? true)

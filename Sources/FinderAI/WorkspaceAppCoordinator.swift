@@ -1004,6 +1004,17 @@ final class WorkspaceAppCoordinator {
             action: #selector(WorkspaceBrowserViewController.toggleMapView),
             key: "g"
         ))
+        viewMenu.addItem(.separator())
+        viewMenu.addItem(item(
+            "束でまとめる",
+            action: #selector(WorkspaceBrowserViewController.toggleListGrouping),
+            key: ""
+        ))
+        viewMenu.addItem(item(
+            "「束」の列を表示",
+            action: #selector(WorkspaceBrowserViewController.toggleGroupColumn),
+            key: ""
+        ))
         let cycleView = item(
             "表示モードを切り替え",
             action: #selector(WorkspaceBrowserViewController.toggleColumnView),
