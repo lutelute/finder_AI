@@ -436,12 +436,17 @@ final class WorkspaceBrowserViewController: NSViewController {
     /// listビューの行。見出しが挟まるので行番号と`displayedItems`の添字は一致しない。
     /// 束の定義が無いフォルダでは見出しが0本になり、行番号＝添字に戻る。
     private enum FileRow: Equatable {
-        case header(String)
+        /// 束の名前。`nil`はどの束にも属さないものの見出しで、「未分類」という名前の
+        /// 束とは別物。同じ文字列で持つと、ユーザーが「未分類」という束を作った瞬間に
+        /// 二つが同じ見出しになる。
+        case header(String?)
         /// `displayedItems`の添字。複数の束に属する項目は、同じ添字を複数の行が指す。
         case item(Int)
     }
 
     private var fileRows: [FileRow] = []
+    private var addToGroupItem = NSMenuItem()
+    private var removeFromGroupItem = NSMenuItem()
     private var itemGroups: WorkspaceItemGroups?
     /// 定義が読めなかったときの理由。見出しは出さないが、黙って無かったことにはしない。
     private var itemGroupsError: String?
@@ -1248,6 +1253,13 @@ final class WorkspaceBrowserViewController: NSViewController {
         add("情報を見る", #selector(showInfo))
         add("Finderで表示", #selector(revealSelectionInFinder))
         add("サイドバーにピン留め", #selector(togglePin))
+        // Populated in menuWillOpen: どの束があるかはフォルダごとに違う。
+        addToGroupItem = NSMenuItem(title: "束に入れる", action: nil, keyEquivalent: "")
+        addToGroupItem.submenu = NSMenu()
+        menu.addItem(addToGroupItem)
+        removeFromGroupItem = NSMenuItem(title: "束から外す", action: nil, keyEquivalent: "")
+        removeFromGroupItem.submenu = NSMenu()
+        menu.addItem(removeFromGroupItem)
         menu.addItem(.separator())
 
         add("カット", #selector(cutSelection))
@@ -1976,7 +1988,7 @@ final class WorkspaceBrowserViewController: NSViewController {
 
         var rows: [FileRow] = []
         for section in groups.sections(for: displayedItems) {
-            rows.append(.header(section.name ?? Self.ungroupedTitle))
+            rows.append(.header(section.name))
             rows.append(contentsOf: section.items.compactMap { indexByURL[$0.url].map(FileRow.item) })
         }
         fileRows = rows
@@ -1999,6 +2011,213 @@ final class WorkspaceBrowserViewController: NSViewController {
             guard let item = item(atRow: row) else { return false }
             return urls.contains(item.url)
         })
+    }
+
+    /// 束に入れられるのは、いま開いているフォルダの直下にあるものだけ。メンバーを
+    /// 相対名で持っているので、別の階層のものを入れても指せない。一つでも外から来て
+    /// いれば`nil` — 半分だけ受け取ると、落とした本人には何が入ったか分からない。
+    private func linkableNames(from sources: [URL]) -> [String]? {
+        guard !sources.isEmpty else { return nil }
+        let parent = navigator.currentDirectory.standardizedFileURL
+        let names = sources.compactMap { url -> String? in
+            let url = url.standardizedFileURL
+            return url.deletingLastPathComponent() == parent ? url.lastPathComponent : nil
+        }
+        return names.count == sources.count ? names : nil
+    }
+
+    /// 束の定義を書き換えて保存する。
+    ///
+    /// 読めない定義があるときは断る。壊れたJSONの上から正常なJSONを書くと、
+    /// 手で書いた束が完全に消える — しかも「保存できた」ように見える。
+    @discardableResult
+    private func mutateGroups(
+        actionName: String,
+        _ change: (inout WorkspaceItemGroups) -> Void
+    ) -> Bool {
+        guard itemGroupsError == nil else {
+            presentError(
+                title: "束を変更できません",
+                message: "\(WorkspaceItemGroups.fileName) が読めない状態です。"
+                    + "上書きすると、そこに書かれている束が失われます。先にファイルを直してください。"
+            )
+            return false
+        }
+        var groups = itemGroups ?? WorkspaceItemGroups()
+        change(&groups)
+        return applyGroups(groups, actionName: actionName)
+    }
+
+    /// 定義を差し替えて画面に反映する。`nil`は「定義そのものが無い状態」で、
+    /// 束を初めて作る操作を取り消したときにここへ戻る。
+    @discardableResult
+    private func applyGroups(_ groups: WorkspaceItemGroups?, actionName: String) -> Bool {
+        let directory = navigator.currentDirectory
+        let previous = itemGroups
+        do {
+            if let groups {
+                try groups.save(to: directory)
+            } else {
+                let url = WorkspaceItemGroups.definitionURL(in: directory)
+                if FileManager.default.fileExists(atPath: url.path) {
+                    try FileManager.default.removeItem(at: url)
+                }
+            }
+        } catch {
+            presentError(title: "束を保存できません", message: error.localizedDescription)
+            return false
+        }
+
+        itemGroups = groups
+        itemGroupsError = nil
+        workspaceUndoManager?.registerUndo(withTarget: self) { target in
+            MainActor.assumeIsolated { target.applyGroups(previous, actionName: actionName) }
+        }
+        workspaceUndoManager?.setActionName(actionName)
+        refreshRowsPreservingSelection()
+        return true
+    }
+
+    /// 束だけが変わったときの再描画。一覧の中身は同じなので読み直さない。
+    private func refreshRowsPreservingSelection() {
+        let selected = selectedItems.map(\.url)
+        rebuildFileRows()
+        fileTable.reloadData()
+        restoreFlatSelection(selected)
+        updateStatus()
+    }
+
+    /// 束のメニューを、いまのフォルダの定義と選択に合わせて組み直す。
+    ///
+    /// ドラッグだけだと最初の一つを作れない — 落とす先の見出しがまだ無いので。
+    /// 「新しい束…」がその入口で、ここから作ればJSONを手で書かずに始められる。
+    private func rebuildGroupSubmenus(for selection: [WorkspaceItem]) {
+        let names = linkableNames(from: selection.map(\.url))
+        let canEdit = names != nil && itemGroupsError == nil
+        let existing = itemGroups?.groups.map(\.name) ?? []
+
+        addToGroupItem.isEnabled = canEdit
+        let addMenu = NSMenu()
+        for name in existing {
+            // すでに全員が入っている束は、選んでも何も起きない。
+            let allInside = names?.allSatisfy { member in
+                itemGroups?.groupNames(for: member).contains(name) == true
+            } ?? false
+            let item = NSMenuItem(title: name, action: #selector(addSelectionToGroup(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = name
+            item.isEnabled = canEdit && !allInside
+            item.state = allInside ? .on : .off
+            addMenu.addItem(item)
+        }
+        if !existing.isEmpty { addMenu.addItem(.separator()) }
+        let newGroup = NSMenuItem(title: "新しい束…", action: #selector(createGroupWithSelection), keyEquivalent: "")
+        newGroup.target = self
+        newGroup.isEnabled = canEdit
+        addMenu.addItem(newGroup)
+        addToGroupItem.submenu = addMenu
+
+        // 外せる束は、選んだものが実際に入っている束だけ。
+        let joined = names.map { members in
+            existing.filter { name in
+                members.contains { itemGroups?.groupNames(for: $0).contains(name) == true }
+            }
+        } ?? []
+        removeFromGroupItem.isEnabled = canEdit && !joined.isEmpty
+        let removeMenu = NSMenu()
+        for name in joined {
+            let item = NSMenuItem(
+                title: name,
+                action: #selector(removeSelectionFromGroup(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = name
+            removeMenu.addItem(item)
+        }
+        if joined.count > 1 {
+            removeMenu.addItem(.separator())
+            let all = NSMenuItem(
+                title: "すべての束から外す",
+                action: #selector(removeSelectionFromAllGroups),
+                keyEquivalent: ""
+            )
+            all.target = self
+            removeMenu.addItem(all)
+        }
+        removeFromGroupItem.submenu = removeMenu
+    }
+
+    @objc private func addSelectionToGroup(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String,
+              let members = linkableNames(from: selectedItems.map(\.url)) else { return }
+        mutateGroups(actionName: "「\(name)」に入れる") { groups in
+            members.forEach { groups.add($0, to: name) }
+        }
+    }
+
+    @objc private func removeSelectionFromGroup(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String,
+              let members = linkableNames(from: selectedItems.map(\.url)) else { return }
+        mutateGroups(actionName: "「\(name)」から外す") { groups in
+            members.forEach { groups.remove($0, from: name) }
+        }
+    }
+
+    @objc private func removeSelectionFromAllGroups() {
+        guard let members = linkableNames(from: selectedItems.map(\.url)) else { return }
+        mutateGroups(actionName: "すべての束から外す") { groups in
+            members.forEach { groups.removeFromAllGroups($0) }
+        }
+    }
+
+    @objc private func createGroupWithSelection() {
+        guard let members = linkableNames(from: selectedItems.map(\.url)) else { return }
+        guard let name = askForGroupName() else { return }
+        mutateGroups(actionName: "「\(name)」を作る") { groups in
+            members.forEach { groups.add($0, to: name) }
+        }
+    }
+
+    /// 束の名前を聞く。空白だけの名前と、すでにある名前は断る — 同じ名前の束が
+    /// 二つあると、どちらの見出しに落としたのか区別できない。
+    private func askForGroupName() -> String? {
+        let alert = NSAlert()
+        alert.messageText = "新しい束"
+        alert.informativeText = "選んだものをまとめる名前を入れてください。フォルダは動きません。"
+        alert.addButton(withTitle: "作成")
+        alert.addButton(withTitle: "キャンセル")
+
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.placeholderString = "ツール開発"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return nil }
+        guard itemGroups?.groups.contains(where: { $0.name == name }) != true else {
+            presentError(title: "同じ名前の束があります", message: "「\(name)」はすでにあります。")
+            return nil
+        }
+        return name
+    }
+
+    /// 見出しに落とされたものを束に紐づける。ファイルは動かない。
+    private func linkSources(_ sources: [URL], toGroupAtRow row: Int) -> Bool {
+        guard fileRows.indices.contains(row),
+              case .header(let title) = fileRows[row],
+              let names = linkableNames(from: sources) else { return false }
+
+        // 未分類は束ではなく「どの束にも居ない場所」。そこへ落とすのは外す操作。
+        guard let title else {
+            return mutateGroups(actionName: "束から外す") { groups in
+                names.forEach { groups.removeFromAllGroups($0) }
+            }
+        }
+        return mutateGroups(actionName: "「\(title)」に入れる") { groups in
+            names.forEach { groups.add($0, to: title) }
+        }
     }
 
     private func applyFilterAndSort() {
@@ -2751,7 +2970,7 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
                 withIdentifier: NSUserInterfaceItemIdentifier("WorkspaceGroupHeader"),
                 owner: self
             ) as? WorkspaceSidebarHeaderView ?? WorkspaceSidebarHeaderView()
-            cell.configure(title: title)
+            cell.configure(title: title ?? Self.ungroupedTitle)
             return cell
         }
 
@@ -2880,9 +3099,13 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
         }
 
         guard tableView === fileTable else { return [] }
-        // 束の見出しは今のところ落とし先ではない。ここで現在のフォルダへの移動に
-        // 落とすと、見出しを狙った手が黙ってファイルを動かすことになる。
-        if isHeaderRow(row), dropOperation == .on { return [] }
+        // 見出しへのドロップは束への紐づけ。ファイルは動かないので.link — 見た目にも
+        // 移動やコピーと違う矢印が出て、手が滑ってファイルを動かしたのではないと分かる。
+        if isHeaderRow(row) {
+            guard itemGroupsError == nil, linkableNames(from: sources) != nil else { return [] }
+            tableView.setDropRow(row, dropOperation: .on)
+            return .link
+        }
         let destination: URL
         if let item = item(atRow: row), item.isDirectory {
             destination = item.url
@@ -2906,7 +3129,9 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
             guard let sidebarDestination = sidebarDropDestination(at: row) else { return false }
             destination = sidebarDestination
         } else if tableView === fileTable {
-            if isHeaderRow(row), dropOperation == .on { return false }
+            if isHeaderRow(row), dropOperation == .on {
+                return linkSources(sources, toGroupAtRow: row)
+            }
             let target = item(atRow: row)
             destination = target?.isDirectory == true
                 ? (target?.url ?? navigator.currentDirectory)
@@ -3104,7 +3329,7 @@ extension WorkspaceBrowserViewController: NSMenuDelegate {
 
         if effectiveViewMode == .list {
             let clickedRow = fileTable.clickedRow
-            if displayedItems.indices.contains(clickedRow),
+            if item(atRow: clickedRow) != nil,
                !fileTable.selectedRowIndexes.contains(clickedRow) {
                 fileTable.selectRowIndexes(IndexSet(integer: clickedRow), byExtendingSelection: false)
             }
@@ -3125,6 +3350,7 @@ extension WorkspaceBrowserViewController: NSMenuDelegate {
         menu.item(withTitle: "ペースト")?.isEnabled = pasteboardHasFiles
         rebuildOpenWithSubmenu(for: selection.map(\.url))
         rebuildShareSubmenu(for: selection.map(\.url))
+        rebuildGroupSubmenus(for: selection)
 
         // Pinning targets folders; with nothing selected it means the folder on
         // screen, which is always a folder.
@@ -3151,9 +3377,28 @@ extension WorkspaceBrowserViewController: NSMenuItemValidation {
         // current folder.
         case #selector(duplicateSelection), #selector(makeAliasForSelection):
             return !selectedItems.isEmpty
+        // 束の操作は、いまのフォルダの直下を選んでいるときだけ。相対名で持つので
+        // 別の階層のものは指せない。定義が読めていないときも触らせない。
+        case #selector(createGroupWithSelection), #selector(removeSelectionFromAllGroups):
+            return canEditGroupsForSelection
+        case #selector(addSelectionToGroup(_:)):
+            guard canEditGroupsForSelection,
+                  let members = linkableNames(from: selectedItems.map(\.url)),
+                  let name = menuItem.representedObject as? String else { return false }
+            // 全員がもう入っている束は、選んでも何も起きない。
+            return !members.allSatisfy { itemGroups?.groupNames(for: $0).contains(name) == true }
+        case #selector(removeSelectionFromGroup(_:)):
+            guard canEditGroupsForSelection,
+                  let members = linkableNames(from: selectedItems.map(\.url)),
+                  let name = menuItem.representedObject as? String else { return false }
+            return members.contains { itemGroups?.groupNames(for: $0).contains(name) == true }
         default:
             return true
         }
+    }
+
+    private var canEditGroupsForSelection: Bool {
+        itemGroupsError == nil && linkableNames(from: selectedItems.map(\.url)) != nil
     }
 }
 
