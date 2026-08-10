@@ -1,285 +1,271 @@
 import CoreGraphics
 import Foundation
 
-/// 束を平面に散らす力学配置。
+/// 束を「島」として並べ、複数の束に属するものをその境界に置く配置。
 ///
-/// 一覧は線形なので、複数の束に属するものを二度並べるしかない。同じ実体が二行に
-/// 見えて、どこが重なりなのかは行からは読めない。平面ならそれが**位置**で出る —
-/// 二つの束の両方から引かれた項目は、その間で釣り合って止まる。
+/// 一覧は線形なので、二つの束に属するものは二行に割れる。同じ実体が二度並ぶだけで、
+/// どこが重なりなのかは行からは読めない。平面ならそれが**位置**で出る — 両方の島に
+/// 属する項目は、その境界に立つ。それがこの表示の主題。
 ///
-/// 力は四つ。
-/// - 近くのノード同士が反発する（重ならないため）
-/// - 束を共有するノード同士が引き合う。共有する束が多いほど強い
-/// - 束ごとに決めた居場所へ引かれる（束同士が重ならないため）
-/// - 中心へ弱く引かれる（画面の外へ流れないため）
+/// ## 力学をやめた経緯
 ///
-/// 乱数を使わない。同じフォルダを開き直すたびに配置が変わると、
-/// 「前はここにあった」が通じなくなり、地図として読めなくなる。初期配置は
-/// 黄金角のらせんで、番号だけから決まる。
+/// はじめはばね・反発・アンカーで解いていた。三度作り直して、そのたびに実機で
+/// 別の破綻が出た。
+///
+/// 1. 全152項目を力学に入れた → 束に属さない116個が29個を包囲し、画面の八割を
+///    無関係な点が占めた（「カツかつでえらい見辛い」）。束に属さないものは
+///    そもそも受け取らないことにした（`WorkspaceItemGroups.partition`）。
+/// 2. 束ごとのアンカーを置いた → 束は固まったが、点が島の端に寄って名前が枠から
+///    漏れ、ラベル同士がぶつかって**7項目のうち3つしか名前が出なかった**。
+/// 3. 減衰と手数上限で止めた → 止まりはしたが、止まる場所が力の釣り合い次第で、
+///    名前が読める配置になる保証がどこにも無かった。
+///
+/// 地図に求められていたのは「動くこと」ではなく「重なりが場所で分かること」だった。
+/// 動きは目的ではなく、配置を決める手段にすぎず、その手段が可読性を保証しない。
+/// そこで**島の中は名前順に整列**し、**複数所属だけを境界に置く**決定的な配置にした。
+/// 揺れない・必ず名前が出る・同じフォルダなら必ず同じ地図になる。
 public struct WorkspaceClusterLayout: Equatable, Sendable {
     public struct Node: Equatable, Sendable {
         public let name: String
         public let isDirectory: Bool
-        /// 属している束。空ならどこにも属さない。
+        /// 属している束。ここに来るものは必ず一つ以上持つ。
         public let groups: [String]
-        public var position: CGPoint
-        public var velocity: CGVector
+        public let position: CGPoint
+        /// 名前を置く向き。整列した島の中では点の右、境界では点の下。
+        public let labelPlacement: LabelPlacement
 
         public var isShared: Bool { groups.count > 1 }
     }
 
+    public enum LabelPlacement: Equatable, Sendable {
+        case trailing
+        case below
+    }
+
+    /// 一つの束と、その島の矩形。
+    public struct Island: Equatable, Sendable {
+        public let name: String
+        public let frame: CGRect
+        /// 島の中に並べきれなかった数。0でなければ「ほか N」と出す必要がある。
+        public let overflow: Int
+    }
+
     public private(set) var nodes: [Node]
+    public private(set) var islands: [Island]
     public private(set) var size: CGSize
 
-    /// 束を共有するノードの組と、共有している数。重なりが多いほど強く引き合う。
-    private let edges: [(a: Int, b: Int, weight: Double)]
+    /// 複数の束に属するノードの添字。橋を描く相手。
+    public private(set) var bridges: [Int]
 
-    /// 束ごとの居場所。円周上に等間隔で置く。
-    ///
-    /// バネと反発だけだと、束は固まるものの互いに重なって同じ場所に積もった
-    /// （実測: 6束が画面の左三分の一に密集した）。束同士を引き離す力が
-    /// どこにも無いため。ここが各束の帰る場所になり、束の間隔を決める。
-    private var anchors: [String: CGPoint]
-    private let anchorPull: Double = 0.011
+    private let groupedItems: [WorkspaceItem]
+    private let groups: WorkspaceItemGroups?
 
-    // 実測で決めた値。~/Documents/GitHub（152項目・うち束に属するのは30ほど）で
-    // 束が固まって見えるところまで合わせた。
-    private let repulsion: Double = 9_000
-    /// この距離より遠い相手からは押されない。
-    ///
-    /// 全対全で反発させると、束に属さない120個が出す押しの合計が束の引力を上回り、
-    /// 束が集まる前に画面全体へ広がってしまった（最初の実装がそうなった）。
-    /// 遠くを切ると力が局所的になり、束がまとまる余地ができる。
-    private let repulsionCutoff: Double = 190
-    private let springStiffness: Double = 0.0075
-    private let springLength: Double = 62
-    private let centering: Double = 0.0016
-    /// 束に属さないものへの中心引力の倍率。弱くすると外周へ押し出され、
-    /// 中央が束のための場所として空く。
-    private let looseCentering: Double = 0.45
-    private let damping: Double = 0.82
-    private let maxSpeed: Double = 24
+    /// 島の内側の余白と、束名の帯の高さ。
+    public static let islandInset = CGSize(width: 14, height: 12)
+    public static let islandTitleHeight: Double = 26
+    /// 島の中の一行。点と名前が並ぶ高さ。
+    public static let rowHeight: Double = 21
 
-    /// 進めた手数。これで冷やしていく。
-    ///
-    /// 力の釣り合いだけに任せると、いつまでも小刻みに揺れ続けた。地図が静止
-    /// しないと目で追う先が定まらないので、手数とともに減衰を強め、`settleSteps`
-    /// で必ず止まるようにしている。物理の正しさより、止まることを取る。
-    private var stepCount = 0
-    private let settleSteps = 420
-
-    public static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.nodes == rhs.nodes && lhs.size == rhs.size
+    public init(groupedItems: [WorkspaceItem], groups: WorkspaceItemGroups?, size: CGSize) {
+        self.groupedItems = groupedItems
+        self.groups = groups
+        self.size = size
+        (islands, nodes, bridges) = Self.build(items: groupedItems, groups: groups, size: size)
     }
 
-    public init(items: [WorkspaceItem], groups: WorkspaceItemGroups?, size: CGSize) {
-        self.size = size
-        let center = CGPoint(x: size.width / 2, y: size.height / 2)
-        // 黄金角のらせん: 番号だけで決まり、かつ均等に散る。完全な同心円だと
-        // 力が釣り合って初手から動かない配置ができてしまう。
-        let goldenAngle = 2.399963229728653
-        let spacing = min(size.width, size.height) / (2 * max(sqrt(Double(max(items.count, 1))), 1))
+    // MARK: - 割り付け
 
-        nodes = items.enumerated().map { index, item in
-            let angle = Double(index) * goldenAngle
-            let radius = spacing * sqrt(Double(index))
-            return Node(
+    private static func build(
+        items: [WorkspaceItem],
+        groups: WorkspaceItemGroups?,
+        size: CGSize
+    ) -> ([Island], [Node], [Int]) {
+        let names = groups?.adjacencyOrderedNames() ?? []
+        guard !names.isEmpty, size.width > 1, size.height > 1 else { return ([], [], []) }
+
+        let frames = islandFrames(count: names.count, in: size)
+        let byName = Dictionary(
+            zip(names, frames).map { ($0, $1) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        // 島に並べるのは、その島だけに属するもの。複数所属は境界へ回す。
+        var exclusive: [String: [WorkspaceItem]] = [:]
+        var shared: [WorkspaceItem] = []
+        for item in items {
+            let belongs = groups?.groupNames(for: item.name) ?? []
+            guard !belongs.isEmpty else { continue }
+            if belongs.count == 1 {
+                exclusive[belongs[0], default: []].append(item)
+            } else {
+                shared.append(item)
+            }
+        }
+
+        var built: [Node] = []
+        var islands: [Island] = []
+
+        for name in names {
+            guard let frame = byName[name] else { continue }
+            let members = (exclusive[name] ?? [])
+                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            let (placed, overflow) = place(members, in: frame, groups: [name])
+            built.append(contentsOf: placed)
+            islands.append(Island(name: name, frame: frame, overflow: overflow))
+        }
+
+        // 複数所属は、属する島の中心を結んだ中点に置く。同じ組み合わせが複数あれば、
+        // その線に垂直な向きへ等間隔にずらす — 重なると一つにしか見えない。
+        let sharedByGroups = Dictionary(grouping: shared) { item in
+            (groups?.groupNames(for: item.name) ?? []).sorted().joined(separator: "\u{1F}")
+        }
+        for key in sharedByGroups.keys.sorted() {
+            let members = (sharedByGroups[key] ?? [])
+                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            guard let first = members.first else { continue }
+            let belongs = groups?.groupNames(for: first.name) ?? []
+            let centres = belongs.compactMap { byName[$0] }
+                .map { CGPoint(x: $0.midX, y: $0.midY) }
+            guard let anchor = centroid(of: centres) else { continue }
+
+            let axis = spreadDirection(across: centres)
+            let spacing = 78.0
+            let start = -(Double(members.count) - 1) / 2
+            for (index, item) in members.enumerated() {
+                let offset = (start + Double(index)) * spacing
+                built.append(Node(
+                    name: item.name,
+                    isDirectory: item.isDirectory,
+                    groups: groups?.groupNames(for: item.name) ?? [],
+                    position: CGPoint(x: anchor.x + axis.dx * offset, y: anchor.y + axis.dy * offset),
+                    labelPlacement: .below
+                ))
+            }
+        }
+
+        let bridges = built.indices.filter { built[$0].isShared }
+        return (islands, built, bridges)
+    }
+
+    /// 島の中に名前順で並べる。入りきらない分は数だけ返す。
+    ///
+    /// 一列に並べるのは名前を読ませるため。二列にすると一列の幅が半分になり、
+    /// `bus_inertia_project_for_SHAKIL` のような名前が切れて、並べた意味が薄れる。
+    private static func place(
+        _ items: [WorkspaceItem],
+        in frame: CGRect,
+        groups: [String]
+    ) -> ([Node], Int) {
+        let usable = frame.insetBy(dx: islandInset.width, dy: islandInset.height)
+        // 余白が島より大きいと`insetBy`は`CGRect.null`を返す。null の座標は無限で、
+        // そのまま引き算するとNaNになり`Int(_:)`が落ちる（狭い窓で実際に落ちた）。
+        guard !usable.isNull, usable.height > 0, usable.width > 0 else {
+            return ([], items.count)
+        }
+        let top = usable.minY + islandTitleHeight
+        let height = max(usable.maxY - top, 0)
+        guard height.isFinite else { return ([], items.count) }
+        let capacity = max(Int(height / rowHeight), 0)
+        guard capacity > 0 else { return ([], items.count) }
+
+        // 入りきらないときは、最後の一行を「ほか N」に譲る。
+        let shown = items.count <= capacity ? items : Array(items.prefix(max(capacity - 1, 0)))
+        let nodes = shown.enumerated().map { index, item in
+            Node(
                 name: item.name,
                 isDirectory: item.isDirectory,
-                groups: groups?.groupNames(for: item.name) ?? [],
+                groups: groups,
                 position: CGPoint(
-                    x: center.x + radius * cos(angle),
-                    y: center.y + radius * sin(angle)
+                    x: usable.minX + 8,
+                    y: top + rowHeight * (Double(index) + 0.5)
                 ),
-                velocity: .zero
+                labelPlacement: .trailing
             )
         }
-
-        let names = groups?.groups.map(\.name) ?? []
-        var placed: [String: CGPoint] = [:]
-        if names.count == 1 {
-            placed[names[0]] = center
-        } else {
-            let ring = min(size.width, size.height) * 0.30
-            for (index, name) in names.enumerated() {
-                // 上から時計回り。定義順で場所が決まるので、束を並べ替えない限り
-                // 地図の上での位置も動かない。
-                let angle = -Double.pi / 2 + 2 * .pi * Double(index) / Double(names.count)
-                placed[name] = CGPoint(
-                    x: center.x + ring * cos(angle),
-                    y: center.y + ring * sin(angle)
-                )
-            }
-        }
-        anchors = placed
-
-        var shared: [Int: Double] = [:]
-        let count = nodes.count
-        for (index, node) in nodes.enumerated() where !node.groups.isEmpty {
-            let mine = Set(node.groups)
-            for other in (index + 1)..<count {
-                let overlap = mine.intersection(nodes[other].groups).count
-                guard overlap > 0 else { continue }
-                shared[index * count + other] = Double(overlap)
-            }
-        }
-        edges = shared.map { (a: $0.key / count, b: $0.key % count, weight: $0.value) }
-            .sorted { ($0.a, $0.b) < ($1.a, $1.b) }
+        return (nodes, items.count - shown.count)
     }
 
-    /// 一手進める。呼ぶたびに少しずつ落ち着く。落ち着いたあとは何もしない。
-    public mutating func step() {
-        guard nodes.count > 1, !isSettled else { return }
-        stepCount += 1
-        // 終盤は減衰を強めて、揺れを残さずに止める。
-        let cooling = damping * (1 - 0.35 * min(Double(stepCount) / Double(settleSteps), 1))
-        var forces = [CGVector](repeating: .zero, count: nodes.count)
+    /// 領域の縦横比に合わせて枡を割る。1束なら全面。
+    public static func gridShape(count: Int, aspect: Double) -> (columns: Int, rows: Int) {
+        guard count > 1 else { return (1, 1) }
+        let columns = max(1, Int(ceil((Double(count) * max(aspect, 0.2)).squareRoot())))
+        let rows = max(1, Int(ceil(Double(count) / Double(columns))))
+        return (columns, rows)
+    }
 
-        for i in 0..<nodes.count {
-            for j in (i + 1)..<nodes.count {
-                let dx = nodes[i].position.x - nodes[j].position.x
-                let dy = nodes[i].position.y - nodes[j].position.y
-                // 完全に重なった二点は力の向きが決まらない。番号で決まるずれを
-                // 与えて必ず離れるようにする（乱数を使わないのはここでも同じ理由）。
-                let distanceSquared = max(dx * dx + dy * dy, 0.01)
-                let cutoffSquared = repulsionCutoff * repulsionCutoff
-                guard distanceSquared < cutoffSquared else { continue }
-                let distance = sqrt(distanceSquared)
-                // 束に属さないもの同士は、弱くしか押し合わない。同じ強さで押し合うと
-                // 等間隔で釣り合って格子に結晶化し、地図というより方眼紙になる。
-                // 束との間の反発はそのままなので、束の周りは空いたままになる。
-                let bothLoose = nodes[i].groups.isEmpty && nodes[j].groups.isEmpty
-                // 打ち切り境界で力をゼロへなめらかに落とす。段差のまま切ると、
-                // 境界をまたぐたびに力が現れたり消えたりして点が小刻みに震えた。
-                let falloff = 1 - distanceSquared / cutoffSquared
-                let magnitude = repulsion * (bothLoose ? 0.22 : 1) * falloff / distanceSquared
-                let ux = distance > 0.1 ? dx / distance : Double(i - j)
-                let uy = distance > 0.1 ? dy / distance : 1
-                forces[i].dx += ux * magnitude
-                forces[i].dy += uy * magnitude
-                forces[j].dx -= ux * magnitude
-                forces[j].dy -= uy * magnitude
-            }
-        }
+    private static func islandFrames(count: Int, in size: CGSize) -> [CGRect] {
+        let margin: Double = 14
+        let gap: Double = 12
+        let area = CGRect(
+            x: margin,
+            y: margin,
+            width: max(size.width - margin * 2, 1),
+            height: max(size.height - margin * 2, 1)
+        )
+        let shape = gridShape(count: count, aspect: area.width / area.height)
+        let cellWidth = (area.width - gap * Double(shape.columns - 1)) / Double(shape.columns)
+        let cellHeight = (area.height - gap * Double(shape.rows - 1)) / Double(shape.rows)
 
-        for edge in edges {
-            let dx = nodes[edge.b].position.x - nodes[edge.a].position.x
-            let dy = nodes[edge.b].position.y - nodes[edge.a].position.y
-            let distance = max(sqrt(dx * dx + dy * dy), 0.01)
-            let magnitude = springStiffness * edge.weight * (distance - springLength)
-            let ux = dx / distance
-            let uy = dy / distance
-            forces[edge.a].dx += ux * magnitude
-            forces[edge.a].dy += uy * magnitude
-            forces[edge.b].dx -= ux * magnitude
-            forces[edge.b].dy -= uy * magnitude
-        }
-
-        let center = CGPoint(x: size.width / 2, y: size.height / 2)
-        for i in 0..<nodes.count {
-            let pull = nodes[i].groups.isEmpty ? centering * looseCentering : centering
-            forces[i].dx += (center.x - nodes[i].position.x) * pull
-            forces[i].dy += (center.y - nodes[i].position.y) * pull
-
-            // 属する束の居場所の平均へ。二つの束に属するものは両方の中間を
-            // 目指すので、重なりはそのまま「間」に落ち着く。
-            let homes = nodes[i].groups.compactMap { anchors[$0] }
-            if !homes.isEmpty {
-                let home = homes.reduce(CGPoint.zero) {
-                    CGPoint(x: $0.x + $1.x / Double(homes.count), y: $0.y + $1.y / Double(homes.count))
-                }
-                forces[i].dx += (home.x - nodes[i].position.x) * anchorPull
-                forces[i].dy += (home.y - nodes[i].position.y) * anchorPull
-            }
-
-            var velocity = CGVector(
-                dx: (nodes[i].velocity.dx + forces[i].dx) * cooling,
-                dy: (nodes[i].velocity.dy + forces[i].dy) * cooling
+        return (0..<count).map { index in
+            let row = index / shape.columns
+            // 蛇行して折り返す。行優先で素直に並べると、行末の束と次の行頭の束が
+            // 対角に離れる。共有のある束を隣の番号にしても、それが画面で隣に
+            // ならず橋が地図を横断した。
+            let raw = index % shape.columns
+            let column = row.isMultiple(of: 2) ? raw : shape.columns - 1 - raw
+            return CGRect(
+                x: area.minX + (cellWidth + gap) * Double(column),
+                y: area.minY + (cellHeight + gap) * Double(row),
+                width: cellWidth,
+                height: cellHeight
             )
-            let speed = sqrt(velocity.dx * velocity.dx + velocity.dy * velocity.dy)
-            if speed > maxSpeed {
-                velocity.dx *= maxSpeed / speed
-                velocity.dy *= maxSpeed / speed
-            }
-            nodes[i].velocity = velocity
-            nodes[i].position.x += velocity.dx
-            nodes[i].position.y += velocity.dy
-        }
-
-        clampToBounds()
-    }
-
-    /// 端で止める。画面の外に出たものは、ユーザーから見れば消えたのと同じ。
-    private mutating func clampToBounds() {
-        let margin: Double = 26
-        for i in 0..<nodes.count {
-            if nodes[i].position.x < margin {
-                nodes[i].position.x = margin
-                nodes[i].velocity.dx = 0
-            } else if nodes[i].position.x > size.width - margin {
-                nodes[i].position.x = size.width - margin
-                nodes[i].velocity.dx = 0
-            }
-            if nodes[i].position.y < margin {
-                nodes[i].position.y = margin
-                nodes[i].velocity.dy = 0
-            } else if nodes[i].position.y > size.height - margin {
-                nodes[i].position.y = size.height - margin
-                nodes[i].velocity.dy = 0
-            }
         }
     }
 
-    /// もう動かす必要がないか。描き直しを止める判断に使う。
-    ///
-    /// 手数の上限を含めるのが肝心で、速度の閾値だけだと釣り合いの悪い配置で
-    /// 永遠に揺れ続ける。上限に達したらそこで地図として確定させる。
-    public var isSettled: Bool {
-        // 押し合う相手が居なければ、動かす必要もない。
-        if nodes.count <= 1 { return true }
-        if stepCount >= settleSteps { return true }
-        // 初期配置は速度ゼロなので、一手も進めないうちは「落ち着いた」ではない。
-        // ここを見落とすと、組んだ直後に止まって並べ替えが始まらない。
-        guard stepCount > 0 else { return false }
-        return nodes.allSatisfy { abs($0.velocity.dx) < 0.3 && abs($0.velocity.dy) < 0.3 }
+    private static func centroid(of points: [CGPoint]) -> CGPoint? {
+        guard !points.isEmpty else { return nil }
+        return CGPoint(
+            x: points.reduce(0) { $0 + $1.x } / Double(points.count),
+            y: points.reduce(0) { $0 + $1.y } / Double(points.count)
+        )
     }
+
+    /// 島を結ぶ線に垂直な向き。ここへ等間隔にずらすと、境界に沿って並ぶ。
+    private static func spreadDirection(across centres: [CGPoint]) -> CGVector {
+        guard let first = centres.first, let last = centres.last, centres.count > 1 else {
+            return CGVector(dx: 1, dy: 0)
+        }
+        let dx = last.x - first.x
+        let dy = last.y - first.y
+        let length = (dx * dx + dy * dy).squareRoot()
+        guard length > 0.01 else { return CGVector(dx: 1, dy: 0) }
+        return CGVector(dx: -dy / length, dy: dx / length)
+    }
+
+    // MARK: - 変化
 
     public mutating func resize(to newSize: CGSize) {
-        guard newSize.width > 0, newSize.height > 0, size.width > 0, size.height > 0 else { return }
-        let scaleX = newSize.width / size.width
-        let scaleY = newSize.height / size.height
-        for i in 0..<nodes.count {
-            nodes[i].position.x *= scaleX
-            nodes[i].position.y *= scaleY
-        }
-        // 束の居場所も一緒に伸ばす。ここを据え置くと、窓を広げたとたんに
-        // 全部が元の大きさの位置へ引き戻されて縮む。
-        for (name, point) in anchors {
-            anchors[name] = CGPoint(x: point.x * scaleX, y: point.y * scaleY)
-        }
+        guard newSize.width > 1, newSize.height > 1 else { return }
         size = newSize
-        // 引き伸ばしただけでは間隔が不自然になるので、少しだけ動く余地を戻す。
-        // 冷やし直しはしない — 窓の幅を変えるたびに地図が組み替わると、
-        // 覚えた場所が失われる。
-        stepCount = min(stepCount, max(settleSteps - 90, 0))
-        clampToBounds()
+        // 引き伸ばすのではなく組み直す。決定的なので、同じ大きさなら必ず同じ地図。
+        (islands, nodes, bridges) = Self.build(
+            items: groupedItems,
+            groups: groups,
+            size: newSize
+        )
     }
 
-    /// 束の重心。見出しをどこに書くかを決めるのに使う。
-    public func centroid(of group: String) -> CGPoint? {
-        let members = nodes.filter { $0.groups.contains(group) }
-        guard !members.isEmpty else { return nil }
-        let sum = members.reduce(CGPoint.zero) {
-            CGPoint(x: $0.x + $1.position.x, y: $0.y + $1.position.y)
-        }
-        return CGPoint(x: sum.x / Double(members.count), y: sum.y / Double(members.count))
+    // MARK: - 問い合わせ
+
+    public func island(named name: String) -> Island? {
+        islands.first { $0.name == name }
     }
 
     public func node(named name: String) -> Node? {
         nodes.first { $0.name == name }
     }
 
-    /// その点にあるノード。手前にあるもの（後に描かれるもの）から探す。
+    /// その点にあるノード。境界に立つもの（後に置かれるもの）から探す。
     public func node(at point: CGPoint, radius: Double) -> Node? {
         nodes.reversed().first { node in
             let dx = node.position.x - point.x

@@ -1012,11 +1012,9 @@ final class WorkspaceBrowserViewController: NSViewController {
                 showHiddenFiles: preferences.showHiddenFiles
             )
         }
-        // 見えていない地図を動かし続ける理由がない。開いたときに組み直す。
+        // 開いたときに組み直す。地図は決定的なので、組めばそれで完成している。
         if mode == .map {
             mapView.show(items: displayedItems, groups: itemGroups)
-        } else {
-            mapView.stopSettling()
         }
         galleryView.reloadData()
         updateStatus()
@@ -2334,6 +2332,12 @@ final class WorkspaceBrowserViewController: NSViewController {
     private func reloadResultViews() {
         fileTable.reloadData()
         galleryView.reloadData()
+        // 地図は値を渡して組む方式なので、ここで渡し直さないと空のままになる。
+        // `updateSearchResults`は`applyViewMode`を先に呼び、`displayedItems`が
+        // 入るのはそのあと — 開いた直後の地図が空だったのはそれが理由だった。
+        if effectiveViewMode == .map {
+            mapView.show(items: displayedItems, groups: itemGroups)
+        }
     }
 
     private func updateStatus() {

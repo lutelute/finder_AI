@@ -135,6 +135,64 @@ public extension WorkspaceItemGroups {
     /// 一覧側がすでに決めていることで、束ねる側がそれを上書きすると、列見出しを
     /// クリックしても束の中だけ並び替わらない、という妙な挙動になる。
     /// 束**同士**の順序だけが定義の順。
+    /// 束に属するものと、そうでないものに分ける。
+    ///
+    /// 地図が使う。束に属さないものを力学配置に混ぜると、`~/Documents/GitHub` では
+    /// 116個が29個を包囲して画面の八割を占め、見せたい重なりが埋もれた。関係が
+    /// 無いものを散らしても情報は増えないので、名前順に並べて別の欄へ回す。
+    func partition(
+        _ items: [WorkspaceItem]
+    ) -> (grouped: [WorkspaceItem], others: [WorkspaceItem]) {
+        var grouped: [WorkspaceItem] = []
+        var others: [WorkspaceItem] = []
+        for item in items {
+            if groupNames(for: item.name).isEmpty {
+                others.append(item)
+            } else {
+                grouped.append(item)
+            }
+        }
+        return (
+            grouped,
+            others.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        )
+    }
+
+    /// 束を、共有でつながっているもの同士が隣り合う順に並べ替える。
+    ///
+    /// 地図では束を格子に並べる。共有のある束が離れた枡に入ると橋が画面を横断して
+    /// 追いにくいので、つながっている束から先に並べる。
+    func adjacencyOrderedNames() -> [String] {
+        let names = groups.map(\.name)
+        var sharedWith: [String: Set<String>] = [:]
+        for group in groups {
+            let mine = Set(group.members)
+            for other in groups where other.name != group.name {
+                if !mine.isDisjoint(with: other.members) {
+                    sharedWith[group.name, default: []].insert(other.name)
+                }
+            }
+        }
+
+        var ordered: [String] = []
+        var seen: Set<String> = []
+        for name in names where !seen.contains(name) {
+            // 定義順を骨にしたまま、つながっている先をその場で引き寄せる。
+            var stack = [name]
+            while let current = stack.popLast() {
+                guard seen.insert(current).inserted else { continue }
+                ordered.append(current)
+                let neighbours = (sharedWith[current] ?? [])
+                    .filter { !seen.contains($0) }
+                    .sorted { lhs, rhs in
+                        (names.firstIndex(of: lhs) ?? 0) < (names.firstIndex(of: rhs) ?? 0)
+                    }
+                stack.append(contentsOf: neighbours.reversed())
+            }
+        }
+        return ordered
+    }
+
     func sections(for items: [WorkspaceItem]) -> [WorkspaceGroupSection] {
         var grouped: [WorkspaceGroupSection] = []
         var claimed: Set<String> = []
