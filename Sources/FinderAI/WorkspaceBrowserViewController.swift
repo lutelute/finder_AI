@@ -278,6 +278,9 @@ private final class WorkspaceFileTableView: NSTableView {
     var onRenameRequested: ((Int) -> Void)?
     /// 束の見出しを押したとき。行は選べないので、クリックはここで拾う。
     var onHeaderClicked: ((Int) -> Void)?
+    /// 束の見出しを右クリックしたときのメニュー。行が選べないので、
+    /// ふつうのコンテキストメニューの経路には乗らない。
+    var groupMenuProvider: ((Int) -> NSMenu?)?
     /// その行が束の見出しかどうか。押されたときの振り分けに使う。
     var isHeaderRow: ((Int) -> Bool)?
     private let renameScheduler = FinderLikeRenameScheduler()
@@ -337,6 +340,16 @@ private final class WorkspaceFileTableView: NSTableView {
                   self.selectedRowIndexes == IndexSet(integer: row) else { return }
             self.onRenameRequested?(row)
         }
+    }
+
+    /// 束の見出しには専用のメニューを出す。行が選べないので、ふつうのファイル操作の
+    /// メニューはどれも当てはまらない（選択がないので全部灰色になる）。
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let row = self.row(at: convert(event.locationInWindow, from: nil))
+        if row >= 0, isHeaderRow?(row) == true {
+            return groupMenuProvider?(row)
+        }
+        return super.menu(for: event)
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -569,6 +582,8 @@ final class WorkspaceBrowserViewController: NSViewController {
     /// 定義が読めなかったときの理由。見出しは出さないが、黙って無かったことにはしない。
     private var itemGroupsError: String?
     private static let ungroupedTitle = "未分類"
+    /// 右クリックされた束の名前。見出し用のメニューが対象を知るために置く。
+    private var contextGroupName: String?
     /// 畳んである束。見出しだけ残して中身を隠す。
     ///
     /// 束が増えると一覧が縦に長くなる。いま見ていない束を畳めれば、
@@ -1112,6 +1127,82 @@ final class WorkspaceBrowserViewController: NSViewController {
         fileTable.reloadData()
     }
 
+    /// 束の見出しを右クリックしたときのメニュー。
+    ///
+    /// 束を作れるのに名前を変えたり解いたりできないと、間違えた名前を直すには
+    /// JSONを手で開くしかない。作れるものは、直せて、消せるべき。
+    private func groupHeaderMenu(forRow row: Int) -> NSMenu? {
+        guard fileRows.indices.contains(row),
+              case .header(let title) = fileRows[row],
+              let name = title else { return nil }
+        contextGroupName = name
+
+        let menu = NSMenu(title: name)
+        func add(_ label: String, _ action: Selector) {
+            let item = NSMenuItem(title: label, action: action, keyEquivalent: "")
+            item.target = self
+            menu.addItem(item)
+        }
+        add("「\(name)」の中身を全部選択", #selector(selectGroupMembers))
+        menu.addItem(.separator())
+        add("名前を変更…", #selector(renameContextGroup))
+        add("上へ", #selector(moveContextGroupUp))
+        add("下へ", #selector(moveContextGroupDown))
+        menu.addItem(.separator())
+        add("この束を解く…", #selector(removeContextGroup))
+        return menu
+    }
+
+    @objc private func selectGroupMembers() {
+        guard let name = contextGroupName, let groups = itemGroups else { return }
+        let urls = displayedItems
+            .filter { groups.groupNames(for: $0.name).contains(name) }
+            .map(\.url)
+        restoreFlatSelection(urls)
+    }
+
+    @objc private func renameContextGroup() {
+        guard let name = contextGroupName else { return }
+        guard let newName = askForGroupName(
+            title: "束の名前を変更",
+            message: "「\(name)」の新しい名前を入れてください。フォルダは動きません。",
+            initial: name
+        ) else { return }
+        mutateGroups(actionName: "束の名前を変更") { groups in
+            groups.rename(name, to: newName)
+        }
+    }
+
+    @objc private func moveContextGroupUp() { moveContextGroup(by: -1) }
+    @objc private func moveContextGroupDown() { moveContextGroup(by: 1) }
+
+    private func moveContextGroup(by offset: Int) {
+        guard let name = contextGroupName else { return }
+        mutateGroups(actionName: "束の並びを変える") { groups in
+            groups.move(name, by: offset)
+        }
+    }
+
+    /// 束を解く。中のものは束から外れるだけで、フォルダは一つも減らない。
+    /// それでも確かめるのは、束の定義そのものが手で作った資産だから。
+    @objc private func removeContextGroup() {
+        guard let name = contextGroupName, let groups = itemGroups else { return }
+        let count = displayedItems.filter { groups.groupNames(for: $0.name).contains(name) }.count
+
+        let alert = NSAlert()
+        alert.messageText = "「\(name)」を解きますか？"
+        alert.informativeText = "この束の\(count)項目は束から外れるだけです。"
+            + "フォルダは一つも減りません。取り消せます。"
+        alert.addButton(withTitle: "解く")
+        alert.addButton(withTitle: "やめる")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        mutateGroups(actionName: "「\(name)」を解く") { groups in
+            groups.removeGroup(name)
+        }
+        collapsedGroups.remove(name)
+    }
+
     /// 見出しを押して束を畳む・開く。
     private func toggleGroupCollapse(at row: Int) {
         guard fileRows.indices.contains(row), case .header(let title) = fileRows[row] else { return }
@@ -1482,6 +1573,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         fileTable.onQuickLook = { [weak self] in self?.toggleQuickLook() }
         fileTable.isHeaderRow = { [weak self] row in self?.isHeaderRow(row) ?? false }
         fileTable.onHeaderClicked = { [weak self] row in self?.toggleGroupCollapse(at: row) }
+        fileTable.groupMenuProvider = { [weak self] row in self?.groupHeaderMenu(forRow: row) }
         fileTable.onRenameRequested = { [weak self] row in
             self?.beginListRename(at: row)
         }
@@ -2549,23 +2641,33 @@ final class WorkspaceBrowserViewController: NSViewController {
 
     /// 束の名前を聞く。空白だけの名前と、すでにある名前は断る — 同じ名前の束が
     /// 二つあると、どちらの見出しに落としたのか区別できない。
-    private func askForGroupName() -> String? {
+    private func askForGroupName(
+        title: String = "新しい束",
+        message: String = "選んだものをまとめる名前を入れてください。フォルダは動きません。",
+        initial: String = ""
+    ) -> String? {
         let alert = NSAlert()
-        alert.messageText = "新しい束"
-        alert.informativeText = "選んだものをまとめる名前を入れてください。フォルダは動きません。"
-        alert.addButton(withTitle: "作成")
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: initial.isEmpty ? "作成" : "変更")
         alert.addButton(withTitle: "キャンセル")
 
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
         field.placeholderString = "ツール開発"
+        field.stringValue = initial
         alert.accessoryView = field
         alert.window.initialFirstResponder = field
 
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
         let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return nil }
+        // 名前を変えないまま確定したときは、何もしないのが正しい。
+        guard name != initial else { return nil }
         guard itemGroups?.groups.contains(where: { $0.name == name }) != true else {
-            presentError(title: "同じ名前の束があります", message: "「\(name)」はすでにあります。")
+            presentError(
+                title: "同じ名前の束があります",
+                message: "「\(name)」はすでにあります。黙って一つにまとめると元に戻せません。"
+            )
             return nil
         }
         return name

@@ -170,6 +170,74 @@ struct WorkspaceItemGroupsTests {
         #expect(sections[1].items.map(\.name) == ["zebra", "apple"])
     }
 
+    // MARK: - 束そのものを直す
+
+    /// 作れるのに名前を変えられないと、間違えた名前を直すにはJSONを手で開くしかない。
+    @Test("束の名前を変えても、中身と並び順は変わらない")
+    func renamingKeepsMembersAndOrder() {
+        var groups = WorkspaceItemGroups()
+        groups.add("finder_AI", to: "ツール")
+        groups.add("lec_mpc", to: "講義")
+
+        let renamed = groups.rename("ツール", to: "ツール開発")
+        #expect(renamed)
+
+        #expect(groups.groups.map(\.name) == ["ツール開発", "講義"])
+        #expect(groups.groupNames(for: "finder_AI") == ["ツール開発"])
+    }
+
+    /// 黙って統合すると二つの束が一つに溶けて元に戻せない。断るほうが安全。
+    @Test("すでにある名前へは変えない — 黙って一つにまとめない")
+    func renamingToAnExistingNameIsRefused() {
+        var groups = WorkspaceItemGroups()
+        groups.add("a", to: "甲")
+        groups.add("b", to: "乙")
+
+        let refused = groups.rename("甲", to: "乙")
+        #expect(refused == false)
+        #expect(groups.groups.map(\.name) == ["甲", "乙"])
+        #expect(groups.groupNames(for: "a") == ["甲"])
+    }
+
+    @Test("空の名前や同じ名前への変更は何もしない")
+    func renamingToNothingIsRefused() {
+        var groups = WorkspaceItemGroups()
+        groups.add("a", to: "甲")
+
+        let blank = groups.rename("甲", to: "   ")
+        let same = groups.rename("甲", to: "甲")
+        #expect(blank == false)
+        #expect(same == false)
+        #expect(groups.groups.map(\.name) == ["甲"])
+    }
+
+    /// 束は「どれとどれが同じか」の記述にすぎない。解いてもフォルダは減らない。
+    @Test("束を解くと、中のものは束から外れるだけ")
+    func removingAGroupOnlyUnbinds() {
+        var groups = WorkspaceItemGroups()
+        groups.add("finder_AI", to: "ツール")
+        groups.add("finder_AI", to: "Swift")
+
+        groups.removeGroup("ツール")
+
+        #expect(groups.groups.map(\.name) == ["Swift"])
+        // もう片方の束には残る
+        #expect(groups.groupNames(for: "finder_AI") == ["Swift"])
+    }
+
+    @Test("束の並びを動かせる — 地図の枡と見出しの順が変わる")
+    func movingAGroupChangesOrder() {
+        var groups = WorkspaceItemGroups()
+        for name in ["一", "二", "三"] { groups.add("x\(name)", to: name) }
+
+        groups.move("三", by: -1)
+        #expect(groups.groups.map(\.name) == ["一", "三", "二"])
+
+        // 端を越える動きは何もしない
+        groups.move("一", by: -1)
+        #expect(groups.groups.map(\.name) == ["一", "三", "二"])
+    }
+
     // MARK: - 見つからないメンバー
 
     /// フォルダを消したり別の場所へ動かすと、定義に名前だけが残る。見出しを組む

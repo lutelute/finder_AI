@@ -104,6 +104,38 @@ public struct WorkspaceItemGroups: Equatable, Sendable, Codable {
             groups[index].members.removeAll { $0 == member }
         }
     }
+
+    /// 束の名前を変える。並び順（＝地図での置き場所）は変わらない。
+    ///
+    /// すでに同じ名前の束があれば**何もしない**。黙って統合すると、二つの束が
+    /// 一つに溶けて元に戻せない。呼び出し側が先に名前の重なりを確かめる。
+    /// 戻り値は変えられたかどうか。
+    @discardableResult
+    public mutating func rename(_ groupName: String, to newName: String) -> Bool {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != groupName else { return false }
+        guard !groups.contains(where: { $0.name == trimmed }) else { return false }
+        guard let index = groups.firstIndex(where: { $0.name == groupName }) else { return false }
+        groups[index].name = trimmed
+        return true
+    }
+
+    /// 束そのものを消す。中のものはどこにも移らず、束から外れるだけ。
+    ///
+    /// 実体には触れない。束は「どれとどれが同じか」の記述にすぎないので、
+    /// 束を消してもフォルダは一つも減らない。
+    public mutating func removeGroup(_ groupName: String) {
+        groups.removeAll { $0.name == groupName }
+    }
+
+    /// 束の並びを動かす。地図では枡の位置が、一覧では見出しの順が変わる。
+    public mutating func move(_ groupName: String, by offset: Int) {
+        guard let index = groups.firstIndex(where: { $0.name == groupName }) else { return }
+        let target = index + offset
+        guard groups.indices.contains(target) else { return }
+        let group = groups.remove(at: index)
+        groups.insert(group, at: target)
+    }
 }
 
 /// 見出しと、その下に並ぶもの。`name`が`nil`なら未分類。
