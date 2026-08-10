@@ -30,6 +30,19 @@ final class WorkspaceMapView: NSView {
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
 
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        // レイヤに描く。これが無いと、この一枚だけが非レイヤのままで、
+        // レイヤバックの兄弟（ナビゲーションバー）の上に描いてしまい、
+        // マップ表示のあいだパス欄とボタンが消える（実機でそうなった）。
+        wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
     // MARK: - 入力
 
     func show(items: [WorkspaceItem], groups: WorkspaceItemGroups?) {
@@ -106,6 +119,9 @@ final class WorkspaceMapView: NSView {
             current.resize(to: bounds.size)
             self.clusterLayout = current
             needsDisplay = true
+            // 引き伸ばした間隔を整えるぶんだけ動かす。落ち着いていたら止まっている
+            // ので、ここで起こさないと不自然な間隔のまま固まる。
+            if !current.isSettled, !isHidden { startSettling() }
         }
         updateTrackingArea()
     }
@@ -124,8 +140,9 @@ final class WorkspaceMapView: NSView {
     // MARK: - 描画
 
     override func draw(_ dirtyRect: NSRect) {
-        IntegratedPanelTheme.background.setFill()
-        dirtyRect.fill()
+        // 背景はレイヤに持たせてある。ここで塗ると毎フレーム全面を塗り直すことに
+        // なるうえ、塗りが自分の枠を越えて上のナビゲーションバーを消していた。
+        layer?.backgroundColor = IntegratedPanelTheme.background.cgColor
         guard let clusterLayout, !clusterLayout.nodes.isEmpty else {
             drawEmptyMessage()
             return
@@ -133,7 +150,18 @@ final class WorkspaceMapView: NSView {
 
         drawGroupHalos(clusterLayout)
         drawEdges(clusterLayout)
-        for node in clusterLayout.nodes { draw(node) }
+
+        // 名前は場所を取り合うので、置いた矩形を覚えながら描く。順番が優先順位:
+        // 手をかけている点 → 束に属するもの → どこにも属さないもの。
+        // 最後のものは席が空いていれば載る。全部載せると文字同士が重なって
+        // 一つも読めなくなり、載せないと「そこに在る」ことしか分からない。
+        var takenLabelRects: [NSRect] = []
+        let ordered = clusterLayout.nodes.sorted { lhs, rhs in
+            labelPriority(of: lhs) > labelPriority(of: rhs)
+        }
+        for node in clusterLayout.nodes { drawCircle(node) }
+        for node in ordered { drawLabel(node, avoiding: &takenLabelRects) }
+
         // 束の名前は最後。束の外側に逃がしてあるので点とは重ならない。
         drawGroupLabels(clusterLayout)
     }
@@ -189,10 +217,22 @@ final class WorkspaceMapView: NSView {
         }
     }
 
-    private func draw(_ node: WorkspaceClusterLayout.Node) {
+    /// 名前を置く優先順。席が足りないときに誰を諦めるかを決める。
+    private func labelPriority(of node: WorkspaceClusterLayout.Node) -> Int {
+        if hoveredName == node.name || selectedNames.contains(node.name) { return 3 }
+        if node.isShared { return 2 }
+        return node.groups.isEmpty ? 0 : 1
+    }
+
+    private func radius(of node: WorkspaceClusterLayout.Node) -> Double {
         // 束に属さないものは小さく描く。~/Documents/GitHub では152個のうち120個が
         // これで、同じ大きさで描くと束が数のなかに埋もれて見えなくなる。
-        let radius = node.groups.isEmpty ? Self.looseNodeRadius : Self.nodeRadius
+        // ただし消さない — 束に入れていないものも、そこに在るとは見せる。
+        node.groups.isEmpty ? Self.looseNodeRadius : Self.nodeRadius
+    }
+
+    private func drawCircle(_ node: WorkspaceClusterLayout.Node) {
+        let radius = radius(of: node)
         let rect = NSRect(
             x: node.position.x - radius,
             y: node.position.y - radius,
@@ -237,25 +277,41 @@ final class WorkspaceMapView: NSView {
             circle.stroke()
         }
 
-        let isProminent = hoveredName == node.name || selectedNames.contains(node.name)
-        // 束に属さないものの名前は、指したときだけ出す。152個ぶん全部書くと
-        // 文字同士が重なって、束の名前まで読めなくなる。
-        guard isProminent || !node.groups.isEmpty else { return }
+    }
 
+    /// 名前を置く。すでに埋まっている席とぶつかるものは諦める。
+    ///
+    /// 指している点だけは、ぶつかっても必ず書く — 手をかけたものの名前が出ない
+    /// のは、地図として使えない。
+    private func drawLabel(
+        _ node: WorkspaceClusterLayout.Node,
+        avoiding taken: inout [NSRect]
+    ) {
+        let isProminent = hoveredName == node.name || selectedNames.contains(node.name)
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: isProminent ? 11.5 : 10, weight: isProminent ? .semibold : .regular),
+            .font: NSFont.systemFont(
+                ofSize: isProminent ? 11.5 : node.groups.isEmpty ? 9.5 : 10,
+                weight: isProminent ? .semibold : .regular
+            ),
             .foregroundColor: isProminent
                 ? IntegratedPanelTheme.text
-                : IntegratedPanelTheme.secondaryText
+                : node.groups.isEmpty
+                    ? IntegratedPanelTheme.secondaryText.withAlphaComponent(0.75)
+                    : IntegratedPanelTheme.secondaryText
         ]
         let shown = isProminent || node.name.count <= 14
             ? node.name
             : String(node.name.prefix(12)) + "…"
         let size = shown.size(withAttributes: attributes)
-        shown.draw(
-            at: NSPoint(x: node.position.x - size.width / 2, y: node.position.y + radius + 3),
-            withAttributes: attributes
+        let origin = NSPoint(
+            x: node.position.x - size.width / 2,
+            y: node.position.y + radius(of: node) + 3
         )
+        // 隣の名前と1ptだけ隙間を要求する。詰めて並ぶと読めない。
+        let rect = NSRect(origin: origin, size: size).insetBy(dx: -1, dy: -1)
+        guard isProminent || !taken.contains(where: { $0.intersects(rect) }) else { return }
+        taken.append(rect)
+        shown.draw(at: origin, withAttributes: attributes)
     }
 
     /// 束の名前は束の**外側**に置く。重心に書くと必ず点の下敷きになって読めない

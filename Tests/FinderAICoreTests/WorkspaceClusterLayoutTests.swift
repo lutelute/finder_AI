@@ -144,6 +144,49 @@ struct WorkspaceClusterLayoutTests {
         #expect(layout.centroid(of: "無い束") == nil)
     }
 
+    /// 「絶えず動いている」と報告された。力の釣り合いに任せると、釣り合いの悪い
+    /// 配置では速度の閾値に永久に届かない。手数の上限で必ず止める。
+    @Test("いつか必ず止まる — 釣り合わない配置でも動き続けない")
+    func alwaysStopsEventually() {
+        var groups = WorkspaceItemGroups()
+        // 全員が全員と引き合う一方で反発もする、釣り合いにくい形
+        for index in 0..<40 { groups.add("n\(index)", to: "全部") }
+        var layout = WorkspaceClusterLayout(
+            items: (0..<40).map { item("n\($0)") },
+            groups: groups,
+            size: size
+        )
+
+        var steps = 0
+        while !layout.isSettled, steps < 5_000 {
+            layout.step()
+            steps += 1
+        }
+
+        #expect(layout.isSettled)
+        #expect(steps < 1_000)
+    }
+
+    /// 「なんか震えている」と報告された。止まったあとも呼ばれ続けても、
+    /// 位置が動かないことを保証する。
+    @Test("止まったあとは、何度呼んでも位置が動かない")
+    func settledLayoutDoesNotTwitch() {
+        var groups = WorkspaceItemGroups()
+        for index in 0..<12 { groups.add("n\(index)", to: index < 6 ? "A" : "B") }
+        var layout = WorkspaceClusterLayout(
+            items: (0..<12).map { item("n\($0)") },
+            groups: groups,
+            size: size
+        )
+        settle(&layout, steps: 2_000)
+        #expect(layout.isSettled)
+
+        let frozen = layout.nodes.map(\.position)
+        for _ in 0..<120 { layout.step() }
+
+        #expect(layout.nodes.map(\.position) == frozen)
+    }
+
     @Test("空のフォルダでも一手進められる")
     func emptyLayoutIsStable() {
         var layout = WorkspaceClusterLayout(items: [], groups: nil, size: size)

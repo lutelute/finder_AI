@@ -467,6 +467,8 @@ final class WorkspaceBrowserViewController: NSViewController {
     }
 
     private var fileRows: [FileRow] = []
+    /// ⌘Gで地図から戻る先。地図しか見ていなければ一覧へ。
+    private var modeBeforeMap: WorkspaceViewMode = .list
     private var addToGroupItem = NSMenuItem()
     private var removeFromGroupItem = NSMenuItem()
     private var itemGroups: WorkspaceItemGroups?
@@ -952,6 +954,19 @@ final class WorkspaceBrowserViewController: NSViewController {
     @objc func selectColumnView() { select(viewMode: .column) }
     @objc func selectGalleryView() { select(viewMode: .gallery) }
     @objc func selectMapView() { select(viewMode: .map) }
+
+    /// 地図と、その前に見ていた表示を行き来する（⌘G）。
+    ///
+    /// 地図は「重なりを見る」ための寄り道で、作業する場所は一覧のほう。
+    /// 行って戻るのが一手で済まないと、見に行く気にならない。
+    @objc func toggleMapView() {
+        if preferences.viewMode == .map {
+            select(viewMode: modeBeforeMap)
+        } else {
+            modeBeforeMap = preferences.viewMode
+            select(viewMode: .map)
+        }
+    }
 
     private func select(viewMode: WorkspaceViewMode) {
         let selection = selectedItems.map(\.url)

@@ -998,6 +998,12 @@ final class WorkspaceAppCoordinator {
         viewMenu.addItem(item("ギャラリー表示", action: #selector(WorkspaceBrowserViewController.selectGalleryView), key: "4"))
         // Finderには対応するものが無いので、その次の番号を継ぐ。
         viewMenu.addItem(item("マップ表示", action: #selector(WorkspaceBrowserViewController.selectMapView), key: "5"))
+        // ⌘Gで地図と行き来する。寄り道して戻るのが一手で済まないと見に行かない。
+        viewMenu.addItem(item(
+            "マップ表示と行き来",
+            action: #selector(WorkspaceBrowserViewController.toggleMapView),
+            key: "g"
+        ))
         let cycleView = item(
             "表示モードを切り替え",
             action: #selector(WorkspaceBrowserViewController.toggleColumnView),

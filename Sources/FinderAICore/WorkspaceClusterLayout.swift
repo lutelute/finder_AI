@@ -57,8 +57,16 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
     /// 束に属さないものへの中心引力の倍率。弱くすると外周へ押し出され、
     /// 中央が束のための場所として空く。
     private let looseCentering: Double = 0.45
-    private let damping: Double = 0.86
+    private let damping: Double = 0.82
     private let maxSpeed: Double = 24
+
+    /// 進めた手数。これで冷やしていく。
+    ///
+    /// 力の釣り合いだけに任せると、いつまでも小刻みに揺れ続けた。地図が静止
+    /// しないと目で追う先が定まらないので、手数とともに減衰を強め、`settleSteps`
+    /// で必ず止まるようにしている。物理の正しさより、止まることを取る。
+    private var stepCount = 0
+    private let settleSteps = 420
 
     public static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.nodes == rhs.nodes && lhs.size == rhs.size
@@ -119,9 +127,12 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
             .sorted { ($0.a, $0.b) < ($1.a, $1.b) }
     }
 
-    /// 一手進める。呼ぶたびに少しずつ落ち着く。
+    /// 一手進める。呼ぶたびに少しずつ落ち着く。落ち着いたあとは何もしない。
     public mutating func step() {
-        guard nodes.count > 1 else { return }
+        guard nodes.count > 1, !isSettled else { return }
+        stepCount += 1
+        // 終盤は減衰を強めて、揺れを残さずに止める。
+        let cooling = damping * (1 - 0.35 * min(Double(stepCount) / Double(settleSteps), 1))
         var forces = [CGVector](repeating: .zero, count: nodes.count)
 
         for i in 0..<nodes.count {
@@ -131,13 +142,17 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
                 // 完全に重なった二点は力の向きが決まらない。番号で決まるずれを
                 // 与えて必ず離れるようにする（乱数を使わないのはここでも同じ理由）。
                 let distanceSquared = max(dx * dx + dy * dy, 0.01)
-                guard distanceSquared < repulsionCutoff * repulsionCutoff else { continue }
+                let cutoffSquared = repulsionCutoff * repulsionCutoff
+                guard distanceSquared < cutoffSquared else { continue }
                 let distance = sqrt(distanceSquared)
                 // 束に属さないもの同士は、弱くしか押し合わない。同じ強さで押し合うと
                 // 等間隔で釣り合って格子に結晶化し、地図というより方眼紙になる。
                 // 束との間の反発はそのままなので、束の周りは空いたままになる。
                 let bothLoose = nodes[i].groups.isEmpty && nodes[j].groups.isEmpty
-                let magnitude = repulsion * (bothLoose ? 0.22 : 1) / distanceSquared
+                // 打ち切り境界で力をゼロへなめらかに落とす。段差のまま切ると、
+                // 境界をまたぐたびに力が現れたり消えたりして点が小刻みに震えた。
+                let falloff = 1 - distanceSquared / cutoffSquared
+                let magnitude = repulsion * (bothLoose ? 0.22 : 1) * falloff / distanceSquared
                 let ux = distance > 0.1 ? dx / distance : Double(i - j)
                 let uy = distance > 0.1 ? dy / distance : 1
                 forces[i].dx += ux * magnitude
@@ -178,8 +193,8 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
             }
 
             var velocity = CGVector(
-                dx: (nodes[i].velocity.dx + forces[i].dx) * damping,
-                dy: (nodes[i].velocity.dy + forces[i].dy) * damping
+                dx: (nodes[i].velocity.dx + forces[i].dx) * cooling,
+                dy: (nodes[i].velocity.dy + forces[i].dy) * cooling
             )
             let speed = sqrt(velocity.dx * velocity.dx + velocity.dy * velocity.dy)
             if speed > maxSpeed {
@@ -215,9 +230,18 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         }
     }
 
-    /// もう動きが目に見えないところまで来たか。描き直しを止める判断に使う。
+    /// もう動かす必要がないか。描き直しを止める判断に使う。
+    ///
+    /// 手数の上限を含めるのが肝心で、速度の閾値だけだと釣り合いの悪い配置で
+    /// 永遠に揺れ続ける。上限に達したらそこで地図として確定させる。
     public var isSettled: Bool {
-        nodes.allSatisfy { abs($0.velocity.dx) < 0.12 && abs($0.velocity.dy) < 0.12 }
+        // 押し合う相手が居なければ、動かす必要もない。
+        if nodes.count <= 1 { return true }
+        if stepCount >= settleSteps { return true }
+        // 初期配置は速度ゼロなので、一手も進めないうちは「落ち着いた」ではない。
+        // ここを見落とすと、組んだ直後に止まって並べ替えが始まらない。
+        guard stepCount > 0 else { return false }
+        return nodes.allSatisfy { abs($0.velocity.dx) < 0.3 && abs($0.velocity.dy) < 0.3 }
     }
 
     public mutating func resize(to newSize: CGSize) {
@@ -234,6 +258,10 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
             anchors[name] = CGPoint(x: point.x * scaleX, y: point.y * scaleY)
         }
         size = newSize
+        // 引き伸ばしただけでは間隔が不自然になるので、少しだけ動く余地を戻す。
+        // 冷やし直しはしない — 窓の幅を変えるたびに地図が組み替わると、
+        // 覚えた場所が失われる。
+        stepCount = min(stepCount, max(settleSteps - 90, 0))
         clampToBounds()
     }
 
