@@ -338,6 +338,7 @@ final class WorkspaceMapView: NSView {
 
         for island in clusterLayout.islands {
             draw(island)
+            drawEmptyIslandHint(island, in: clusterLayout)
             drawOverflow(island)
         }
         drawNewGroupSlot(clusterLayout)
@@ -599,6 +600,33 @@ final class WorkspaceMapView: NSView {
             }
             shown.draw(at: clear ?? candidates[0], withAttributes: attributes)
         }
+    }
+
+    /// 中身の無い島に、何をすればいいかを出す。
+    ///
+    /// 束を作った直後は必ずこれになる。空の枠だけだと「作ったのに何も無い」と
+    /// 見えて、次に何をするのか分からない。
+    private func drawEmptyIslandHint(
+        _ island: WorkspaceClusterLayout.Island,
+        in clusterLayout: WorkspaceClusterLayout
+    ) {
+        let hasMembers = clusterLayout.nodes.contains { $0.groups.contains(island.name) }
+        guard !hasMembers, island.missing == 0 else { return }
+        let color = groupColors[island.name] ?? .systemGray
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11),
+            .foregroundColor: color.withAlphaComponent(0.55)
+        ]
+        let text = "ここに引いて入れる"
+        let size = text.size(withAttributes: attributes)
+        guard size.width < island.frame.width - 16 else { return }
+        text.draw(
+            at: NSPoint(
+                x: island.frame.midX - size.width / 2,
+                y: island.frame.midY - size.height / 2
+            ),
+            withAttributes: attributes
+        )
     }
 
     /// 島の下端に出す注記。入りきらなかった数と、実物が無い数。

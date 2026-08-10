@@ -198,6 +198,7 @@ private final class WorkspaceSidebarHeaderView: NSTableCellView {
 /// 同じ色になる。色だけに頼らないよう、名前は必ず出す。
 @MainActor
 private final class WorkspaceGroupHeaderView: NSTableCellView {
+    private let chevron = NSImageView()
     private let dot = NSView()
     private let label = NSTextField(labelWithString: "")
     private let countLabel = NSTextField(labelWithString: "")
@@ -206,6 +207,9 @@ private final class WorkspaceGroupHeaderView: NSTableCellView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         identifier = NSUserInterfaceItemIdentifier("WorkspaceGroupHeader")
+        chevron.imageScaling = .scaleProportionallyDown
+        chevron.contentTintColor = IntegratedPanelTheme.secondaryText
+        chevron.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold)
         dot.wantsLayer = true
         dot.layer?.cornerRadius = 4
         label.font = .systemFont(ofSize: 11.5, weight: .semibold)
@@ -216,12 +220,15 @@ private final class WorkspaceGroupHeaderView: NSTableCellView {
         rule.layer?.backgroundColor = IntegratedPanelTheme.border
             .withAlphaComponent(0.5).cgColor
 
-        [dot, label, countLabel, rule].forEach {
+        [chevron, dot, label, countLabel, rule].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             addSubview($0)
         }
         NSLayoutConstraint.activate([
-            dot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            chevron.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            chevron.centerYAnchor.constraint(equalTo: centerYAnchor),
+            chevron.widthAnchor.constraint(equalToConstant: 10),
+            dot.leadingAnchor.constraint(equalTo: chevron.trailingAnchor, constant: 5),
             dot.centerYAnchor.constraint(equalTo: centerYAnchor),
             dot.widthAnchor.constraint(equalToConstant: 8),
             dot.heightAnchor.constraint(equalToConstant: 8),
@@ -243,9 +250,15 @@ private final class WorkspaceGroupHeaderView: NSTableCellView {
     }
 
     /// - Parameter color: 束の色。`nil`は未分類 — 色を持たないことがその印になる。
-    func configure(title: String, count: Int, color: NSColor?) {
+    /// - Parameter isCollapsed: 畳んでいるか。三角の向きで示す。
+    func configure(title: String, count: Int, color: NSColor?, isCollapsed: Bool) {
         label.stringValue = title
         countLabel.stringValue = "\(count)"
+        chevron.image = NSImage(
+            systemSymbolName: isCollapsed ? "chevron.right" : "chevron.down",
+            accessibilityDescription: isCollapsed ? "開く" : "畳む"
+        )
+        toolTip = isCollapsed ? "押して開く" : "押して畳む"
         dot.isHidden = color == nil
         dot.layer?.backgroundColor = color?.cgColor
         // 未分類は丸のぶん左に寄らないよう、ラベルの色で弱く見せる。
@@ -263,6 +276,10 @@ private final class WorkspaceFileTableView: NSTableView {
     var onOpen: (() -> Void)?
     var onQuickLook: (() -> Void)?
     var onRenameRequested: ((Int) -> Void)?
+    /// 束の見出しを押したとき。行は選べないので、クリックはここで拾う。
+    var onHeaderClicked: ((Int) -> Void)?
+    /// その行が束の見出しかどうか。押されたときの振り分けに使う。
+    var isHeaderRow: ((Int) -> Bool)?
     private let renameScheduler = FinderLikeRenameScheduler()
     private var dragOccurred = false
 
@@ -291,6 +308,11 @@ private final class WorkspaceFileTableView: NSTableView {
         dragOccurred = false
         let point = convert(event.locationInWindow, from: nil)
         let row = self.row(at: point)
+        // 見出しは選べない行なので、クリックが選択にならない。畳む操作をここで拾う。
+        if row >= 0, isHeaderRow?(row) == true {
+            onHeaderClicked?(row)
+            return
+        }
         let column = self.column(at: point)
         let wasSelected = row >= 0 && selectedRowIndexes.contains(row)
         let nameCell = row >= 0 && column >= 0
@@ -547,6 +569,11 @@ final class WorkspaceBrowserViewController: NSViewController {
     /// 定義が読めなかったときの理由。見出しは出さないが、黙って無かったことにはしない。
     private var itemGroupsError: String?
     private static let ungroupedTitle = "未分類"
+    /// 畳んである束。見出しだけ残して中身を隠す。
+    ///
+    /// 束が増えると一覧が縦に長くなる。いま見ていない束を畳めれば、
+    /// 見たい束だけを目の前に置ける。フォルダを移っても覚えておく。
+    private var collapsedGroups: Set<String> = []
     private var listingTask: Task<Void, Never>?
     private var cloudStatusTask: Task<Void, Never>?
     private var loadingIndicatorTask: Task<Void, Never>?
@@ -1085,6 +1112,22 @@ final class WorkspaceBrowserViewController: NSViewController {
         fileTable.reloadData()
     }
 
+    /// 見出しを押して束を畳む・開く。
+    private func toggleGroupCollapse(at row: Int) {
+        guard fileRows.indices.contains(row), case .header(let title) = fileRows[row] else { return }
+        let name = title ?? Self.ungroupedTitle
+        if collapsedGroups.contains(name) {
+            collapsedGroups.remove(name)
+        } else {
+            collapsedGroups.insert(name)
+        }
+        let selection = selectedItems.map(\.url)
+        rebuildFileRows()
+        fileTable.reloadData()
+        restoreFlatSelection(selection)
+        updateStatus()
+    }
+
     /// 一覧の束の見出しを入り切りする。
     ///
     /// 見出しで区切ると並べ替えが束の中だけに効く。名前順に通して眺めたいときは
@@ -1437,6 +1480,8 @@ final class WorkspaceBrowserViewController: NSViewController {
 
         fileTable.onOpen = { [weak self] in self?.openSelection() }
         fileTable.onQuickLook = { [weak self] in self?.toggleQuickLook() }
+        fileTable.isHeaderRow = { [weak self] row in self?.isHeaderRow(row) ?? false }
+        fileTable.onHeaderClicked = { [weak self] row in self?.toggleGroupCollapse(at: row) }
         fileTable.onRenameRequested = { [weak self] row in
             self?.beginListRename(at: row)
         }
@@ -2242,7 +2287,8 @@ final class WorkspaceBrowserViewController: NSViewController {
         var rows: [FileRow] = []
         for section in groups.sections(for: displayedItems) {
             rows.append(.header(section.name))
-            for item in section.items {
+            let collapsed = collapsedGroups.contains(section.name ?? Self.ungroupedTitle)
+            for item in section.items where !collapsed {
                 guard let index = indexByURL[item.url] else { continue }
                 // 未分類の行に他所属は出ない。どこにも属していないからそこに居る。
                 let others = section.name == nil
@@ -2266,6 +2312,16 @@ final class WorkspaceBrowserViewController: NSViewController {
         guard fileRows.indices.contains(row),
               case .item(_, let others) = fileRows[row] else { return [] }
         return others
+    }
+
+    /// 畳んである束の中身の数。行が無いので定義と一覧から数える。
+    private func collapsedCount(of group: String?) -> Int {
+        guard let groups = itemGroups else { return 0 }
+        guard let group else {
+            // 未分類は、どの束にも属さないものの数。
+            return displayedItems.filter { groups.groupNames(for: $0.name).isEmpty }.count
+        }
+        return displayedItems.filter { groups.groupNames(for: $0.name).contains(group) }.count
     }
 
     /// その見出しの下に何行続くか。見出しに数を出すために数える。
@@ -3299,11 +3355,16 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
                 withIdentifier: NSUserInterfaceItemIdentifier("WorkspaceGroupHeader"),
                 owner: self
             ) as? WorkspaceGroupHeaderView ?? WorkspaceGroupHeaderView()
-            let count = fileRowCount(ofSectionStartingAt: row)
+            let name = title ?? Self.ungroupedTitle
+            let collapsed = collapsedGroups.contains(name)
             cell.configure(
-                title: title ?? Self.ungroupedTitle,
-                count: count,
-                color: title.flatMap { WorkspaceGroupPalette.color(for: $0, in: itemGroups) }
+                title: name,
+                // 畳んでいるときは行が無いので、定義から数える。
+                count: collapsed
+                    ? collapsedCount(of: title)
+                    : fileRowCount(ofSectionStartingAt: row),
+                color: title.flatMap { WorkspaceGroupPalette.color(for: $0, in: itemGroups) },
+                isCollapsed: collapsed
             )
             return cell
         }
