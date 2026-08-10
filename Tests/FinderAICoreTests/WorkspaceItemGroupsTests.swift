@@ -170,6 +170,72 @@ struct WorkspaceItemGroupsTests {
         #expect(sections[1].items.map(\.name) == ["zebra", "apple"])
     }
 
+    // MARK: - 見つからないメンバー
+
+    /// フォルダを消したり別の場所へ動かすと、定義に名前だけが残る。見出しを組む
+    /// ときは黙って落としているので、数えて見せられないと気づけない。
+    @Test("定義にあって実物が無いものを数えられる")
+    func missingMembersAreCounted() {
+        var groups = WorkspaceItemGroups()
+        groups.add("finder_AI", to: "ツール開発")
+        groups.add("消したフォルダ", to: "ツール開発")
+        groups.add("これも無い", to: "講義")
+
+        let missing = groups.missingMembers(among: [item("finder_AI")])
+
+        #expect(missing["ツール開発"] == ["消したフォルダ"])
+        #expect(missing["講義"] == ["これも無い"])
+    }
+
+    @Test("全部そろっていれば、見つからないものは無い")
+    func nothingMissingWhenAllPresent() {
+        var groups = WorkspaceItemGroups()
+        groups.add("finder_AI", to: "ツール開発")
+
+        #expect(groups.missingMembers(among: [item("finder_AI")]).isEmpty)
+    }
+
+    /// 実在するかどうかは表示設定とは無関係。一覧に見えているものだけで判定すると、
+    /// 束に入れた `.claude` のような隠しフォルダが、隠し表示をオフにしただけで
+    /// 「見つからない」に化ける。
+    @Test("隠しファイルは、隠れているだけで見つからないとは言わない")
+    func hiddenMembersAreNotMissing() {
+        var groups = WorkspaceItemGroups()
+        groups.add(".claude", to: "設定")
+        groups.add("消したフォルダ", to: "設定")
+
+        // 一覧には出ていないが、フォルダには実在する
+        let missing = groups.missingMembers(amongNames: [".claude", "finder_AI"])
+
+        #expect(missing["設定"] == ["消したフォルダ"])
+    }
+
+    @Test("見つからないものだけを外せる — 残っているものは触らない")
+    func pruningKeepsWhatExists() {
+        var groups = WorkspaceItemGroups()
+        groups.add("finder_AI", to: "ツール開発")
+        groups.add("消したフォルダ", to: "ツール開発")
+        groups.add(".claude", to: "ツール開発")
+
+        groups.pruneMissingMembers(amongNames: ["finder_AI", ".claude"])
+
+        #expect(groups.groups[0].members == ["finder_AI", ".claude"])
+        #expect(groups.missingMembers(amongNames: ["finder_AI", ".claude"]).isEmpty)
+    }
+
+    /// 空になった束は残す。落とし先として見出しが要るし、消してしまうと
+    /// 「整理したら束ごと消えた」という取り返しのつかない操作になる。
+    @Test("整理して空になっても、束そのものは残る")
+    func pruningKeepsEmptyGroups() {
+        var groups = WorkspaceItemGroups()
+        groups.add("消したフォルダ", to: "ツール開発")
+
+        groups.pruneMissingMembers(amongNames: ["finder_AI"])
+
+        #expect(groups.groups.count == 1)
+        #expect(groups.groups[0].members.isEmpty)
+    }
+
     // MARK: - ファイル
 
     @Test("書いて読んで、同じものが戻る")

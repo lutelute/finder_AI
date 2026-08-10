@@ -120,21 +120,6 @@ public struct WorkspaceGroupSection: Equatable, Sendable {
 }
 
 public extension WorkspaceItemGroups {
-    /// 一覧を見出し付きに組み直す。
-    ///
-    /// 複数の束に属する項目は**その全部に現れる**。一つを選ばせないための複数所属なので、
-    /// 一箇所にしか出さないなら意味がない。同じ実体が二行に見えることになるが、
-    /// それはタグで束ねたものを平らに並べたときに必ず起きることで、隠す side がない。
-    ///
-    /// 空の束も見出しを出す。ドラッグの落とし先が無ければ、最初の一個を入れられない。
-    ///
-    /// 定義にあるが実物が無い名前は黙って落ちる。別のマシンにしか無いフォルダの定義を
-    /// 消さずに持っておけるのは、ここで存在を要求しないから。
-    ///
-    /// 束の**中**の順序は`items`の順序をそのまま引き継ぐ。名前で並べるか更新日で並べるかは
-    /// 一覧側がすでに決めていることで、束ねる側がそれを上書きすると、列見出しを
-    /// クリックしても束の中だけ並び替わらない、という妙な挙動になる。
-    /// 束**同士**の順序だけが定義の順。
     /// 束に属するものと、そうでないものに分ける。
     ///
     /// 地図が使う。束に属さないものを力学配置に混ぜると、`~/Documents/GitHub` では
@@ -156,6 +141,38 @@ public extension WorkspaceItemGroups {
             grouped,
             others.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         )
+    }
+
+    /// 定義にあるのに実物が無いメンバー。束ごと、名前順。
+    ///
+    /// 見出しを組むときは黙って落としている。別のマシンにしか無いフォルダの定義を
+    /// 消さずに持っておくためで、それは正しい。ただし**本当に消したフォルダ**の
+    /// 名前も同じように黙って落ちるので、定義にゴミが残り続けても気づけない。
+    /// 数を数えて見せられるようにする。
+    func missingMembers(among items: [WorkspaceItem]) -> [String: [String]] {
+        missingMembers(amongNames: Set(items.map(\.name)))
+    }
+
+    /// 実在する名前を直接渡す版。
+    ///
+    /// **隠しファイルを含めた**名前を渡すこと。一覧に見えているものだけで判定すると、
+    /// 束に入れた `.claude` のような隠しフォルダが、隠し表示をオフにしただけで
+    /// 「見つからない」に化ける。実在するかどうかは表示設定とは無関係。
+    func missingMembers(amongNames present: Set<String>) -> [String: [String]] {
+        var missing: [String: [String]] = [:]
+        for group in groups {
+            let lost = group.members.filter { !present.contains($0) }
+            guard !lost.isEmpty else { continue }
+            missing[group.name] = lost.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        }
+        return missing
+    }
+
+    /// 実物が無いメンバーを、全部の束から外す。名前は隠しファイルを含めて渡すこと。
+    mutating func pruneMissingMembers(amongNames present: Set<String>) {
+        for index in groups.indices {
+            groups[index].members.removeAll { !present.contains($0) }
+        }
     }
 
     /// 束を、共有でつながっているもの同士が隣り合う順に並べ替える。
@@ -193,6 +210,22 @@ public extension WorkspaceItemGroups {
         return ordered
     }
 
+    /// 一覧を見出し付きに組み直す。
+    ///
+    /// 複数の束に属する項目は**その全部に現れる**。一つを選ばせないための複数所属なので、
+    /// 一箇所にしか出さないなら意味がない。同じ実体が二行に見えることになるが、
+    /// それはタグで束ねたものを平らに並べたときに必ず起きることで、隠す道がない。
+    ///
+    /// 空の束も見出しを出す。ドラッグの落とし先が無ければ、最初の一個を入れられない。
+    ///
+    /// 定義にあるが実物が無い名前は黙って落ちる。別のマシンにしか無いフォルダの定義を
+    /// 消さずに持っておけるのは、ここで存在を要求しないから。数は
+    /// `missingMembers(among:)`で数えられる。
+    ///
+    /// 束の**中**の順序は`items`の順序をそのまま引き継ぐ。名前で並べるか更新日で並べるかは
+    /// 一覧側がすでに決めていることで、束ねる側がそれを上書きすると、列見出しを
+    /// クリックしても束の中だけ並び替わらない、という妙な挙動になる。
+    /// 束**同士**の順序だけが定義の順。
     func sections(for items: [WorkspaceItem]) -> [WorkspaceGroupSection] {
         var grouped: [WorkspaceGroupSection] = []
         var claimed: Set<String> = []

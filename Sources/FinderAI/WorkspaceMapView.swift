@@ -19,6 +19,10 @@ final class WorkspaceMapView: NSView {
     var contextMenuProvider: (() -> NSMenu?)?
     /// 島に落とされたものを束に入れる。実際に入ったら`true`。
     var onLinkToGroup: (([URL], String) -> Bool)?
+    /// 「新しい束」の枠に落とされた／押されたとき。空配列なら選択中のもので作る。
+    var onCreateGroup: (([URL]) -> Bool)?
+    /// Spaceでのクイックルック。地図でもFinderの手癖が通るように。
+    var onQuickLook: (() -> Void)?
 
     private var items: [WorkspaceItem] = []
     private var itemsByName: [String: WorkspaceItem] = [:]
@@ -29,12 +33,15 @@ final class WorkspaceMapView: NSView {
     /// 組むのを`layout()`まで待てるように控えておく。
     private var groupedItems: [WorkspaceItem] = []
     private var itemGroups: WorkspaceItemGroups?
+    private var presentNames: Set<String> = []
     private var clusterLayout: WorkspaceClusterLayout?
     private var groupColors: [String: NSColor] = [:]
     private var selectedNames: Set<String> = []
     private var hoveredName: String?
     /// ドラッグ中に狙っている島。枠を強くして、どこに入るか見せる。
     private var dropTargetIsland: String?
+    /// 「新しい束」の枠を狙っているか。
+    private var dropTargetIsNewGroup = false
     private var trackingArea: NSTrackingArea?
 
     /// 右の「その他」欄。名前順の一覧なので、力学ではなく素直な表で出す。
@@ -119,7 +126,12 @@ final class WorkspaceMapView: NSView {
 
     // MARK: - 入力
 
-    func show(items: [WorkspaceItem], groups: WorkspaceItemGroups?) {
+    func show(
+        items: [WorkspaceItem],
+        groups: WorkspaceItemGroups?,
+        presentNames: Set<String> = []
+    ) {
+        self.presentNames = presentNames
         self.items = items
         itemsByName = Dictionary(items.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
         selectedNames = selectedNames.filter { itemsByName[$0] != nil }
@@ -234,7 +246,8 @@ final class WorkspaceMapView: NSView {
             clusterLayout = WorkspaceClusterLayout(
                 groupedItems: groupedItems,
                 groups: itemGroups,
-                size: mapArea.bounds.size
+                size: mapArea.bounds.size,
+                presentNames: presentNames.isEmpty ? nil : presentNames
             )
             mapArea.needsDisplay = true
             return
@@ -277,6 +290,7 @@ final class WorkspaceMapView: NSView {
             draw(island)
             drawOverflow(island)
         }
+        drawNewGroupSlot(clusterLayout)
         drawBridges(clusterLayout)
         // 島の中は整列しているので、名前は場所を取り合わない。全部書ける。
         for node in clusterLayout.nodes {
@@ -296,6 +310,42 @@ final class WorkspaceMapView: NSView {
         let size = text.size(withAttributes: attributes)
         text.draw(
             at: NSPoint(x: (rect.width - size.width) / 2, y: (rect.height - size.height) / 2),
+            withAttributes: attributes
+        )
+    }
+
+    /// 「新しい束」の枠。破線にしてあるのは、まだ何も無い場所だと分かるように。
+    ///
+    /// 地図の上で束を作れないと、右クリックのメニューを知っている人しか束を
+    /// 作れない。束が一つも無いフォルダでは、これが唯一の入口になる。
+    private func drawNewGroupSlot(_ clusterLayout: WorkspaceClusterLayout) {
+        guard let slot = clusterLayout.newGroupSlot else { return }
+        let color = IntegratedPanelTheme.secondaryText
+        let path = NSBezierPath(roundedRect: slot, xRadius: 12, yRadius: 12)
+        path.lineWidth = dropTargetIsNewGroup ? 2.5 : 1
+        if dropTargetIsNewGroup {
+            color.withAlphaComponent(0.14).setFill()
+            path.fill()
+        } else {
+            path.setLineDash([5, 4], count: 2, phase: 0)
+        }
+        color.withAlphaComponent(dropTargetIsNewGroup ? 0.85 : 0.35).setStroke()
+        path.stroke()
+
+        let text = clusterLayout.islands.isEmpty
+            ? "＋ ここに引いて最初の束を作る"
+            : "＋ 新しい束"
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12, weight: .medium),
+            .foregroundColor: color.withAlphaComponent(dropTargetIsNewGroup ? 0.95 : 0.6)
+        ]
+        var shown = text
+        while shown.size(withAttributes: attributes).width > slot.width - 20, shown.count > 3 {
+            shown = String(shown.dropLast())
+        }
+        let size = shown.size(withAttributes: attributes)
+        shown.draw(
+            at: NSPoint(x: slot.midX - size.width / 2, y: slot.midY - size.height / 2),
             withAttributes: attributes
         )
     }
@@ -472,29 +522,47 @@ final class WorkspaceMapView: NSView {
         }
     }
 
-    /// 島に入りきらなかった数。「ほか N」として最後の行に出す。
+    /// 島の下端に出す注記。入りきらなかった数と、実物が無い数。
+    ///
+    /// 実物が無いものは見出しを組むときに黙って落としている。それは別のマシンにしか
+    /// 無いフォルダの定義を守るためだが、**本当に消したフォルダ**の名前も同じように
+    /// 落ちる。黙っていると定義にゴミが残り続けても気づけないので、数を出す。
     private func drawOverflow(_ island: WorkspaceClusterLayout.Island) {
-        guard island.overflow > 0 else { return }
-        let color = groupColors[island.name] ?? .systemGray
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 10.5, weight: .medium),
-            .foregroundColor: color.withAlphaComponent(0.85)
-        ]
-        let text = "ほか \(island.overflow)"
+        var notes: [(String, NSColor)] = []
+        if island.overflow > 0 {
+            notes.append(("ほか \(island.overflow)", (groupColors[island.name] ?? .systemGray)))
+        }
+        if island.missing > 0 {
+            notes.append(("見つからない \(island.missing)", .systemOrange))
+        }
+        guard !notes.isEmpty else { return }
+
         let inset = WorkspaceClusterLayout.islandInset
-        text.draw(
-            at: NSPoint(
-                x: island.frame.minX + inset.width + 8,
-                y: island.frame.maxY - inset.height - 15
-            ),
-            withAttributes: attributes
-        )
+        var y = island.frame.maxY - inset.height - 15
+        for (text, color) in notes.reversed() {
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 10.5, weight: .medium),
+                .foregroundColor: color.withAlphaComponent(0.9)
+            ]
+            text.draw(
+                at: NSPoint(x: island.frame.minX + inset.width + 8, y: y),
+                withAttributes: attributes
+            )
+            y -= 15
+        }
     }
 
     // MARK: - 操作
 
     /// 地図の上のクリック。座標は地図の座標系で渡ってくる。
     func handleMapClick(at point: CGPoint, event: NSEvent) {
+        // 「新しい束」の枠を押したら、選んでいるもので束を作る。
+        if clusterLayout?.node(at: point) == nil,
+           clusterLayout?.island(at: point) == nil,
+           clusterLayout?.newGroupSlot?.contains(point) == true {
+            _ = onCreateGroup?([])
+            return
+        }
         guard let node = clusterLayout?.node(at: point) else {
             selectedNames = []
             mapArea.needsDisplay = true
@@ -530,27 +598,34 @@ final class WorkspaceMapView: NSView {
     /// ドラッグ中。狙っている島が変わったら描き直す。
     func mapDragUpdated(at point: CGPoint) -> NSDragOperation {
         let island = clusterLayout?.island(at: point)
-        if dropTargetIsland != island?.name {
+        let onNewGroup = island == nil
+            && clusterLayout?.newGroupSlot?.contains(point) == true
+        if dropTargetIsland != island?.name || dropTargetIsNewGroup != onNewGroup {
             dropTargetIsland = island?.name
+            dropTargetIsNewGroup = onNewGroup
             mapArea.needsDisplay = true
         }
         // 移動でもコピーでもないので.link。矢印が変わって、ファイルが動くのでは
         // ないと見た目で分かる。
-        return island == nil ? [] : .link
+        return island == nil && !onNewGroup ? [] : .link
     }
 
     func mapDragExited() {
-        guard dropTargetIsland != nil else { return }
+        guard dropTargetIsland != nil || dropTargetIsNewGroup else { return }
         dropTargetIsland = nil
+        dropTargetIsNewGroup = false
         mapArea.needsDisplay = true
     }
 
     func performMapDrop(at point: CGPoint, pasteboard: NSPasteboard) -> Bool {
         defer { mapDragExited() }
-        guard let island = clusterLayout?.island(at: point) else { return false }
         let urls = WorkspaceDragDrop.fileURLs(from: pasteboard)
         guard !urls.isEmpty else { return false }
-        return onLinkToGroup?(urls, island.name) ?? false
+        if let island = clusterLayout?.island(at: point) {
+            return onLinkToGroup?(urls, island.name) ?? false
+        }
+        guard clusterLayout?.newGroupSlot?.contains(point) == true else { return false }
+        return onCreateGroup?(urls) ?? false
     }
 
     func mapMenu(at point: CGPoint) -> NSMenu? {
@@ -574,6 +649,17 @@ final class WorkspaceMapView: NSView {
         let row = othersTable.clickedRow
         guard visibleOthers.indices.contains(row) else { return }
         onOpen?(visibleOthers[row])
+    }
+
+    /// キー操作を受けるビュー。地図を描いている側が受ける — 右の一覧は
+    /// NSTableViewが自前で矢印もSpaceも捌くので、そちらに触ったときは
+    /// AppKitが勝手にそこへ移してくれる。
+    var keyboardTarget: NSView { mapArea }
+
+    /// ⌘↓ と ダブルクリックの行き先。フォルダなら移動、ファイルなら開く。
+    func openSelection() {
+        guard let first = selectedItems.first else { return }
+        onOpen?(first)
     }
 
     var selectedItems: [WorkspaceItem] {
@@ -663,6 +749,29 @@ final class WorkspaceMapCanvas: NSView {
 
     /// 背面のウィンドウを起こす一手目でも点が選べるように。
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override var acceptsFirstResponder: Bool { true }
+
+    /// Finderの手癖を地図でも通す。Spaceでクイックルック、⌘↓で開く。
+    /// 表示を変えるたびにキーの意味が変わると、覚えたものが使えない。
+    override func keyDown(with event: NSEvent) {
+        switch FinderLikeBrowserKeyboard.action(
+            charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+            modifierFlags: event.modifierFlags
+        ) {
+        case .quickLook:
+            owner?.onQuickLook?()
+        case .rename:
+            // 地図には名前を書き換える場所がない。黙って無反応にはしない。
+            NSSound.beep()
+        case .forwardToAppKit:
+            if event.modifierFlags.contains(.command), event.specialKey == .downArrow {
+                owner?.openSelection()
+            } else {
+                super.keyDown(with: event)
+            }
+        }
+    }
 
     // 右の一覧から島へのドラッグ。判定はこのビューの座標系で行う。
     override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {

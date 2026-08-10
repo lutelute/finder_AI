@@ -54,6 +54,8 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         public let frame: CGRect
         /// 島の中に並べきれなかった数。0でなければ「ほか N」と出す必要がある。
         public let overflow: Int
+        /// 定義にあるのに実物が無い数。フォルダを消したり別の場所へ動かすと増える。
+        public let missing: Int
     }
 
     public private(set) var nodes: [Node]
@@ -63,8 +65,16 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
     /// 複数の束に属するノードの添字。橋を描く相手。
     public private(set) var bridges: [Int]
 
+    /// 「新しい束」の枠。ここに落とせば束を作れる。
+    ///
+    /// 束が一つも無いフォルダでは、これが唯一の入口になる（枡いっぱいに出る）。
+    /// 束があるときは最後の枡を空けて置く — 地図の上で作れないと、右クリックの
+    /// メニューを知っている人しか束を作れない。
+    public private(set) var newGroupSlot: CGRect?
+
     private let groupedItems: [WorkspaceItem]
     private let groups: WorkspaceItemGroups?
+    private let presentNames: Set<String>?
 
     /// 島の内側の余白と、束名の帯の高さ。
     public static let islandInset = CGSize(width: 14, height: 12)
@@ -72,11 +82,25 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
     /// 島の中の一行。点と名前が並ぶ高さ。
     public static let rowHeight: Double = 21
 
-    public init(groupedItems: [WorkspaceItem], groups: WorkspaceItemGroups?, size: CGSize) {
+    /// - Parameter presentNames: このフォルダに実在する名前。**隠しファイルも含める**。
+    ///   省略すると`groupedItems`の名前を使うが、それだと隠し表示をオフにしただけで
+    ///   隠しフォルダが「見つからない」に化ける。
+    public init(
+        groupedItems: [WorkspaceItem],
+        groups: WorkspaceItemGroups?,
+        size: CGSize,
+        presentNames: Set<String>? = nil
+    ) {
         self.groupedItems = groupedItems
         self.groups = groups
+        self.presentNames = presentNames
         self.size = size
-        (islands, nodes, bridges) = Self.build(items: groupedItems, groups: groups, size: size)
+        (islands, nodes, bridges, newGroupSlot) = Self.build(
+            items: groupedItems,
+            groups: groups,
+            size: size,
+            presentNames: presentNames
+        )
     }
 
     // MARK: - 割り付け
@@ -84,16 +108,51 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
     private static func build(
         items: [WorkspaceItem],
         groups: WorkspaceItemGroups?,
-        size: CGSize
-    ) -> ([Island], [Node], [Int]) {
+        size: CGSize,
+        presentNames: Set<String>?
+    ) -> ([Island], [Node], [Int], CGRect?) {
         let names = groups?.adjacencyOrderedNames() ?? []
-        guard !names.isEmpty, size.width > 1, size.height > 1 else { return ([], [], []) }
+        guard size.width > 1, size.height > 1 else { return ([], [], [], nil) }
 
-        let frames = islandFrames(count: names.count, in: size)
+        // 「新しい束」は下端の帯に置く。
+        //
+        // 枡を一つ多く割って最後を充てていたが、6束のときに枡が3×2から3×3になり、
+        // 島の高さが三分の二に縮んで7項目のうち2つが「ほか」に落ちた。新しい束を
+        // 置ける代わりに既にある束が読めなくなるのは筋が悪い。帯なら島は縮まない。
+        let margin: Double = 14
+        let slotHeight: Double = 44
+        let slotGap: Double = 12
+        let newGroupSlot = CGRect(
+            x: margin,
+            y: size.height - margin - slotHeight,
+            width: max(size.width - margin * 2, 1),
+            height: slotHeight
+        )
+
+        // 束が一つも無ければ、帯ではなく全面を入口にする。ここしか入口がない。
+        guard !names.isEmpty else {
+            return ([], [], [], CGRect(
+                x: margin,
+                y: margin,
+                width: max(size.width - margin * 2, 1),
+                height: max(size.height - margin * 2, 1)
+            ))
+        }
+
+        let frames = islandFrames(
+            count: names.count,
+            in: CGSize(width: size.width, height: max(size.height - slotHeight - slotGap, 1))
+        )
         let byName = Dictionary(
             zip(names, frames).map { ($0, $1) },
             uniquingKeysWith: { first, _ in first }
         )
+
+        // 定義にあるのに実物が無いものを数える。呼び出し側は束に属するものだけを
+        // 渡してくるので、ここで数えられるのは「束の定義に居るが実物が無い」名前。
+        let missingByGroup = groups?.missingMembers(
+            amongNames: presentNames ?? Set(items.map(\.name))
+        ) ?? [:]
 
         // 島に並べるのは、その島だけに属するもの。複数所属は境界へ回す。
         var exclusive: [String: [WorkspaceItem]] = [:]
@@ -110,14 +169,22 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
 
         var built: [Node] = []
         var islands: [Island] = []
+        /// 島ごとの、並べた行の下端。境界に立つ点をここより下に置く。
+        var rowsBottom: [String: Double] = [:]
 
         for name in names {
             guard let frame = byName[name] else { continue }
             let members = (exclusive[name] ?? [])
                 .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             let (placed, overflow) = place(members, in: frame, groups: [name])
+            rowsBottom[name] = (placed.map { $0.position.y }.max() ?? frame.minY) + rowHeight / 2
             built.append(contentsOf: placed)
-            islands.append(Island(name: name, frame: frame, overflow: overflow))
+            islands.append(Island(
+                name: name,
+                frame: frame,
+                overflow: overflow,
+                missing: missingByGroup[name]?.count ?? 0
+            ))
         }
 
         // 複数所属は、属する島の中心を結んだ中点に置く。同じ組み合わせが複数あれば、
@@ -132,7 +199,16 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
             let belongs = groups?.groupNames(for: first.name) ?? []
             let centres = belongs.compactMap { byName[$0] }
                 .map { CGPoint(x: $0.midX, y: $0.midY) }
-            guard let anchor = centroid(of: centres) else { continue }
+            guard var anchor = centroid(of: centres) else { continue }
+
+            // 島の中の行より下に置く。中点そのままだと島の中身の上に乗って、
+            // 点も名前もどちらも読めなくなった（実機でそうなった）。
+            // 「境界に立つ」という意味は横位置が担うので、縦にずらしても崩れない。
+            let below = belongs.compactMap { rowsBottom[$0] }.max()
+            let ceiling = belongs.compactMap { byName[$0]?.maxY }.min()
+            if let below, let ceiling, below + 22 < ceiling - 8 {
+                anchor.y = max(anchor.y, below + 22)
+            }
 
             let axis = spreadDirection(across: centres)
             let spacing = 78.0
@@ -154,7 +230,7 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         }
 
         let bridges = built.indices.filter { built[$0].isShared }
-        return (islands, built, bridges)
+        return (islands, built, bridges, newGroupSlot)
     }
 
     /// 島の中に名前順で並べる。入りきらない分は数だけ返す。
@@ -307,10 +383,11 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         guard newSize.width > 1, newSize.height > 1 else { return }
         size = newSize
         // 引き伸ばすのではなく組み直す。決定的なので、同じ大きさなら必ず同じ地図。
-        (islands, nodes, bridges) = Self.build(
+        (islands, nodes, bridges, newGroupSlot) = Self.build(
             items: groupedItems,
             groups: groups,
-            size: newSize
+            size: newSize,
+            presentNames: presentNames
         )
     }
 

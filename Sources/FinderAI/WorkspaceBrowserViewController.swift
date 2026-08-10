@@ -472,6 +472,10 @@ final class WorkspaceBrowserViewController: NSViewController {
     private var addToGroupItem = NSMenuItem()
     private var removeFromGroupItem = NSMenuItem()
     private var itemGroups: WorkspaceItemGroups?
+    /// このフォルダに実在する名前（隠しファイルも含む）。束の「見つからない」判定に使う。
+    /// 一覧に見えているものだけで判定すると、隠し表示をオフにしただけで
+    /// 隠しフォルダが迷子に化ける。
+    private var presentNames: Set<String> = []
     /// 定義が読めなかったときの理由。見出しは出さないが、黙って無かったことにはしない。
     private var itemGroupsError: String?
     private static let ungroupedTitle = "未分類"
@@ -644,9 +648,7 @@ final class WorkspaceBrowserViewController: NSViewController {
 
     override func viewDidAppear() {
         super.viewDidAppear()
-        view.window?.makeFirstResponder(
-            effectiveViewMode == .gallery ? galleryView : fileTable
-        )
+        view.window?.makeFirstResponder(firstResponderForCurrentMode)
         observeVolumeChanges()
         observeFocusChanges()
     }
@@ -928,12 +930,23 @@ final class WorkspaceBrowserViewController: NSViewController {
         }
         mapView.onSelectionChange = { [weak self] _ in self?.updateStatus() }
         mapView.contextMenuProvider = { [weak self] in self?.fileTable.menu }
+        mapView.onQuickLook = { [weak self] in self?.toggleQuickLook() }
         // 右の一覧から島へ引いて束に入れる。ファイルは動かないので、
         // 一覧の見出しへのドロップと同じ扱い。
         mapView.onLinkToGroup = { [weak self] urls, group in
             guard let self, let members = self.linkableNames(from: urls) else { return false }
             return self.mutateGroups(actionName: "「\(group)」に入れる") { groups in
                 members.forEach { groups.add($0, to: group) }
+            }
+        }
+        // 「新しい束」の枠。落としたものが空なら、いま選んでいるもので作る。
+        mapView.onCreateGroup = { [weak self] urls in
+            guard let self else { return false }
+            let source = urls.isEmpty ? self.selectedItems.map(\.url) : urls
+            guard let members = self.linkableNames(from: source) else { return false }
+            guard let name = self.askForGroupName() else { return false }
+            return self.mutateGroups(actionName: "「\(name)」を作る") { groups in
+                members.forEach { groups.add($0, to: name) }
             }
         }
     }
@@ -1007,6 +1020,17 @@ final class WorkspaceBrowserViewController: NSViewController {
         searchHasText && preferences.viewMode == .column ? .list : preferences.viewMode
     }
 
+    /// いまの表示でキー操作を受けるべきビュー。表示を変えたらここも移す —
+    /// でないとSpaceやクイックルックが前の表示に飛ぶ。
+    private var firstResponderForCurrentMode: NSView {
+        switch effectiveViewMode {
+        case .gallery: return galleryView
+        case .map: return mapView.keyboardTarget
+        case .column: return columnView
+        case .list: return fileTable
+        }
+    }
+
     private func applyViewMode() {
         let mode = effectiveViewMode
         columnView.isHidden = mode != .column
@@ -1022,9 +1046,13 @@ final class WorkspaceBrowserViewController: NSViewController {
         }
         // 開いたときに組み直す。地図は決定的なので、組めばそれで完成している。
         if mode == .map {
-            mapView.show(items: displayedItems, groups: itemGroups)
+            mapView.show(items: displayedItems, groups: itemGroups, presentNames: presentNames)
         }
         galleryView.reloadData()
+        // キーの行き先を新しい表示へ移す。
+        if view.window?.firstResponder !== firstResponderForCurrentMode {
+            view.window?.makeFirstResponder(firstResponderForCurrentMode)
+        }
         updateStatus()
     }
 
@@ -1327,6 +1355,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         removeFromGroupItem = NSMenuItem(title: "束から外す", action: nil, keyEquivalent: "")
         removeFromGroupItem.submenu = NSMenu()
         menu.addItem(removeFromGroupItem)
+        add("見つからない項目を整理…", #selector(pruneMissingGroupMembers))
         menu.addItem(.separator())
 
         add("カット", #selector(cutSelection))
@@ -1730,6 +1759,7 @@ final class WorkspaceBrowserViewController: NSViewController {
                 // 束の定義は一覧と同じ往復で読む。小さなローカルファイルなので、
                 // クラウドキーと違って一覧を待たせない。
                 let groups = Result { try WorkspaceItemGroups.load(from: directory) }
+                let presentNames = WorkspaceDirectoryListing.namesIncludingHidden(of: directory)
                 // A folder can look empty because every item carries the
                 // hidden flag (desktop-cleanup tools do this to ~/Desktop).
                 // Count what is really there — only for empty results, so the
@@ -1742,7 +1772,8 @@ final class WorkspaceBrowserViewController: NSViewController {
                     items,
                     for: directory,
                     hiddenItemCount: hiddenCount,
-                    groups: groups
+                    groups: groups,
+                    presentNames: presentNames
                 )
             } catch is CancellationError {
                 return
@@ -1757,11 +1788,13 @@ final class WorkspaceBrowserViewController: NSViewController {
         _ items: [WorkspaceItem],
         for directory: URL,
         hiddenItemCount: Int = 0,
-        groups: Result<WorkspaceItemGroups?, any Error> = .success(nil)
+        groups: Result<WorkspaceItemGroups?, any Error> = .success(nil),
+        presentNames: Set<String> = []
     ) {
         guard navigator.currentDirectory == directory else { return }
         endLoadingIndicator()
         recursiveSearchErrorShown = false
+        self.presentNames = presentNames
 
         // 読めなかった定義は「束が無い」ことにしない。見出しは出せないが、
         // 出せなかったことは状態行に残す — 黙って消えると、書いた束が
@@ -2253,6 +2286,39 @@ final class WorkspaceBrowserViewController: NSViewController {
         }
     }
 
+    /// 定義に残っているが実物が無いメンバーを、まとめて外す。
+    ///
+    /// 見出しを組むときは黙って落としている。それは別のマシンにしか無いフォルダの
+    /// 定義を守るためだが、**消したフォルダ**の名前も同じように落ちるので、定義に
+    /// ゴミが残り続けても気づけない。かといって勝手に消すのも危ない — 向こうの
+    /// マシンではまだ使っている。数を島に出して気づけるようにし、外すかどうかは
+    /// 一覧を見せてから本人に決めてもらう。
+    @objc private func pruneMissingGroupMembers() {
+        guard itemGroupsError == nil else { return }
+        let missing = itemGroups?.missingMembers(amongNames: presentNames) ?? [:]
+        guard !missing.isEmpty else { return }
+
+        let total = missing.values.reduce(0) { $0 + $1.count }
+        let detail = missing.keys.sorted().map { name in
+            "「\(name)」 " + (missing[name] ?? []).joined(separator: "、")
+        }.joined(separator: "\n")
+
+        let alert = NSAlert()
+        alert.messageText = "見つからない\(total)件を束から外しますか？"
+        alert.informativeText = "定義に名前は残っていますが、このフォルダに実物がありません。"
+            + "移動したか、消したか、別のマシンにしか無いかのどれかです。"
+            + "別のマシンにあるものを外すと、そちらでも束から消えます。\n\n"
+            + detail
+        alert.addButton(withTitle: "外す")
+        alert.addButton(withTitle: "残す")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let names = presentNames
+        mutateGroups(actionName: "見つからない項目を外す") { groups in
+            groups.pruneMissingMembers(amongNames: names)
+        }
+    }
+
     @objc private func createGroupWithSelection() {
         guard let members = linkableNames(from: selectedItems.map(\.url)) else { return }
         guard let name = askForGroupName() else { return }
@@ -2344,7 +2410,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         // `updateSearchResults`は`applyViewMode`を先に呼び、`displayedItems`が
         // 入るのはそのあと — 開いた直後の地図が空だったのはそれが理由だった。
         if effectiveViewMode == .map {
-            mapView.show(items: displayedItems, groups: itemGroups)
+            mapView.show(items: displayedItems, groups: itemGroups, presentNames: presentNames)
         }
     }
 
@@ -2841,9 +2907,7 @@ final class WorkspaceBrowserViewController: NSViewController {
     /// focus back to the list.
     private func endPathEditing() {
         pathField.stringValue = Self.plainPath(for: navigator.currentDirectory)
-        view.window?.makeFirstResponder(
-            effectiveViewMode == .gallery ? galleryView : fileTable
-        )
+        view.window?.makeFirstResponder(firstResponderForCurrentMode)
     }
 
     /// Accepts what a user actually pastes: `~`, a trailing slash, surrounding
@@ -3480,6 +3544,10 @@ extension WorkspaceBrowserViewController: NSMenuItemValidation {
         // 別の階層のものは指せない。定義が読めていないときも触らせない。
         case #selector(createGroupWithSelection), #selector(removeSelectionFromAllGroups):
             return canEditGroupsForSelection
+        // 迷子がいなければ整理するものが無い。押せるように見せない。
+        case #selector(pruneMissingGroupMembers):
+            guard itemGroupsError == nil else { return false }
+            return !(itemGroups?.missingMembers(amongNames: presentNames).isEmpty ?? true)
         case #selector(addSelectionToGroup(_:)):
             guard canEditGroupsForSelection,
                   let members = linkableNames(from: selectedItems.map(\.url)),
