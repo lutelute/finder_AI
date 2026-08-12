@@ -476,38 +476,22 @@ final class WorkspaceMapView: NSView {
         clusterLayout = built
         // 伸ばしたぶんだけ紙を長くする。高さを変えると`layout()`がまた走るが、
         // `lastViewport`が同じなのでそこで止まる。
-        mapHeight.constant = built.size.height
+        mapHeight.constant = max(built.contentHeight, viewport.height)
         mapArea.needsDisplay = true
     }
 
-    /// 全部の島の中身が入るまで、縦に伸ばして組み直す。
+    /// 地図を組む。
     ///
-    /// 画面に収まる範囲で配っていたので、収まらないぶんが「ほか N」になっていた。
-    /// 地図なのだから全部見えているほうが素直で、そのためには「画面の高さに配る」を
-    /// やめて、必要なだけ長い紙に描いてスクロールで辿るしかない。
-    ///
-    /// 際限なく伸ばすと、何千個入ったフォルダで紙が数十メートルになる。見える高さの
-    /// 12倍で打ち切って、そこから先は今までどおり「ほか N」で示す。
+    /// 島は中身のぶんだけ縦に積まれ、要るだけ紙が伸びる（`contentHeight`）。
+    /// 画面に配ろうとしていたころは、収まらないぶんが「ほか N」に落ちていた。
     private func buildFittingLayout(viewport: CGSize) -> WorkspaceClusterLayout {
         let focused = focusedDefinition()
-        func build(_ size: CGSize) -> WorkspaceClusterLayout {
-            WorkspaceClusterLayout(
-                groupedItems: focused.items,
-                groups: focused.groups,
-                size: size,
-                presentNames: presentNames.isEmpty ? nil : presentNames
-            )
-        }
-        var size = viewport
-        var layout = build(size)
-        let limit = viewport.height * 12
-        var rounds = 0
-        while layout.islands.contains(where: { $0.overflow > 0 }), size.height < limit, rounds < 24 {
-            size.height *= 1.25
-            layout = build(size)
-            rounds += 1
-        }
-        return layout
+        return WorkspaceClusterLayout(
+            groupedItems: focused.items,
+            groups: focused.groups,
+            size: viewport,
+            presentNames: presentNames.isEmpty ? nil : presentNames
+        )
     }
 
     /// 広げているグループと、その中身。広げていなければ全部をそのまま返す。
@@ -1279,7 +1263,7 @@ final class WorkspaceMapView: NSView {
     }
 
     /// 紙の長さ。見える高さより長ければ、スクロールして続きを見ることになる。
-    var mapContentHeightForTesting: Double { Double(clusterLayout?.size.height ?? 0) }
+    var mapContentHeightForTesting: Double { clusterLayout?.contentHeight ?? 0 }
 
     func islandCentreForTesting(named name: String) -> CGPoint? {
         clusterLayout?.island(named: name).map { CGPoint(x: $0.frame.midX, y: $0.frame.midY) }
