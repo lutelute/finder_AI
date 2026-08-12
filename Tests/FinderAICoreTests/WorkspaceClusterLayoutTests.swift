@@ -188,6 +188,27 @@ struct WorkspaceClusterLayoutTests {
         #expect(small.frame.height >= WorkspaceClusterLayout.minIslandHeight)
     }
 
+    /// 「子の場所を残すため親は四割まで」と決め打っていたので、子が小さくても
+    /// 親の直下が頭打ちになり、空いているのに親のメンバーが「ほか N」に落ちた。
+    @Test("子が小さければ、親は直下のメンバーに場所を使える")
+    func parentTakesTheRoomItsChildrenDoNotNeed() {
+        var groups = WorkspaceItemGroups()
+        let mine = (0..<10).map { "p\($0)" }
+        for name in mine { groups.add(name, to: "親") }
+        groups.add("c1", to: "子")
+        groups.nest("子", inside: "親")
+        let map = layout(mine + ["c1"], groups, size: CGSize(width: 420, height: 560))
+
+        let parent = try! #require(map.island(named: "親"))
+        #expect(parent.overflow == 0)
+        #expect(map.nodes.filter { $0.groups.contains("親") }.count == 10)
+        // 子も潰れない。
+        let child = try! #require(map.island(named: "子"))
+        #expect(child.overflow == 0)
+        #expect(parent.frame.contains(child.frame))
+        #expect(!parent.contentFrame.intersects(child.frame))
+    }
+
     @Test("入りきるなら「ほか」は出ない")
     func noOverflowWhenEverythingFits() {
         let map = layout(["a1", "a2", "a3", "b1", "b2", "b3"], twoGroups())

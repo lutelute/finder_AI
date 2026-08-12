@@ -459,14 +459,28 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
                 continue
             }
 
-            // 自分の行に使う高さ。子の場所を残すため、最大でも枠の四割まで。
-            let wanted = islandTitleHeight + rowHeight * Double(ownCounts[name] ?? 0)
-            let ownHeight = min(max(wanted, islandTitleHeight), inset.height * 0.4)
+            // 自分の行と子の場所を、それぞれが欲しい高さで分ける。
+            //
+            // 「子の場所を残すため、自分は最大でも枠の四割まで」と決め打っていた。
+            // 子が小さくても親の直下が四割で頭打ちになり、空いているのに親の
+            // メンバーが「ほか N」に落ちた。枡の大きさを中身の量で配るように
+            // した以上、この中でも同じ配り方をするのが筋。
+            let notes = missing[name]?.isEmpty == false ? 1.0 : 0.0
+            let ownWanted = islandTitleHeight + islandInset.height * 2
+                + rowHeight * (Double(ownCounts[name] ?? 0) + notes)
+            let childrenWanted = children.reduce(0.0) {
+                $0 + weight(of: $1, in: groups, ownCounts: ownCounts, missing: missing)
+            } + Double(children.count - 1) * 8
+            let split = share(
+                max(inset.height - islandInset.height, 0),
+                among: [ownWanted, childrenWanted]
+            )
             let contentFrame = CGRect(
                 x: box.minX,
                 y: box.minY,
                 width: box.width,
-                height: ownHeight + islandInset.height * 2
+                // 名前の帯と余白は必ず要る。ここを削ると名前の無い箱になる。
+                height: max(split[0], islandTitleHeight + islandInset.height * 2)
             )
             let childArea = CGRect(
                 x: inset.minX,
