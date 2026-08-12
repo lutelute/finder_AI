@@ -175,6 +175,12 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
         identifier = NSUserInterfaceItemIdentifier("WorkspaceSidebarCell")
         label.font = .systemFont(ofSize: 11.5, weight: .medium)
         label.textColor = IntegratedPanelTheme.text
+        // 長い名前は中ほどを省く。省かずに全部出していたので、読むにはサイドバーを
+        // 広げるしかなく、「幅が要る」のではなく「省略していない」のが原因だった。
+        // 末尾ではなく中ほどを落とすのは、日付や連番で見分けているものがあるから。
+        label.lineBreakMode = .byTruncatingMiddle
+        label.cell?.truncatesLastVisibleLine = true
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         iconView.contentTintColor = IntegratedPanelTheme.secondaryText
         [iconView, label].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
@@ -4331,7 +4337,18 @@ extension WorkspaceBrowserViewController: NSSplitViewDelegate {
     func splitViewDidResizeSubviews(_ notification: Notification) {
         guard showsSidebar, didSetInitialSidebarPosition,
               let sidebar = splitView.arrangedSubviews.first else { return }
-        preferences.sidebarWidth = sidebar.frame.width
+        // 引いて決められる幅と同じ範囲に収めてから覚える。ここで素通ししていたので、
+        // 上限を超えた幅が設定に残っていた。
+        preferences.sidebarWidth = min(max(sidebar.frame.width, 160), 360)
+    }
+
+    /// 窓を広げたぶんは本文へ。サイドバーは決めた幅のままにする。
+    ///
+    /// 素のままだと、窓を広げるたびにサイドバーも一緒に太る。上限は引くときにしか
+    /// 効かないので、実測で460pt——窓幅の三割——まで育っていた。名前を読むために
+    /// 一度広げると、あとは窓を広げるたびに勝手に太っていく。
+    func splitView(_ splitView: NSSplitView, shouldAdjustSizeOfSubview view: NSView) -> Bool {
+        view !== splitView.arrangedSubviews.first
     }
 
     func splitView(

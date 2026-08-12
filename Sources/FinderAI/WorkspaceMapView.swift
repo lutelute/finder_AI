@@ -970,11 +970,24 @@ final class WorkspaceMapView: NSView {
                 max(node.position.x - size.width / 2, mapArea.bounds.minX + 4),
                 mapArea.bounds.maxX - size.width - 4
             )
+            // 下・上・右・左に加えて、斜めと、少し離した場所も試す。四方だけだと
+            // 島に挟まれた点で逃げ場が尽き、島の名前の帯に着地して
+            // 「サーバー viz-note-kit」のようにグループ名の一部に読めていた。
+            let above = node.position.y - r - size.height - 3
+            let below = node.position.y + r + 3
+            let right = node.position.x + r + 5
+            let left = node.position.x - r - 5 - size.width
             let candidates = [
-                NSPoint(x: centred, y: node.position.y + r + 3),
-                NSPoint(x: centred, y: node.position.y - r - size.height - 3),
-                NSPoint(x: node.position.x + r + 5, y: node.position.y - size.height / 2),
-                NSPoint(x: node.position.x - r - 5 - size.width, y: node.position.y - size.height / 2)
+                NSPoint(x: centred, y: below),
+                NSPoint(x: centred, y: above),
+                NSPoint(x: right, y: node.position.y - size.height / 2),
+                NSPoint(x: left, y: node.position.y - size.height / 2),
+                NSPoint(x: right, y: below),
+                NSPoint(x: left, y: below),
+                NSPoint(x: right, y: above),
+                NSPoint(x: left, y: above),
+                NSPoint(x: centred, y: below + 13),
+                NSPoint(x: centred, y: above - 13)
             ]
             let islands = clusterLayout.islands.map(\.frame)
             let clear = candidates.first { origin in
@@ -984,6 +997,16 @@ final class WorkspaceMapView: NSView {
                     && mapArea.bounds.contains(rect)
             }
             let origin = clear ?? candidates[0]
+            if clear == nil {
+                // どこも空いていない。島に重ねるしかないので、下敷きを敷いて
+                // 島の名前や中身と混ざらないようにする。
+                IntegratedPanelTheme.background.withAlphaComponent(0.92).setFill()
+                NSBezierPath(
+                    roundedRect: NSRect(origin: origin, size: size).insetBy(dx: -4, dy: -2),
+                    xRadius: 4,
+                    yRadius: 4
+                ).fill()
+            }
             taken.append(NSRect(origin: origin, size: size))
             shown.draw(at: origin, withAttributes: attributes)
         }
