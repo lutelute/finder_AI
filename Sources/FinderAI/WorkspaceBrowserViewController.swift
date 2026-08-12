@@ -804,6 +804,13 @@ final class WorkspaceBrowserViewController: NSViewController {
     private let newFolderButton = NSButton()
     private let newGroupButton = NSButton()
     private let statusLabel = NSTextField(labelWithString: "")
+    /// ナビゲーションバーの二つの並べ方。幅を見てどちらかを効かせる。
+    private weak var navigationStack: NSStackView?
+    private weak var searchStack: NSStackView?
+    private var oneRowConstraints: [NSLayoutConstraint] = []
+    private var twoRowConstraints: [NSLayoutConstraint] = []
+    private var navigationBarHeight: NSLayoutConstraint?
+    private var usesOneRowNavigation = false
     private let progress = NSProgressIndicator()
     private let splitView = NSSplitView()
     private var didSetInitialSidebarPosition = false
@@ -995,11 +1002,39 @@ final class WorkspaceBrowserViewController: NSViewController {
     override func viewDidLayout() {
         super.viewDidLayout()
         layoutFileColumns()
+        updateNavigationRows()
         guard showsSidebar, !didSetInitialSidebarPosition,
               splitView.bounds.width >= 761 else { return }
         splitView.setPosition(preferences.sidebarWidth, ofDividerAt: 0)
         didSetInitialSidebarPosition = true
     }
+
+    /// ナビゲーションを一段にするか二段にするかを、幅を見て決める。
+    ///
+    /// 常に二段だと、広いときに二段目の八割が空いたまま残る。空いた帯が上に一本
+    /// 乗っているのは、中身を見る前に「作りかけ」と読まれる。かといって常に一段だと、
+    /// 分割表示（ペインが窓の半分）で住所欄が潰れる。入るときだけ一段にする。
+    private func updateNavigationRows() {
+        guard let navigationStack, let searchStack, let navigationBarHeight else { return }
+        let width = navigationStack.superview?.bounds.width ?? 0
+        guard width > 1 else { return }
+        // 住所欄に残したい幅を足して測る。ぎりぎり入るだけでは、パスが読めない
+        // 一段になってしまう。
+        let needed = navigationStack.fittingSize.width
+            + searchStack.fittingSize.width
+            + 30
+            + Self.pathRoomOnOneRow
+        let wantsOneRow = width >= needed
+        guard wantsOneRow != usesOneRowNavigation else { return }
+        usesOneRowNavigation = wantsOneRow
+        NSLayoutConstraint.deactivate(wantsOneRow ? twoRowConstraints : oneRowConstraints)
+        NSLayoutConstraint.activate(wantsOneRow ? oneRowConstraints : twoRowConstraints)
+        navigationBarHeight.constant = wantsOneRow ? 39 : 76
+    }
+
+    /// 一段にするなら、住所欄にこれだけは残す。長いパスの末尾（いま居る場所）が
+    /// 読めなくなるくらいなら、二段のままのほうがいい。
+    private static let pathRoomOnOneRow: CGFloat = 220
 
     private func makeSidebar() -> NSView {
         let root = NSView()
@@ -1065,6 +1100,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         galleryScrollView = galleryScroll
         configureListingErrorState()
 
+        navigationBarHeight = navigationBar.heightAnchor.constraint(equalToConstant: 76)
         let ribbon = makeRibbon()
         [navigationBar, fileArea, ribbon, statusBar].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
@@ -1074,7 +1110,7 @@ final class WorkspaceBrowserViewController: NSViewController {
             navigationBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             navigationBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             navigationBar.topAnchor.constraint(equalTo: root.topAnchor),
-            navigationBar.heightAnchor.constraint(equalToConstant: 76),
+            navigationBarHeight!,
             fileArea.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             fileArea.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             fileArea.topAnchor.constraint(equalTo: navigationBar.bottomAnchor),
@@ -1671,6 +1707,10 @@ final class WorkspaceBrowserViewController: NSViewController {
         searchScopeControl.setWidth(42, forSegment: 0)
         searchScopeControl.setWidth(42, forSegment: 1)
         searchScopeControl.selectedSegment = 0
+        // 検索していないときは出さない。何も打っていないのに「直下／配下」だけが
+        // 帯の右端に浮いていて、何に効くのか読めなかった。Finderと同じで、
+        // 範囲は探し始めてから選ぶもの。
+        searchScopeControl.isHidden = true
         searchScopeControl.trackingMode = .selectOne
         searchScopeControl.target = self
         searchScopeControl.action = #selector(searchScopeChanged)
@@ -1705,10 +1745,10 @@ final class WorkspaceBrowserViewController: NSViewController {
         searchField.setContentHuggingPriority(.defaultLow, for: .horizontal)
         searchField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        // A split pane is only about half of the window. Keeping path, three view
-        // modes, two search scopes, and the search field on one row forces Auto
-        // Layout to crush the address field at exactly the size where it matters
-        // most. Navigation stays on top and search gets a dedicated compact row.
+        // 分割表示ではペインが窓の半分しかない。全部を一段に押し込むと、いちばん
+        // 効く場所——住所欄——から潰れる。かといって常に二段だと、広いときは
+        // 二段目の八割が空いたままで、それが「作りかけ」に見える。
+        // **入るときだけ一段**にする（`updateNavigationRows()`が幅を見て決める）。
         configureAppearanceButton()
         let navigationStack = NSStackView(views: [
             backButton, forwardButton, upButton, pathSlot, copyCDButton,
@@ -1732,18 +1772,34 @@ final class WorkspaceBrowserViewController: NSViewController {
         searchStack.translatesAutoresizingMaskIntoConstraints = false
         bar.addSubview(navigationStack)
         bar.addSubview(searchStack)
+        self.navigationStack = navigationStack
+        self.searchStack = searchStack
         NSLayoutConstraint.activate([
             navigationStack.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
-            navigationStack.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
             navigationStack.topAnchor.constraint(equalTo: bar.topAnchor, constant: 6),
             navigationStack.heightAnchor.constraint(equalToConstant: 27),
-            searchStack.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
-            searchStack.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
-            searchStack.topAnchor.constraint(equalTo: navigationStack.bottomAnchor, constant: 5),
-            searchStack.bottomAnchor.constraint(equalTo: bar.bottomAnchor, constant: -6),
             searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: 140),
             searchField.widthAnchor.constraint(lessThanOrEqualToConstant: 240)
         ])
+        // 一段のとき: 検索は同じ行の右端。
+        oneRowConstraints = [
+            navigationStack.trailingAnchor.constraint(
+                equalTo: searchStack.leadingAnchor,
+                constant: -10
+            ),
+            searchStack.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
+            searchStack.centerYAnchor.constraint(equalTo: navigationStack.centerYAnchor),
+            navigationStack.bottomAnchor.constraint(equalTo: bar.bottomAnchor, constant: -6)
+        ]
+        // 二段のとき: 検索は下の行いっぱい。
+        twoRowConstraints = [
+            navigationStack.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
+            searchStack.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
+            searchStack.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
+            searchStack.topAnchor.constraint(equalTo: navigationStack.bottomAnchor, constant: 5),
+            searchStack.bottomAnchor.constraint(equalTo: bar.bottomAnchor, constant: -6)
+        ]
+        NSLayoutConstraint.activate(twoRowConstraints)
         return bar
     }
 
@@ -4214,6 +4270,7 @@ extension WorkspaceBrowserViewController: NSSearchFieldDelegate {
     /// in large folders. Coalesce bursts; a lone keystroke still lands quickly.
     func controlTextDidChange(_ obj: Notification) {
         guard obj.object as? NSTextField !== pathField else { return }
+        searchScopeControl.isHidden = !searchHasText
         filterTask?.cancel()
         filterTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(60))
