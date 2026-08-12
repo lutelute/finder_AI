@@ -23,8 +23,9 @@ struct FileColumnLayoutTests {
         window - sidebar - 1 - 15
     }
 
+    /// 隠れている列は場所を取らないので、幅の計算から外す（実装と同じ扱い）。
     private func columns() -> [NSTableColumn] {
-        Browser.makeFileColumns()
+        Browser.makeFileColumns().filter { !$0.isHidden }
     }
 
     /// Mirrors `layoutFileColumns()` with the table's real 17pt gutters.
@@ -70,6 +71,18 @@ struct FileColumnLayoutTests {
         #expect(roomy > 430, "a default sidebar leaves surplus, so 名前 exceeds 430pt")
         #expect(tight < 430, "a 299pt sidebar cannot fit 430pt without a scroller")
         #expect(tight >= 220)
+    }
+
+    /// 「グループ」の列を常に出すと、名前から150pt削られて狭い窓では横スクロールが出た。
+    /// 所属は見出しでも読めるので、列は出したい人だけが出す。既定で出す形に戻すと
+    /// このテストが落ちる。
+    @Test("「グループ」の列は既定で隠れている")
+    func groupColumnIsHiddenByDefault() {
+        let all = Browser.makeFileColumns()
+        let groups = all.first { $0.title == "グループ" }
+        #expect(groups != nil, "グループの列そのものは在る")
+        #expect(groups?.isHidden == true)
+        #expect(columns().count == 4, "幅の計算に入るのは見えている4列だけ")
     }
 
     @Test("the fixed columns keep their authored widths")

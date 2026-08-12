@@ -6,7 +6,12 @@ enum WorkspaceDragDrop {
     /// FinderAI folders can negotiate move or copy with each other. External
     /// shelves such as Dropover should only ever receive a copy operation; they
     /// are collecting a reference, not authorizing FinderAI to move the source.
-    static let localSourceOperations: NSDragOperation = [.copy, .move]
+    ///
+    /// `.link`が要る。グループの見出しや地図の島に落とす操作は、ファイルを動かさない
+    /// ので`.link`を返しているが、**引く側**が許していない操作は、落とす側が何を返しても
+    /// OSが弾く。ここに`.link`が無かったせいで、一覧の行をグループの見出しへ引いても
+    /// 何も起きなかった（Finderから引いたときだけ入る、という分かりにくい状態だった）。
+    static let localSourceOperations: NSDragOperation = [.copy, .move, .link]
     static let externalSourceOperations: NSDragOperation = [.copy]
 
     static func pasteboardWriter(for url: URL) -> (any NSPasteboardWriting)? {

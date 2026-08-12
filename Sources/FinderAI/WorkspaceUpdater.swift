@@ -11,17 +11,27 @@ import Sparkle
 /// ad-hoc/self-signed code signature would not.
 @MainActor
 final class WorkspaceUpdater {
-    private let controller: SPUStandardUpdaterController
+    /// `.app`の外で動いているときは`nil`。更新機構を持たないことがその印になる。
+    private let controller: SPUStandardUpdaterController?
 
     init() {
+        // `swift build`したバイナリを直に起動したときは、更新機構を立ち上げない。
+        // Info.plistもフィードも無いのでSparkleは必ず起動に失敗し、
+        // 「Unable to Check For Updates」という、ユーザーには直しようのない警告だけが
+        // 毎回出る。配布された`.app`の中でだけ意味のある機能なので、そこでだけ動かす。
+        guard Bundle.main.bundleURL.pathExtension == "app" else {
+            controller = nil
+            return
+        }
         // startingUpdater: true schedules the background check itself, honouring
         // SUEnableAutomaticChecks. Sparkle's default UI driver supplies the
         // "update available" window, so nothing here has to draw one.
-        controller = SPUStandardUpdaterController(
+        let controller = SPUStandardUpdaterController(
             startingUpdater: true,
             updaterDelegate: nil,
             userDriverDelegate: nil
         )
+        self.controller = controller
         // Fully automatic: the daily background check downloads the update
         // silently and Sparkle's Autoupdate swaps it in when the app quits.
         // Without this the check only *offers* the update and every version
@@ -42,10 +52,10 @@ final class WorkspaceUpdater {
 
     /// Wired to the app menu; Sparkle handles the "you're up to date" case.
     @objc func checkForUpdates(_ sender: Any?) {
-        controller.checkForUpdates(sender)
+        controller?.checkForUpdates(sender)
     }
 
-    var canCheckForUpdates: Bool { controller.updater.canCheckForUpdates }
+    var canCheckForUpdates: Bool { controller?.updater.canCheckForUpdates ?? false }
 
     /// Where the feed points, for the About panel and for diagnosing a build that
     /// silently never updates.

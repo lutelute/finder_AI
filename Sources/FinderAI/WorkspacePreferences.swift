@@ -5,6 +5,9 @@ enum WorkspaceViewMode: String, CaseIterable {
     case list
     case column
     case gallery
+    /// グループを平面に散らす表示。一覧では二行に割れる「複数のグループに属するもの」が、
+    /// ここではグループの間に立つ一点になる。
+    case map
 }
 
 /// Durable UI state. Everything here is a convenience the user re-establishes by
@@ -23,6 +26,11 @@ struct WorkspacePreferences {
         static let sortColumn = "workspace.sortColumn"
         static let sortAscending = "workspace.sortAscending"
         static let showHiddenFiles = "workspace.showHiddenFiles"
+        static let listGrouping = "workspace.listGrouping"
+        static let showsGroupColumn = "workspace.showsGroupColumn"
+        static let mapShowsOthersOnly = "workspace.mapShowsOthersOnly"
+        static let listUngroupedOnly = "workspace.listUngroupedOnly"
+        static let listGroupedOnly = "workspace.listGroupedOnly"
         static let terminalHeight = "workspace.terminalHeight"
         static let terminalWidth = "workspace.terminalWidth"
         static let terminalEdge = "workspace.terminalEdge"
@@ -361,6 +369,57 @@ struct WorkspacePreferences {
     var showHiddenFiles: Bool {
         get { defaults.bool(forKey: Key.showHiddenFiles) }
         nonmutating set { defaults.set(newValue, forKey: Key.showHiddenFiles) }
+    }
+
+    /// 一覧をグループごとの見出しで区切るか。
+    ///
+    /// 既定は入り。ただし切れるようにしてあるのが肝心で、見出しで区切ると
+    /// 並べ替えがグループの中だけに効く — 名前順に通して眺めたいときに邪魔になる。
+    /// 切ってあっても「グループ」の列で所属は読めるし、その列で並べればグループごとに寄る。
+    var listGrouping: Bool {
+        get { defaults.object(forKey: Key.listGrouping) as? Bool ?? true }
+        nonmutating set { defaults.set(newValue, forKey: Key.listGrouping) }
+    }
+
+    /// 一覧に「グループ」の列を出すか。既定は切り。
+    ///
+    /// 常に出すと名前の幅が150pt削られ、狭い窓では横スクロールが出た。所属は
+    /// 見出しでも読めるので、列は要る人だけが出す。見出しを切って名前順に通して
+    /// 眺めたいときに、この列で並べればグループごとに寄る。
+    var showsGroupColumn: Bool {
+        get { defaults.bool(forKey: Key.showsGroupColumn) }
+        nonmutating set { defaults.set(newValue, forKey: Key.showsGroupColumn) }
+    }
+
+    /// 地図で、未分類の欄を広げているか。既定は切り。
+    ///
+    /// 島を畳んで一覧を全幅にしていた。落とし先の島が消えるので、この欄でやりたいこと
+    /// （未分類を片端からグループへ入れていく）が、広げた瞬間にできなくなっていた。
+    /// いまは地図を出したまま欄の幅だけ増やす。
+    var mapShowsOthersOnly: Bool {
+        get { defaults.bool(forKey: Key.mapShowsOthersOnly) }
+        nonmutating set { defaults.set(newValue, forKey: Key.mapShowsOthersOnly) }
+    }
+
+    /// 一覧で、グループに属さないものだけを出すか。既定は切り。
+    ///
+    /// 「まだどこにも入れていないものを片付ける」ための眺め方。地図の「これだけ」と
+    /// 同じ考えで、こちらは一覧に効く。
+    var listUngroupedOnly: Bool {
+        get { defaults.bool(forKey: Key.listUngroupedOnly) }
+        nonmutating set { defaults.set(newValue, forKey: Key.listUngroupedOnly) }
+    }
+
+    /// 一覧で、どれかのグループに属するものだけを出すか。既定は切り。
+    ///
+    /// 「未分類だけ」の裏返し。146個が平らに並ぶ場所では、まとめたものが未分類の海に
+    /// 埋もれる — 見出しがあっても、間に何十行も未分類が挟まれば束として読めない。
+    /// これを入れると、まとめた29個だけが残る。
+    ///
+    /// 「未分類だけ」と同時に入れると何も残らないので、片方を入れたらもう片方は落ちる。
+    var listGroupedOnly: Bool {
+        get { defaults.bool(forKey: Key.listGroupedOnly) }
+        nonmutating set { defaults.set(newValue, forKey: Key.listGroupedOnly) }
     }
 
     // MARK: - Terminal

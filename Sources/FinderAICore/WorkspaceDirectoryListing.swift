@@ -298,6 +298,19 @@ public enum WorkspaceDirectoryListing {
         return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
     }
 
+    /// フォルダに実在する名前。隠しファイルも含む。
+    ///
+    /// グループの定義に残った名前が「本当に無い」のか「隠れているだけ」なのかを分ける
+    /// ために使う。表示設定で実在の判定が変わってはいけない。名前だけを読むので
+    /// File Provider配下でも速い（クラウド系のキーを一切触らない）。
+    public static func namesIncludingHidden(
+        of directory: URL,
+        fileManager: FileManager = .default
+    ) -> Set<String> {
+        let names = try? fileManager.contentsOfDirectory(atPath: directory.standardizedFileURL.path)
+        return Set(names ?? [])
+    }
+
     /// How many entries the directory really holds, hidden ones included.
     ///
     /// The browser calls this only after a listing came back empty: a folder
