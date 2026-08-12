@@ -87,8 +87,7 @@ final class EdgeTabAccordionController: NSObject {
         tableView.target = self
         tableView.action = #selector(handleClick)
         tableView.doubleAction = #selector(handleDoubleClick)
-        tableView.setDraggingSourceOperationMask(WorkspaceDragDrop.localSourceOperations, forLocal: true)
-        tableView.setDraggingSourceOperationMask(WorkspaceDragDrop.localSourceOperations, forLocal: false)
+        WorkspaceDragDrop.configureDragSource(tableView)
         tableView.registerForDraggedTypes([.fileURL])
         tableView.onDragSessionChanged = { [weak self] isDragging in
             self?.onHoverChanged?(isDragging)

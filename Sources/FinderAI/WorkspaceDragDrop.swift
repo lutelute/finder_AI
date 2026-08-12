@@ -14,6 +14,24 @@ enum WorkspaceDragDrop {
     static let localSourceOperations: NSDragOperation = [.copy, .move, .link]
     static let externalSourceOperations: NSDragOperation = [.copy]
 
+    /// ドラッグ元として名乗る。**マスクを直に設定せず、必ずここを通す。**
+    ///
+    /// `setDraggingSourceOperationMask`を各所で書いていたせいで、`.link`を落とした
+    /// 場所が二度できた（一覧の行と、地図の右の一覧）。落とすと、受け側が`.link`を
+    /// 返してもOSが弾いて、グループへ引いても何も起きない。返り値だけ見ていると
+    /// 正しく見えるので、コードを読んでも気づけない。入口を一つにして塞ぐ。
+    @MainActor
+    static func configureDragSource(_ table: NSTableView) {
+        table.setDraggingSourceOperationMask(localSourceOperations, forLocal: true)
+        table.setDraggingSourceOperationMask(externalSourceOperations, forLocal: false)
+    }
+
+    @MainActor
+    static func configureDragSource(_ collection: NSCollectionView) {
+        collection.setDraggingSourceOperationMask(localSourceOperations, forLocal: true)
+        collection.setDraggingSourceOperationMask(externalSourceOperations, forLocal: false)
+    }
+
     static func pasteboardWriter(for url: URL) -> (any NSPasteboardWriting)? {
         let item = NSPasteboardItem()
         guard item.setString(

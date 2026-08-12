@@ -84,3 +84,34 @@ struct WorkspaceDragDropTests {
         ])
     }
 }
+
+/// 引いて入れる操作は、`.link`をドラッグ元が許していないとOSに弾かれる。
+/// マスクを各所で書くと、書き忘れた場所だけ静かに死ぬ（実際に二度起きた）。
+@Suite("ドラッグ元の名乗りは一箇所に集める")
+struct WorkspaceDragSourcePolicyTests {
+    @Test("マスクを直に設定している場所が、WorkspaceDragDrop以外に無い")
+    func everyDragSourceGoesThroughTheHelper() throws {
+        let sources = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // FinderAIAppTests
+            .deletingLastPathComponent()   // Tests
+            .deletingLastPathComponent()   // リポジトリの根
+            .appendingPathComponent("Sources/FinderAI")
+        let files = try FileManager.default.contentsOfDirectory(
+            at: sources,
+            includingPropertiesForKeys: nil
+        ).filter { $0.pathExtension == "swift" && $0.lastPathComponent != "WorkspaceDragDrop.swift" }
+        #expect(!files.isEmpty, "探し場所が違う: \(sources.path)")
+
+        var offenders: [String] = []
+        for file in files {
+            let text = try String(contentsOf: file, encoding: .utf8)
+            if text.contains("setDraggingSourceOperationMask") {
+                offenders.append(file.lastPathComponent)
+            }
+        }
+        #expect(
+            offenders.isEmpty,
+            "WorkspaceDragDrop.configureDragSource(_:) を通すこと: \(offenders.joined(separator: ", "))"
+        )
+    }
+}

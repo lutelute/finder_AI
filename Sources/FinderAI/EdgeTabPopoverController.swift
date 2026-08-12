@@ -136,8 +136,7 @@ final class EdgeTabPopoverController: NSObject {
         tableView.doubleAction = #selector(activateSelectedRow)
         // 取り出しはコピーでも移動でもよく、放り込みも受ける。規則はブラウザ本体と
         // 同じ`WorkspaceDragDrop`に預けてあるので、こことあちらで挙動が割れない。
-        tableView.setDraggingSourceOperationMask(WorkspaceDragDrop.localSourceOperations, forLocal: true)
-        tableView.setDraggingSourceOperationMask(WorkspaceDragDrop.localSourceOperations, forLocal: false)
+        WorkspaceDragDrop.configureDragSource(tableView)
         tableView.registerForDraggedTypes([.fileURL])
         tableView.onContextMenu = { [weak self] in
             self?.makeItemMenu(for: self?.contextItem)
@@ -171,8 +170,7 @@ final class EdgeTabPopoverController: NSObject {
             EdgeTabIconItem.self,
             forItemWithIdentifier: EdgeTabIconItem.identifier
         )
-        iconGrid.setDraggingSourceOperationMask(WorkspaceDragDrop.localSourceOperations, forLocal: true)
-        iconGrid.setDraggingSourceOperationMask(WorkspaceDragDrop.localSourceOperations, forLocal: false)
+        WorkspaceDragDrop.configureDragSource(iconGrid)
         iconGrid.registerForDraggedTypes([.fileURL])
         iconScrollView.documentView = iconGrid
         iconScrollView.hasVerticalScroller = true

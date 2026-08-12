@@ -744,7 +744,8 @@ final class WorkspaceBrowserViewController: NSViewController {
     ///
     /// グループが増えると一覧が縦に長くなる。いま見ていないグループを畳めれば、
     /// 見たいグループだけを目の前に置ける。フォルダを移っても覚えておく。
-    private var collapsedGroups: Set<String> = []
+    /// 畳んだ束。地図の右の一覧と同じものを見る（表示を替えても畳み方が変わらない）。
+    let collapsedGroups = WorkspaceCollapsedGroups()
     private var listingTask: Task<Void, Never>?
     private var cloudStatusTask: Task<Void, Never>?
     private var loadingIndicatorTask: Task<Void, Never>?
@@ -1096,14 +1097,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         galleryView.isSelectable = true
         galleryView.allowsMultipleSelection = true
         galleryView.registerForDraggedTypes([.fileURL])
-        galleryView.setDraggingSourceOperationMask(
-            WorkspaceDragDrop.localSourceOperations,
-            forLocal: true
-        )
-        galleryView.setDraggingSourceOperationMask(
-            WorkspaceDragDrop.externalSourceOperations,
-            forLocal: false
-        )
+        WorkspaceDragDrop.configureDragSource(galleryView)
         galleryView.dataSource = self
         galleryView.delegate = self
         galleryView.register(
@@ -1246,6 +1240,9 @@ final class WorkspaceBrowserViewController: NSViewController {
         }
         mapView.onSelectionChange = { [weak self] _ in self?.updateStatus() }
         mapView.contextMenuProvider = { [weak self] in self?.fileTable.menu }
+        mapView.groupMenuProvider = { [weak self] name in self?.groupMenu(named: name) }
+        // 畳んだ束は一覧と同じものを見る。表示を替えて畳み方が変わると、覚えたことが使えない。
+        mapView.collapsedGroups = collapsedGroups
         mapView.onQuickLook = { [weak self] in self?.toggleQuickLook() }
         mapView.onOthersOnlyChanged = { [weak self] value in
             self?.preferences.mapShowsOthersOnly = value
@@ -1332,6 +1329,12 @@ final class WorkspaceBrowserViewController: NSViewController {
         guard fileRows.indices.contains(row),
               case .header(let title, _) = fileRows[row],
               let name = title else { return nil }
+        return groupMenu(named: name)
+    }
+
+    /// 束そのものへの操作。一覧の見出しからも、地図の右の見出しからも同じものを出す。
+    func groupMenu(named name: String) -> NSMenu? {
+        guard itemGroups?.groups.contains(where: { $0.name == name }) == true else { return nil }
         contextGroupName = name
 
         let menu = NSMenu(title: name)
@@ -1595,6 +1598,13 @@ final class WorkspaceBrowserViewController: NSViewController {
                 showHiddenFiles: preferences.showHiddenFiles
             )
         }
+        // 地図で畳んだ束が一覧にも効くように、戻ってきたら組み直す。
+        if mode == .list {
+            let selection = selectedItems.map(\.url)
+            rebuildFileRows()
+            fileTable.reloadData()
+            restoreFlatSelection(selection)
+        }
         // 開いたときに組み直す。地図は決定的なので、組めばそれで完成している。
         if mode == .map {
             mapView.show(items: displayedItems, groups: itemGroups, presentNames: presentNames)
@@ -1852,14 +1862,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         fileTable.target = self
         fileTable.doubleAction = #selector(openSelection)
         fileTable.registerForDraggedTypes([.fileURL])
-        fileTable.setDraggingSourceOperationMask(
-            WorkspaceDragDrop.localSourceOperations,
-            forLocal: true
-        )
-        fileTable.setDraggingSourceOperationMask(
-            WorkspaceDragDrop.externalSourceOperations,
-            forLocal: false
-        )
+        WorkspaceDragDrop.configureDragSource(fileTable)
         // 列見出しの右クリックで列を出し入れする（Finderと同じ場所）。
         let headerMenu = NSMenu(title: "列")
         let groupColumnItem = NSMenuItem(

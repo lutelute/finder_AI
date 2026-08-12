@@ -17,6 +17,8 @@ final class WorkspaceMapView: NSView {
     var onOpen: ((WorkspaceItem) -> Void)?
     var onSelectionChange: (([WorkspaceItem]) -> Void)?
     var contextMenuProvider: (() -> NSMenu?)?
+    /// 束そのものへの操作（名前を変える、解く、入れ子にする）。見出しを右クリックしたとき。
+    var groupMenuProvider: ((String) -> NSMenu?)?
     /// 島に落とされたものをグループに入れる。実際に入ったら`true`。
     var onLinkToGroup: (([URL], String) -> Bool)?
     /// 島から島へ張り替える。掴んだ島から外して、落とした島に入れる。
@@ -55,8 +57,8 @@ final class WorkspaceMapView: NSView {
     private var listItems: [WorkspaceItem] = []
     private var listRows: [ListRow] = []
     private var listSections: [SectionPlacement?] = []
-    /// 畳んでいる見出し。一覧表示と同じで、畳んでも定義は変わらない。
-    private var collapsedGroups: Set<String> = []
+    /// 畳んでいる見出し。一覧表示と**同じもの**を見る。畳んでも定義は変わらない。
+    var collapsedGroups = WorkspaceCollapsedGroups()
     /// グループに属するものと、その定義。表示された瞬間はまだ大きさが決まっていないので、
     /// 組むのを`layout()`まで待てるように控えておく。
     private var groupedItems: [WorkspaceItem] = []
@@ -196,18 +198,12 @@ final class WorkspaceMapView: NSView {
         // 島へ引いてグループに入れる操作は`.link`で受ける。**引く側**が許していない
         // 操作は、受け側が何を返してもOSが弾く。ここを設定していなかったので、
         // この一覧から島へ引いても何も起きなかった。
-        othersTable.setDraggingSourceOperationMask(
-            WorkspaceDragDrop.localSourceOperations,
-            forLocal: true
-        )
-        othersTable.setDraggingSourceOperationMask(
-            WorkspaceDragDrop.externalSourceOperations,
-            forLocal: false
-        )
+        WorkspaceDragDrop.configureDragSource(othersTable)
         // 一覧でもSpaceでプレビューできるように。地図側と同じ手が通る。
         othersTable.onQuickLook = { [weak self] in self?.onQuickLook?() }
         othersTable.isHeaderRow = { [weak self] row in self?.isListHeaderRow(row) ?? false }
         othersTable.onHeaderClicked = { [weak self] row in self?.toggleListSection(at: row) }
+        othersTable.contextMenuProvider = { [weak self] row in self?.othersMenu(atRow: row) }
         othersTable.onOpen = { [weak self] in
             guard let self, let row = self.othersTable.selectedRowIndexes.first,
                   let item = self.item(atListRow: row) else { return }
@@ -1297,6 +1293,24 @@ final class WorkspaceMapView: NSView {
         mapArea.beginDraggingSession(with: draggingItems, event: event, source: mapArea)
     }
 
+    /// 右の一覧の右クリック。
+    ///
+    /// 引いて落とす以外に入れる手が無かった。ドラッグは一度に一箇所へしか運べないので、
+    /// まとめて入れるにはメニューが要る。一覧表示と同じものを出す — 同じ一覧なのに
+    /// 出るものが違うと、どちらの流儀で触っているのか覚えていないといけない。
+    func othersMenu(atRow row: Int) -> NSMenu? {
+        if listRows.indices.contains(row), case .header(let title, _) = listRows[row] {
+            return title.flatMap { groupMenuProvider?($0) }
+        }
+        guard item(atListRow: row) != nil else { return contextMenuProvider?() }
+        // 右クリックした行が選択に入っていなければ、そこを選び直す。選んでいない
+        // ものにメニューが効くと、押した先で違うものが動く。
+        if !othersTable.selectedRowIndexes.contains(row) {
+            othersTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        }
+        return contextMenuProvider?()
+    }
+
     func mapMenu(at point: CGPoint) -> NSMenu? {
         if let node = clusterLayout?.node(at: point),
            !selectedNames.contains(node.name) {
@@ -1492,6 +1506,11 @@ private final class WorkspaceOthersTable: NSTableView {
     /// 見出しを押したとき。見出しの行は選べないので、普通の経路には乗らない。
     var onHeaderClicked: ((Int) -> Void)?
     var isHeaderRow: ((Int) -> Bool)?
+    var contextMenuProvider: ((Int) -> NSMenu?)?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        contextMenuProvider?(row(at: convert(event.locationInWindow, from: nil)))
+    }
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
