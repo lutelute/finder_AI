@@ -1020,6 +1020,11 @@ final class WorkspaceAppCoordinator {
             action: #selector(WorkspaceBrowserViewController.toggleUngroupedOnly),
             key: ""
         ))
+        viewMenu.addItem(item(
+            "グループのものだけを表示",
+            action: #selector(WorkspaceBrowserViewController.toggleGroupedOnly),
+            key: ""
+        ))
         let cycleView = item(
             "表示モードを切り替え",
             action: #selector(WorkspaceBrowserViewController.toggleColumnView),

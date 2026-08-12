@@ -117,7 +117,7 @@ struct WorkspaceClusterLayoutTests {
     @Test("島に入りきらない分は数で示す")
     func overflowIsReported() {
         var groups = WorkspaceItemGroups()
-        let names = (0..<80).map { "n\(String(format: "%02d", $0))" }
+        let names = (0..<300).map { "n\(String(format: "%03d", $0))" }
         for name in names { groups.add(name, to: "グループ") }
         let map = layout(names, groups)
 
@@ -125,6 +125,67 @@ struct WorkspaceClusterLayoutTests {
         #expect(island.overflow > 0)
         // 見せた数と「ほか」の数を足せば、必ず元の数になる。
         #expect(map.nodes.count + island.overflow == names.count)
+    }
+
+    /// 高さだけで数えていたころは、島が横に広くても一列しか使わず、置ける場所を
+    /// 空けたまま「ほか N」と言っていた。島を全面に広げても表示数が変わらないのは
+    /// これが理由で、「広げる」が何も広げていなかった。
+    @Test("一列に入りきらないときは、余っている幅を列にして使う")
+    func wideIslandsUseColumns() {
+        var groups = WorkspaceItemGroups()
+        let names = (0..<80).map { "n\(String(format: "%02d", $0))" }
+        for name in names { groups.add(name, to: "グループ") }
+        let map = layout(names, groups)
+
+        let island = try! #require(map.island(named: "グループ"))
+        #expect(island.overflow == 0)
+        #expect(map.nodes.count == names.count)
+        // 列に割れている＝横位置が一つではない。
+        let columns = Set(map.nodes.map { ($0.position.x * 100).rounded() })
+        #expect(columns.count > 1)
+        // 列は名前の読める幅を保つ。狭い列を並べても意味がない。
+        let xs = columns.map { $0 / 100 }.sorted()
+        for (left, right) in zip(xs, xs.dropFirst()) {
+            #expect(right - left >= WorkspaceClusterLayout.minColumnWidth - 0.01)
+        }
+        // 縦に読んでから隣の列へ。名前順が列の中で保たれる。
+        #expect(map.nodes.prefix(2).map(\.name) == ["n00", "n01"])
+    }
+
+    /// 中身の量で場所を配ると、少ない束が痩せて消える。実測では2個しか入っていない
+    /// 束が31ptになり、名前の帯すら入らず中身が一つも出なかった。
+    @Test("中身の多い束と並んでも、少ない束は消えない")
+    func smallIslandsKeepTheirContents() {
+        var groups = WorkspaceItemGroups()
+        let many = (0..<40).map { "m\(String(format: "%02d", $0))" }
+        for name in many { groups.add(name, to: "多い") }
+        for name in ["s1", "s2"] { groups.add(name, to: "少ない") }
+        let map = layout(many + ["s1", "s2"], groups, size: CGSize(width: 420, height: 320))
+
+        let small = try! #require(map.island(named: "少ない"))
+        #expect(small.overflow == 0)
+        #expect(map.nodes.filter { $0.groups.contains("少ない") }.count == 2)
+        #expect(small.frame.height >= WorkspaceClusterLayout.minIslandHeight)
+        // 削るなら多いほうから。あちらは「ほか N」で続きを示せる。
+        let big = try! #require(map.island(named: "多い"))
+        #expect(big.overflow > 0)
+        #expect(map.nodes.filter { $0.groups.contains("多い") }.count + big.overflow == many.count)
+    }
+
+    /// 縦に積むときは、中身の多い束のほうが高くなる。均等に割ると、8個入った島と
+    /// 2個の島が同じ高さになり、多いほうだけが「ほか N」で隠れた。
+    @Test("縦に並ぶときは、中身の多い束に高さを多く配る")
+    func tallerIslandsForFullerGroups() {
+        var groups = WorkspaceItemGroups()
+        for name in (0..<12).map({ "m\($0)" }) { groups.add(name, to: "多い") }
+        for name in ["s1", "s2"] { groups.add(name, to: "少ない") }
+        // 狭い幅では縦一列に積む（横に割ると名前が読めなくなるため）。
+        let map = layout((0..<12).map { "m\($0)" } + ["s1", "s2"], groups, size: CGSize(width: 240, height: 520))
+
+        let big = try! #require(map.island(named: "多い"))
+        let small = try! #require(map.island(named: "少ない"))
+        #expect(big.frame.height > small.frame.height)
+        #expect(small.frame.height >= WorkspaceClusterLayout.minIslandHeight)
     }
 
     @Test("入りきるなら「ほか」は出ない")

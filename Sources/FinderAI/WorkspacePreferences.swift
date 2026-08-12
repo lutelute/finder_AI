@@ -30,6 +30,7 @@ struct WorkspacePreferences {
         static let showsGroupColumn = "workspace.showsGroupColumn"
         static let mapShowsOthersOnly = "workspace.mapShowsOthersOnly"
         static let listUngroupedOnly = "workspace.listUngroupedOnly"
+        static let listGroupedOnly = "workspace.listGroupedOnly"
         static let terminalHeight = "workspace.terminalHeight"
         static let terminalWidth = "workspace.terminalWidth"
         static let terminalEdge = "workspace.terminalEdge"
@@ -390,10 +391,11 @@ struct WorkspacePreferences {
         nonmutating set { defaults.set(newValue, forKey: Key.showsGroupColumn) }
     }
 
-    /// 地図で、グループに属さないものだけを見るか。既定は切り。
+    /// 地図で、未分類の欄を広げているか。既定は切り。
     ///
-    /// 入れると島を畳んで一覧が全幅になる。グループに入れていないものを見渡して、
-    /// どれをまとめるか決めるための眺め方。
+    /// 島を畳んで一覧を全幅にしていた。落とし先の島が消えるので、この欄でやりたいこと
+    /// （未分類を片端からグループへ入れていく）が、広げた瞬間にできなくなっていた。
+    /// いまは地図を出したまま欄の幅だけ増やす。
     var mapShowsOthersOnly: Bool {
         get { defaults.bool(forKey: Key.mapShowsOthersOnly) }
         nonmutating set { defaults.set(newValue, forKey: Key.mapShowsOthersOnly) }
@@ -406,6 +408,18 @@ struct WorkspacePreferences {
     var listUngroupedOnly: Bool {
         get { defaults.bool(forKey: Key.listUngroupedOnly) }
         nonmutating set { defaults.set(newValue, forKey: Key.listUngroupedOnly) }
+    }
+
+    /// 一覧で、どれかのグループに属するものだけを出すか。既定は切り。
+    ///
+    /// 「未分類だけ」の裏返し。146個が平らに並ぶ場所では、まとめたものが未分類の海に
+    /// 埋もれる — 見出しがあっても、間に何十行も未分類が挟まれば束として読めない。
+    /// これを入れると、まとめた29個だけが残る。
+    ///
+    /// 「未分類だけ」と同時に入れると何も残らないので、片方を入れたらもう片方は落ちる。
+    var listGroupedOnly: Bool {
+        get { defaults.bool(forKey: Key.listGroupedOnly) }
+        nonmutating set { defaults.set(newValue, forKey: Key.listGroupedOnly) }
     }
 
     // MARK: - Terminal

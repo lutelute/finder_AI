@@ -206,7 +206,12 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         islands = islands.map { island in
             let members = (exclusive[island.name] ?? [])
                 .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-            let (placed, overflow) = place(members, in: island.contentFrame, groups: [island.name])
+            let (placed, overflow) = place(
+                members,
+                in: island.contentFrame,
+                groups: [island.name],
+                reservedRows: island.missing > 0 ? 1 : 0
+            )
             rowsBottom[island.name] =
                 (placed.map { $0.position.y }.max() ?? island.contentFrame.minY) + rowHeight / 2
             built.append(contentsOf: placed)
@@ -270,10 +275,12 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
     ///
     /// 一列に並べるのは名前を読ませるため。二列にすると一列の幅が半分になり、
     /// `bus_inertia_project_for_SHAKIL` のような名前が切れて、並べた意味が薄れる。
+    /// - Parameter reservedRows: 下端に空けておく行数。「見つからない N →」の帯に使う。
     private static func place(
         _ items: [WorkspaceItem],
         in frame: CGRect,
-        groups: [String]
+        groups: [String],
+        reservedRows: Int = 0
     ) -> ([Node], Int) {
         let usable = frame.insetBy(dx: islandInset.width, dy: islandInset.height)
         // 余白が島より大きいと`insetBy`は`CGRect.null`を返す。null の座標は無限で、
@@ -284,23 +291,51 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         let top = usable.minY + islandTitleHeight
         let height = max(usable.maxY - top, 0)
         guard height.isFinite else { return ([], items.count) }
-        let capacity = max(Int(height / rowHeight), 0)
+        // 「見つからない N →」の帯のぶんを先に空けておく。空けずに並べると、
+        // 島の下端の名前とその文字が重なって、どちらも読めなくなる。
+        let rows = max(Int(height / rowHeight) - reservedRows, 0)
+        guard rows > 0 else { return ([], items.count) }
+
+        // 一列で入るなら一列のまま。7個を二列に割っても、読む順が折り返すだけで
+        // 得るものがない。
+        //
+        // 入りきらないときだけ、余っている**幅**を使う。高さだけで数えていたころは、
+        // 島が横に広くても「ほか N」と言って隠していた — 置ける場所を空けたまま
+        // 隠すのは、広げても中身が見えないということ（島を全面に広げても
+        // 表示数が変わらなかったのはこれが理由）。
+        // 入りきらないときは、いちばん下の一行を「ほか N」の帯に譲る。
+        var columns = 1
+        var usableRows = rows
+        if items.count > rows {
+            usableRows = max(rows - 1, 0)
+            let byWidth = max(Int(usable.width / minColumnWidth), 1)
+            let needed = usableRows > 0
+                ? Int((Double(items.count) / Double(usableRows)).rounded(.up))
+                : 1
+            columns = min(byWidth, max(needed, 1))
+        }
+        let capacity = usableRows * columns
         guard capacity > 0 else { return ([], items.count) }
 
-        // 入りきらないときは、最後の一行を「ほか N」に譲る。
-        let shown = items.count <= capacity ? items : Array(items.prefix(max(capacity - 1, 0)))
+        let shown = Array(items.prefix(capacity))
+        let columnWidth = usable.width / Double(columns)
         let nodes = shown.enumerated().map { index, item in
-            let centreY = top + rowHeight * (Double(index) + 0.5)
+            // 縦に読んでから隣の列へ。名前順に並べたものを横に読ませると、
+            // 折り返しのたびに目が戻る。
+            let column = index / usableRows
+            let row = index % usableRows
+            let centreY = top + rowHeight * (Double(row) + 0.5)
+            let left = usable.minX + columnWidth * Double(column)
             return Node(
                 name: item.name,
                 isDirectory: item.isDirectory,
                 groups: groups,
-                position: CGPoint(x: usable.minX + 8, y: centreY),
+                position: CGPoint(x: left + 8, y: centreY),
                 labelPlacement: .trailing,
                 hitRect: CGRect(
-                    x: usable.minX,
+                    x: left,
                     y: centreY - rowHeight / 2,
-                    width: usable.width,
+                    width: columnWidth,
                     height: rowHeight
                 )
             )
@@ -314,6 +349,10 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
     /// 点と余白を引くと名前に100ptしか残らず `power-system-stabi…` と切れた。
     /// 行数が増えて「ほか N」が出るほうが、名前が読めないよりましなので幅を優先する。
     public static let minIslandWidth: Double = 196
+
+    /// 島の中を縦に割るときの一列の最小幅。島の最小幅から内側の余白を引いた値。
+    /// これを下回る列を作っても、点と余白で名前の場所が残らない。
+    public static let minColumnWidth: Double = minIslandWidth - islandInset.width * 2
 
     /// 領域の縦横比に合わせて枡を割る。1グループなら全面。
     /// ただし幅が足りないときは列を減らす — 名前が読めない列を増やしても意味がない。
@@ -330,19 +369,49 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         return (columns, rows)
     }
 
-    /// そのグループが抱えている子孫の数。枡の大きさを決める重みに使う。
-    private static func descendantCount(of name: String, in groups: WorkspaceItemGroups) -> Int {
-        var count = 0
+    /// そのグループと、その下にぶら下がる全部の名前。枡の重みを数えるのに使う。
+    private static func subtree(of name: String, in groups: WorkspaceItemGroups) -> [String] {
+        var result = [name]
         var queue = groups.children(of: name)
         var seen: Set<String> = [name]
         while let current = queue.first {
             queue.removeFirst()
             guard seen.insert(current).inserted else { continue }
-            count += 1
+            result.append(current)
             queue.append(contentsOf: groups.children(of: current))
         }
-        return count
+        return result
     }
+
+    /// 枡の重み。**そのグループが抱えている中身の量**で決める。
+    ///
+    /// 子グループの数だけで割っていた。8個入った島と2個の島が同じ大きさになり、
+    /// 大きいほうだけが「ほか N」で隠れる — 見たいのは中身なのに、枠の数で
+    /// 場所を配っていた。中身の数を主にして、子の枠が食う場所を足す。
+    private static func weight(
+        of name: String,
+        in groups: WorkspaceItemGroups,
+        ownCounts: [String: Int],
+        missing: [String: [String]]
+    ) -> Double {
+        let own = Double(ownCounts[name] ?? 0)
+        // 「見つからない N →」も一行を占める。数えないと、その一行を空けるために
+        // 中身が押し出される（実測: 4個入った島が2個しか出なくなった）。
+        let notes = missing[name]?.isEmpty == false ? 1.0 : 0.0
+        let children = groups.children(of: name)
+        let inside = children.isEmpty
+            ? 0
+            : children.reduce(0.0) {
+                $0 + weight(of: $1, in: groups, ownCounts: ownCounts, missing: missing)
+            } + Double(children.count - 1) * 8 + islandInset.height
+        return islandTitleHeight + islandInset.height * 2 + rowHeight * (own + notes) + inside
+    }
+
+    /// 島がまともに見えるための最小の高さ。名前の帯と、中身の一行分。
+    ///
+    /// これを割ると、名前すら出ない箱が並ぶ。中身の量で場所を配ると、2個しか入って
+    /// いない束が31ptまで痩せて一つも出なくなった。配る前にここを確保する。
+    public static let minIslandHeight: Double = islandTitleHeight + islandInset.height * 2 + rowHeight
 
     /// 入れ子のまま枠を割る（`A ∈ B` を、Bの枠の内側にAの枠として描くための下ごしらえ）。
     ///
@@ -365,8 +434,10 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
             : groups.children(of: parent)
         guard !names.isEmpty else { return [] }
 
-        // 子孫を抱えるほど場所が要る。抱えていないものは1。
-        let weights = names.map { 1.0 + Double(descendantCount(of: $0, in: groups)) * 1.4 }
+        // 中身の多い島ほど場所を取る。
+        let weights = names.map {
+            weight(of: $0, in: groups, ownCounts: ownCounts, missing: missing)
+        }
         let boxes = cells(weights: weights, in: area, gap: depth == 0 ? 12 : 8)
         guard boxes.count == names.count else { return [] }
 
@@ -447,11 +518,10 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
 
         if shape.columns == 1, count > 1 {
             let usable = max(area.height - gap * Double(count - 1), 0)
-            let total = max(weights.reduce(0, +), 0.0001)
+            let heights = share(usable, among: weights)
             var y = area.minY
-            return weights.map { weight in
-                let height = usable * (weight / total)
-                let cell = CGRect(x: area.minX, y: y, width: area.width, height: max(height, 0))
+            return heights.map { height in
+                let cell = CGRect(x: area.minX, y: y, width: area.width, height: height)
                 y += height + gap
                 return cell
             }
@@ -459,10 +529,28 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         // 潰れた枡でも返す。狭いからと 島を落とすと「グループがあるのに何も
         // 見えない」になる。中身が入らないことは`place`が「ほか N」として言う。
         let cellWidth = max((area.width - gap * Double(shape.columns - 1)) / Double(shape.columns), 0)
-        let cellHeight = max((area.height - gap * Double(shape.rows - 1)) / Double(shape.rows), 0)
+
+        // 行の高さは、その行でいちばん中身の多い島に合わせて配る。均等に割ると、
+        // 8個入った島と2個の島が同じ高さになり、多いほうだけが「ほか N」で隠れた。
+        // 幅は揃えたままにする — 列ごとに幅が違うと、島によって名前の読める長さが
+        // 変わって、地図の中で場所によって情報量が違うことになる。
+        let usableHeight = max(area.height - gap * Double(shape.rows - 1), 0)
+        var rowWeights = [Double](repeating: 0, count: shape.rows)
+        for index in 0..<count {
+            let row = min(index / shape.columns, shape.rows - 1)
+            rowWeights[row] = max(rowWeights[row], weights[index])
+        }
+        var rowTop: [Double] = []
+        var rowHeight: [Double] = []
+        var y = area.minY
+        for height in share(usableHeight, among: rowWeights) {
+            rowTop.append(y)
+            rowHeight.append(height)
+            y += height + gap
+        }
 
         return (0..<count).map { index in
-            let row = index / shape.columns
+            let row = min(index / shape.columns, shape.rows - 1)
             // 蛇行して折り返す。行優先で素直に並べると、行末のグループと次の行頭のグループが
             // 対角に離れる。共有のあるグループを隣の番号にしても、それが画面で隣に
             // ならず橋が地図を横断した。
@@ -470,11 +558,55 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
             let column = row.isMultiple(of: 2) ? raw : shape.columns - 1 - raw
             return CGRect(
                 x: area.minX + (cellWidth + gap) * Double(column),
-                y: area.minY + (cellHeight + gap) * Double(row),
+                y: rowTop[row],
                 width: cellWidth,
-                height: cellHeight
+                height: rowHeight[row]
             )
         }
+    }
+
+    /// 高さを配る。`wanted`は「そのぶんあれば中身が全部入る」高さ。
+    ///
+    /// 足りるときは欲しいだけ渡し、余りは中身の多い順に足す（空きを一箇所に
+    /// 寄せない）。足りないときは、まず**どの島も名前と一行は出せる高さ**を
+    /// 確保してから、残りを比で配る。比だけで配ると、2個しか入っていない束が
+    /// 名前の帯も入らない高さまで痩せて、中身が一つも出なくなる。
+    private static func share(_ available: Double, among wanted: [Double]) -> [Double] {
+        guard !wanted.isEmpty, available > 0 else {
+            return [Double](repeating: 0, count: wanted.count)
+        }
+        var result = [Double](repeating: 0, count: wanted.count)
+        var remaining = available
+        var open = Set(wanted.indices)
+
+        // 少なく欲しいものから満たす。均等割りで足りるものは、その欲しい高さで
+        // 確定して、浮いたぶんを残りに回す。比だけで配ると、2個しか入っていない束が
+        // 名前の帯も入らない高さまで痩せて中身が一つも出なくなった。大きい島は
+        // 元々「ほか N」で続きを示せるので、削るならそちら。
+        while !open.isEmpty {
+            let fair = remaining / Double(open.count)
+            let satisfied = open.filter { wanted[$0] <= fair }
+            guard !satisfied.isEmpty else {
+                // どれも欲しい高さに届かない。ここは等分しかない。
+                for index in open { result[index] = fair }
+                remaining = 0
+                break
+            }
+            for index in satisfied {
+                result[index] = wanted[index]
+                remaining -= wanted[index]
+            }
+            open.subtract(satisfied)
+        }
+
+        // 余ったら、欲しがっている割合で足す。空きを一箇所に寄せない。
+        if remaining > 0.01 {
+            let total = max(wanted.reduce(0, +), 0.0001)
+            for index in wanted.indices {
+                result[index] += remaining * (wanted[index] / total)
+            }
+        }
+        return result
     }
 
     private static func centroid(of points: [CGPoint]) -> CGPoint? {

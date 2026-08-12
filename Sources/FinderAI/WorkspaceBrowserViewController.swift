@@ -7,7 +7,16 @@ private final class WorkspaceNameCellView: NSTableCellView {
     private let iconView = NSImageView()
     private let label = FinderInlineRenameField()
     private let cloudView = NSImageView()
-    private let groupsLabel = NSTextField(labelWithString: "")
+    /// 他のグループにも並んでいることの印。見出しと同じ印を10ptで並べる。
+    private let otherChips = NSStackView()
+    private let overflowLabel = NSTextField(labelWithString: "")
+    private lazy var indent = iconView.leadingAnchor.constraint(
+        equalTo: leadingAnchor,
+        constant: 6
+    )
+    /// クラウドの印が無い行で幅を残さないための可変幅。`isHidden`にしても
+    /// 固定幅の制約は効き続けるので、名前の後ろに常に24ptの空白が空いていた。
+    private lazy var cloudWidth = cloudView.widthAnchor.constraint(equalToConstant: 14)
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -17,24 +26,29 @@ private final class WorkspaceNameCellView: NSTableCellView {
         label.textColor = IntegratedPanelTheme.text
         cloudView.imageScaling = .scaleProportionallyDown
         cloudView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
-        // 同じ項目が別のグループにも並んでいることの印。名前より弱く出す — 主役は名前で、
-        // これは「これは二つ目の実体ではない」と気づかせるためだけのもの。
-        groupsLabel.font = .systemFont(ofSize: 10.5)
-        groupsLabel.textColor = IntegratedPanelTheme.secondaryText
-        groupsLabel.lineBreakMode = .byTruncatingTail
-        [iconView, label, cloudView, groupsLabel].forEach {
+        otherChips.orientation = .horizontal
+        otherChips.spacing = 3
+        otherChips.alignment = .centerY
+        // 「↳ グループA, グループB」という字だった。矢印は「移動先」を連想させるのに、
+        // 実際の意味は「同じものが別の見出しの下にも出ている」で、記号が合っていない。
+        // 見出しと同じ印を小さく並べれば、どの束にも居るかが一目で分かる。
+        overflowLabel.font = .systemFont(ofSize: 10)
+        overflowLabel.textColor = IntegratedPanelTheme.secondaryText
+        [iconView, label, cloudView, otherChips, overflowLabel].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             addSubview($0)
         }
-        // 名前が長ければ先に他所属のほうが削れる。どのグループにも居ることより、
+        // 名前が長ければ先に印のほうが削れる。どのグループにも居ることより、
         // 何という名前かのほうが先に要る。
-        groupsLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        [otherChips, overflowLabel].forEach {
+            $0.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        }
         // The badge sits after the name and is hugged tight, so a long name
         // truncates instead of pushing the badge out of the cell.
         cloudView.setContentHuggingPriority(.required, for: .horizontal)
         cloudView.setContentCompressionResistancePriority(.required, for: .horizontal)
         NSLayoutConstraint.activate([
-            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
+            indent,
             iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
             iconView.widthAnchor.constraint(equalToConstant: 18),
             iconView.heightAnchor.constraint(equalToConstant: 18),
@@ -42,10 +56,13 @@ private final class WorkspaceNameCellView: NSTableCellView {
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
             cloudView.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 6),
             cloudView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            cloudView.widthAnchor.constraint(equalToConstant: 14),
-            groupsLabel.leadingAnchor.constraint(equalTo: cloudView.trailingAnchor, constant: 4),
-            groupsLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -5),
-            groupsLabel.centerYAnchor.constraint(equalTo: centerYAnchor)
+            cloudWidth,
+            otherChips.leadingAnchor.constraint(equalTo: cloudView.trailingAnchor, constant: 6),
+            otherChips.centerYAnchor.constraint(equalTo: centerYAnchor),
+            otherChips.heightAnchor.constraint(equalToConstant: 10),
+            overflowLabel.leadingAnchor.constraint(equalTo: otherChips.trailingAnchor, constant: 3),
+            overflowLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -5),
+            overflowLabel.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
         imageView = iconView
         textField = label
@@ -63,14 +80,35 @@ private final class WorkspaceNameCellView: NSTableCellView {
         name: String,
         image: NSImage,
         cloud: WorkspaceCloudStatus,
-        otherGroups: [String] = []
+        otherGroups: [String] = [],
+        otherColors: [NSColor] = [],
+        indent: CGFloat = 6
     ) {
         label.show(name)
         iconView.image = image
         applyCloud(cloud)
-        groupsLabel.isHidden = otherGroups.isEmpty
-        groupsLabel.stringValue = otherGroups.isEmpty ? "" : "↳ " + otherGroups.joined(separator: ", ")
-        groupsLabel.toolTip = otherGroups.isEmpty
+        self.indent.constant = indent
+
+        otherChips.arrangedSubviews.forEach {
+            otherChips.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
+        // 三つまで。四つ以上は数で出す — 印が並びすぎると名前より目立つ。
+        let shown = Array(zip(otherGroups, otherColors).prefix(3))
+        for (title, color) in shown {
+            let chip = WorkspaceGroupChipView()
+            chip.translatesAutoresizingMaskIntoConstraints = false
+            chip.show(initial: WorkspaceGroupPalette.initial(for: title), fill: color)
+            NSLayoutConstraint.activate([
+                chip.widthAnchor.constraint(equalToConstant: 10),
+                chip.heightAnchor.constraint(equalToConstant: 10)
+            ])
+            otherChips.addArrangedSubview(chip)
+        }
+        let hidden = max(otherGroups.count - shown.count, 0)
+        overflowLabel.isHidden = hidden == 0
+        overflowLabel.stringValue = hidden == 0 ? "" : "+\(hidden)"
+        toolTip = otherGroups.isEmpty
             ? nil
             : "同じものが「\(otherGroups.joined(separator: "」「"))」にも並んでいます"
     }
@@ -96,6 +134,8 @@ private final class WorkspaceNameCellView: NSTableCellView {
         case .none:
             cloudView.isHidden = true
             cloudView.image = nil
+            cloudWidth.constant = 0
+            return
         case .notDownloaded:
             cloudView.isHidden = false
             cloudView.image = NSImage(
@@ -121,6 +161,7 @@ private final class WorkspaceNameCellView: NSTableCellView {
             cloudView.contentTintColor = IntegratedPanelTheme.accent
             cloudView.toolTip = "アップロード中"
         }
+        cloudWidth.constant = 14
     }
 }
 
@@ -190,58 +231,91 @@ private final class WorkspaceSidebarHeaderView: NSTableCellView {
     }
 }
 
+/// 一覧の左端に立てるレールの寸法。見出しと行で同じ位置に立てるためにここに集める。
+///
+/// 見出しにしかグループの色が無いと、116個の未分類をスクロールしている間じゅう
+/// 自分がどの束にいるか分からない。行にも引けば、見出しが画面の外へ出ても残る。
+/// 一覧の見出しと行の左端に立てるレール。地図の右一覧でも同じ位置に立てるので共有する。
+enum WorkspaceGroupRail {
+    static let width: CGFloat = 3
+    static let leading: CGFloat = 8
+    /// 入れ子一段ぶんの間隔。親のレールを残したまま、自分のレールを右へずらす。
+    static let step: CGFloat = 14
+
+    static func x(atLevel level: Int) -> CGFloat {
+        leading + CGFloat(min(level, 4)) * step
+    }
+
+    /// レール一本の矩形。`slice`/`total`で縦に割る — 複数のグループに属する行は
+    /// 棒が上下に割れ、「割れている＝複数所属」が色を読まずに形で分かる。
+    static func rect(in bounds: NSRect, level: Int, slice: Int = 0, of total: Int = 1) -> NSRect {
+        let height = bounds.height / CGFloat(max(total, 1))
+        return NSRect(
+            x: x(atLevel: level),
+            y: bounds.minY + height * CGFloat(slice),
+            width: width,
+            height: height
+        )
+    }
+
+    static func fill(_ rect: NSRect) {
+        NSBezierPath(roundedRect: rect, xRadius: width / 2, yRadius: width / 2).fill()
+    }
+}
+
 /// 一覧のなかのグループの見出し。
 ///
-/// サイドバーの見出しを流用していたが、あれは小さな全大文字のラベルで、
-/// グループの名前（多くは日本語）には合わなかった。ここではグループの色の丸と、下に続く数を
-/// 添える。色は地図の島と同じ（`WorkspaceGroupPalette`）ので、一覧と地図で同じグループが
-/// 同じ色になる。色だけに頼らないよう、名前は必ず出す。
+/// 行ではなく**面**にしてある。以前は件数の右から右端まで1ptの罫線を引いていたが、
+/// 5列の表の上を横断する水平線は列の区切り線と同じ語彙になり、束をまとめる記号ではなく
+/// 行を切る記号に見えた。行高も26pt対27ptで、本文との段差がほとんど無かった。
+///
+/// 帯の地はグループの色ではなく中立にする。6つの束が全部違う彩度で光ると一覧が縞になり、
+/// どれを見ているのか分からなくなるし、黄土色の帯と青の帯では見かけの強さが倍違って、
+/// 束の重要度が色で決まってしまう。色は印とレールという小さくて濃い面に集める。
 @MainActor
-private final class WorkspaceGroupHeaderView: NSTableCellView {
+final class WorkspaceGroupHeaderView: NSTableCellView {
     private let chevron = NSImageView()
-    private lazy var indent = chevron.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8)
-    private let dot = NSView()
+    private let chip = WorkspaceGroupChipView()
+    private lazy var indent = chevron.leadingAnchor.constraint(
+        equalTo: leadingAnchor,
+        constant: 20
+    )
     private let label = NSTextField(labelWithString: "")
     private let countLabel = NSTextField(labelWithString: "")
-    private let rule = NSView()
+
+    /// 先頭が最上位の親で、末尾が自分。`draw(_:)`から読むので持っておく。
+    private var railColors: [NSColor] = []
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         identifier = NSUserInterfaceItemIdentifier("WorkspaceGroupHeader")
         chevron.imageScaling = .scaleProportionallyDown
         chevron.contentTintColor = IntegratedPanelTheme.secondaryText
-        chevron.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold)
-        dot.wantsLayer = true
-        dot.layer?.cornerRadius = 4
-        label.font = .systemFont(ofSize: 11.5, weight: .semibold)
+        chevron.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 10, weight: .semibold)
+        label.font = .systemFont(ofSize: 12, weight: .semibold)
         label.textColor = IntegratedPanelTheme.text
+        label.lineBreakMode = .byTruncatingTail
         countLabel.font = .systemFont(ofSize: 10.5)
         countLabel.textColor = IntegratedPanelTheme.secondaryText
-        rule.wantsLayer = true
-        rule.layer?.backgroundColor = IntegratedPanelTheme.border
-            .withAlphaComponent(0.5).cgColor
 
-        [chevron, dot, label, countLabel, rule].forEach {
+        [chevron, chip, label, countLabel].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             addSubview($0)
         }
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         NSLayoutConstraint.activate([
             indent,
             chevron.centerYAnchor.constraint(equalTo: centerYAnchor),
             chevron.widthAnchor.constraint(equalToConstant: 10),
-            dot.leadingAnchor.constraint(equalTo: chevron.trailingAnchor, constant: 5),
-            dot.centerYAnchor.constraint(equalTo: centerYAnchor),
-            dot.widthAnchor.constraint(equalToConstant: 8),
-            dot.heightAnchor.constraint(equalToConstant: 8),
-            label.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: 7),
+            chip.leadingAnchor.constraint(equalTo: chevron.trailingAnchor, constant: 6),
+            chip.centerYAnchor.constraint(equalTo: centerYAnchor),
+            chip.widthAnchor.constraint(equalToConstant: 16),
+            chip.heightAnchor.constraint(equalToConstant: 16),
+            label.leadingAnchor.constraint(equalTo: chip.trailingAnchor, constant: 8),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
-            countLabel.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 6),
-            countLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            // 罫線は名前の右から端まで。見出しの帯がどこまで続くかが分かる。
-            rule.leadingAnchor.constraint(equalTo: countLabel.trailingAnchor, constant: 8),
-            rule.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            rule.centerYAnchor.constraint(equalTo: centerYAnchor),
-            rule.heightAnchor.constraint(equalToConstant: 1)
+            countLabel.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 8),
+            countLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
+            countLabel.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
         textField = label
     }
@@ -250,12 +324,42 @@ private final class WorkspaceGroupHeaderView: NSTableCellView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    /// - Parameter color: グループの色。`nil`は未分類 — 色を持たないことがその印になる。
+    override func draw(_ dirtyRect: NSRect) {
+        // 帯を不透明にするのが肝心。`floatsGroupRows`で見出しは上端に貼り付くのに、
+        // 背景を塗っていなかったので、下を流れる行が見出しに重なって読めなかった。
+        IntegratedPanelTheme.header.setFill()
+        bounds.fill()
+        // 上端の1本だけ。束の「始まり」を示す線で、行を切る線ではない。
+        IntegratedPanelTheme.border.setFill()
+        NSRect(x: 0, y: bounds.maxY - 1, width: bounds.width, height: 1).fill()
+
+        for (level, color) in railColors.enumerated() {
+            // 親のレールも残す。自分の色だけだと、入れ子なのか並列なのか読めない。
+            let isSelf = level == railColors.count - 1
+            color.withAlphaComponent(isSelf ? 0.9 : 0.35).setFill()
+            WorkspaceGroupRail.fill(
+                WorkspaceGroupRail.rect(in: bounds.insetBy(dx: 0, dy: 3), level: level)
+            )
+        }
+    }
+
+    /// - Parameter color: グループの色。`nil`は未分類 — 空の破線の印がそれを示す。
     /// - Parameter isCollapsed: 畳んでいるか。三角の向きで示す。
     /// - Parameter depth: 入れ子の深さ。`A ∈ B` の A は 1 で、その分だけ右へ寄せる。
-    func configure(title: String, count: Int, color: NSColor?, isCollapsed: Bool, depth: Int = 0) {
-        // 入れ子は字下げで示す。線で結ぶより、一覧の行の並びに馴染む。
-        indent.constant = 8 + CGFloat(min(depth, 4)) * 16
+    /// - Parameter ancestorColors: 親のグループの色。近い親が末尾。
+    func configure(
+        title: String,
+        count: Int,
+        color: NSColor?,
+        isCollapsed: Bool,
+        depth: Int = 0,
+        ancestorColors: [NSColor] = []
+    ) {
+        let level = min(depth, 4)
+        railColors = color.map { ancestorColors.suffix(level) + [$0] } ?? []
+        // 印と文字はレールの右から始める。レールの本数だけ右へ寄る。
+        indent.constant = WorkspaceGroupRail.x(atLevel: level) + WorkspaceGroupRail.width + 9
+        chip.show(initial: WorkspaceGroupPalette.initial(for: title), fill: color)
         label.stringValue = title
         countLabel.stringValue = "\(count)"
         chevron.image = NSImage(
@@ -263,12 +367,48 @@ private final class WorkspaceGroupHeaderView: NSTableCellView {
             accessibilityDescription: isCollapsed ? "開く" : "畳む"
         )
         toolTip = isCollapsed ? "押して開く" : "押して畳む"
-        dot.isHidden = color == nil
-        dot.layer?.backgroundColor = color?.cgColor
-        // 未分類は丸のぶん左に寄らないよう、ラベルの色で弱く見せる。
-        label.textColor = color == nil
-            ? IntegratedPanelTheme.secondaryText
-            : IntegratedPanelTheme.text
+        // 未分類も本文と同じ文字色で出す。116項目を抱えるいちばん大きな束を
+        // いちばん弱く描くのは、重要度と見た目が逆立ちしている。
+        label.textColor = IntegratedPanelTheme.text
+        needsDisplay = true
+    }
+}
+
+/// 一覧の一行。左端に、その行が属する束のレールを引くためだけの行ビュー。
+///
+/// レールを**セル**ではなく**行**に描くのは、名前列の幅が動くから。セルに描くと
+/// 列幅を変えるたびにレールの位置が動く。
+@MainActor
+final class WorkspaceGroupedRowView: NSTableRowView {
+    static let id = NSUserInterfaceItemIdentifier("WorkspaceGroupedRow")
+
+    /// 親の色（近い親が末尾）と、自分の束の色。複数の束にいる行は`own`が複数入る。
+    var ancestorColors: [NSColor] = []
+    var ownColors: [NSColor] = []
+
+    func show(ancestors: [NSColor], own: [NSColor]) {
+        guard ancestors != ancestorColors || own != ownColors else { return }
+        ancestorColors = ancestors
+        ownColors = own
+        needsDisplay = true
+    }
+
+    override func drawBackground(in dirtyRect: NSRect) {
+        super.drawBackground(in: dirtyRect)
+        for (level, color) in ancestorColors.enumerated() {
+            color.withAlphaComponent(0.35).setFill()
+            WorkspaceGroupRail.fill(WorkspaceGroupRail.rect(in: bounds, level: level))
+        }
+        // 複数の束にいる行はレールを縦に割って全部の色を出す。
+        for (index, color) in ownColors.enumerated() {
+            color.withAlphaComponent(0.9).setFill()
+            WorkspaceGroupRail.fill(WorkspaceGroupRail.rect(
+                in: bounds,
+                level: ancestorColors.count,
+                slice: index,
+                of: ownColors.count
+            ))
+        }
     }
 }
 
@@ -573,10 +713,18 @@ final class WorkspaceBrowserViewController: NSViewController {
     }
 
     private var fileRows: [FileRow] = []
+    /// その行が居る束。見出しの行と、束に入っていない行は`nil`。`fileRows`と同じ長さ。
+    private struct SectionPlacement: Equatable {
+        let name: String
+        let depth: Int
+    }
+
+    private var rowSections: [SectionPlacement?] = []
     /// ⌘Gで地図から戻る先。地図しか見ていなければ一覧へ。
     private var modeBeforeMap: WorkspaceViewMode = .list
     private let groupingToggle = NSButton()
     private let ungroupedOnlyToggle = NSButton()
+    private let groupedOnlyToggle = NSButton()
     private var addToGroupItem = NSMenuItem()
     private var removeFromGroupItem = NSMenuItem()
     private var itemGroups: WorkspaceItemGroups?
@@ -1027,17 +1175,32 @@ final class WorkspaceBrowserViewController: NSViewController {
         ungroupedOnlyToggle.toolTip = "どのグループにも入れていないものだけを出す"
         ungroupedOnlyToggle.state = preferences.listUngroupedOnly ? .on : .off
 
-        [ribbonPath, ungroupedOnlyToggle, groupingToggle].forEach {
+        // 「未分類だけ」の裏返し。まとめたものが未分類の海に埋もれる場所で、束だけを見る。
+        groupedOnlyToggle.setButtonType(.switch)
+        groupedOnlyToggle.title = "グループのものだけ"
+        groupedOnlyToggle.font = .systemFont(ofSize: 10.5)
+        groupedOnlyToggle.controlSize = .small
+        groupedOnlyToggle.target = self
+        groupedOnlyToggle.action = #selector(toggleGroupedOnly)
+        groupedOnlyToggle.toolTip = "どれかのグループに入れてあるものだけを出す"
+        groupedOnlyToggle.state = preferences.listGroupedOnly ? .on : .off
+
+        [ribbonPath, groupedOnlyToggle, ungroupedOnlyToggle, groupingToggle].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             bar.addSubview($0)
         }
         NSLayoutConstraint.activate([
             ribbonPath.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
             ribbonPath.trailingAnchor.constraint(
-                lessThanOrEqualTo: ungroupedOnlyToggle.leadingAnchor,
+                lessThanOrEqualTo: groupedOnlyToggle.leadingAnchor,
                 constant: -10
             ),
             ribbonPath.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            groupedOnlyToggle.trailingAnchor.constraint(
+                equalTo: ungroupedOnlyToggle.leadingAnchor,
+                constant: -12
+            ),
+            groupedOnlyToggle.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
             ungroupedOnlyToggle.trailingAnchor.constraint(
                 equalTo: groupingToggle.leadingAnchor,
                 constant: -12
@@ -1092,6 +1255,17 @@ final class WorkspaceBrowserViewController: NSViewController {
             guard let self, let members = self.linkableNames(from: urls) else { return false }
             return self.mutateGroups(actionName: "「\(group)」に入れる") { groups in
                 members.forEach { groups.add($0, to: group) }
+            }
+        }
+        // 島から島へ引いたときの張り替え。外して入れるのを一手で行う — 二手に割ると、
+        // 途中で失敗したときにどちらにも属さないものが残る。
+        mapView.onMoveBetweenGroups = { [weak self] urls, from, to in
+            guard let self, let members = self.linkableNames(from: urls) else { return false }
+            return self.mutateGroups(actionName: "「\(from)」から「\(to)」へ移す") { groups in
+                for member in members {
+                    groups.remove(member, from: from)
+                    groups.add(member, to: to)
+                }
             }
         }
         // 「新しいグループ」の枠。落としたものが空なら、いま選んでいるもので作る。
@@ -1305,10 +1479,31 @@ final class WorkspaceBrowserViewController: NSViewController {
     /// 同じ考えで、こちらは一覧に効く。
     @objc func toggleUngroupedOnly() {
         preferences.listUngroupedOnly.toggle()
-        ungroupedOnlyToggle.state = preferences.listUngroupedOnly ? .on : .off
+        // 両方入れると何も残らない。相手を落とすのは、空の一覧を見せて
+        // 「壊れた」と思わせないため。
+        if preferences.listUngroupedOnly { preferences.listGroupedOnly = false }
+        syncGroupFilterToggles()
         let selection = selectedItems.map(\.url)
         applyFilterAndSort()
         restoreFlatSelection(selection)
+    }
+
+    /// 「グループのものだけ」を入り切りする。
+    ///
+    /// まとめた束だけを見るための眺め方。146個が平らに並ぶ場所では、見出しがあっても
+    /// 間に未分類が何十行も挟まって束として読めない。
+    @objc func toggleGroupedOnly() {
+        preferences.listGroupedOnly.toggle()
+        if preferences.listGroupedOnly { preferences.listUngroupedOnly = false }
+        syncGroupFilterToggles()
+        let selection = selectedItems.map(\.url)
+        applyFilterAndSort()
+        restoreFlatSelection(selection)
+    }
+
+    private func syncGroupFilterToggles() {
+        ungroupedOnlyToggle.state = preferences.listUngroupedOnly ? .on : .off
+        groupedOnlyToggle.state = preferences.listGroupedOnly ? .on : .off
     }
 
     /// 一覧のグループの見出しを入り切りする。
@@ -1389,6 +1584,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         // グループの見出しは一覧だけのもの。他の表示で出しても効かないので出さない。
         groupingToggle.isHidden = mode != .list
         ungroupedOnlyToggle.isHidden = mode != .list
+        groupedOnlyToggle.isHidden = mode != .list
         viewModeControl.selectedSegment = WorkspaceViewMode.allCases.firstIndex(of: mode) ?? 0
         if mode == .column {
             columnView.show(
@@ -1642,7 +1838,9 @@ final class WorkspaceBrowserViewController: NSViewController {
         fileTable.delegate = self
         fileTable.dataSource = self
         fileTable.rowHeight = 27
-        fileTable.usesAlternatingRowBackgroundColors = true
+        // 縞と見出しの帯は両立しない。縞のままだと見出しの地色が行番号の偶奇で変わり、
+        // 同じ束がフォルダを開くたび明るくなったり暗くなったりする。
+        fileTable.usesAlternatingRowBackgroundColors = false
         fileTable.backgroundColor = IntegratedPanelTheme.background
         fileTable.gridColor = IntegratedPanelTheme.border.withAlphaComponent(0.55)
         fileTable.allowsMultipleSelection = true
@@ -2470,6 +2668,7 @@ final class WorkspaceBrowserViewController: NSViewController {
               !groups.groups.isEmpty,
               !usesRecursiveSearch else {
             fileRows = displayedItems.indices.map { .item(index: $0, otherGroups: []) }
+            rowSections = Array(repeating: nil, count: fileRows.count)
             return
         }
 
@@ -2478,8 +2677,12 @@ final class WorkspaceBrowserViewController: NSViewController {
         for (index, item) in displayedItems.enumerated() { indexByURL[item.url] = index }
 
         var rows: [FileRow] = []
+        // 行がどの束の中に居るか。`FileRow.item`は「他の所属」しか持っていないので、
+        // レールを引くにはこれが要る。行と同じ長さで並走させる。
+        var sections: [SectionPlacement?] = []
         for section in groups.sections(for: displayedItems) {
             rows.append(.header(section.name, depth: section.depth))
+            sections.append(nil)
             let collapsed = collapsedGroups.contains(section.name ?? Self.ungroupedTitle)
             for item in section.items where !collapsed {
                 guard let index = indexByURL[item.url] else { continue }
@@ -2488,9 +2691,46 @@ final class WorkspaceBrowserViewController: NSViewController {
                     ? []
                     : groups.groupNames(for: item.name).filter { $0 != section.name }
                 rows.append(.item(index: index, otherGroups: others))
+                sections.append(section.name.map { SectionPlacement(name: $0, depth: section.depth) })
             }
         }
         fileRows = rows
+        rowSections = sections
+    }
+
+    /// 名前セルの字下げ。見出しの三角の位置に項目のアイコンを揃える。
+    ///
+    /// 見出しが一本も無い一覧（グループでまとめないとき）では字下げしない。
+    /// 束が無いのに左を空けても、名前の幅が減るだけ。
+    private func nameIndent(atRow row: Int) -> CGFloat {
+        guard rowSections.contains(where: { $0 != nil }) else { return 6 }
+        let level = rowSections.indices.contains(row) ? (rowSections[row]?.depth ?? 0) : 0
+        return WorkspaceGroupRail.x(atLevel: level) + WorkspaceGroupRail.width + 9
+    }
+
+    /// そのグループの親の色。外側から順。見出しのレールに使う。
+    private func ancestorColors(ofGroup name: String?) -> [NSColor] {
+        guard let name, let groups = itemGroups else { return [] }
+        let colors = WorkspaceGroupPalette.colors(for: groups)
+        return groups.ancestors(of: name).reversed().compactMap { colors[$0] }
+    }
+
+    /// その行のレールの色。親（外側）から順の色と、自分の束の色。
+    ///
+    /// 自分の束が複数あるのは、その項目が他のグループにも属しているとき。
+    /// レールが縦に割れて、複数所属が色を読まずに形で分かる。
+    private func rails(atRow row: Int) -> (ancestors: [NSColor], own: [NSColor]) {
+        guard rowSections.indices.contains(row),
+              let placement = rowSections[row],
+              let groups = itemGroups else { return ([], []) }
+        let colors = WorkspaceGroupPalette.colors(for: groups)
+        // `ancestors(of:)`は近い順。レールは外側から並べるので裏返す。
+        let ancestors = groups.ancestors(of: placement.name)
+            .reversed()
+            .compactMap { colors[$0] }
+            .suffix(min(placement.depth, 4))
+        let own = ([placement.name] + otherGroups(atRow: row)).compactMap { colors[$0] }
+        return (Array(ancestors), own)
     }
 
     /// 行番号から項目を引く。見出しの行はnil。
@@ -2807,6 +3047,12 @@ final class WorkspaceBrowserViewController: NSViewController {
         // 「未分類だけ」。まだどこにも入れていないものを片付けるための眺め方。
         if preferences.listUngroupedOnly, let groups = itemGroups {
             items = items.filter { groups.groupNames(for: $0.name).isEmpty }
+        }
+        // 「グループのものだけ」。定義が読めていないときは絞らない — 読めないことと
+        // 「どれも属していない」ことは違うのに、絞ると後者に見えてしまう。
+        if preferences.listGroupedOnly, itemGroupsError == nil {
+            let groups = itemGroups
+            items = items.filter { !(groups?.groupNames(for: $0.name).isEmpty ?? true) }
         }
         displayedItems = sortedItems(items)
         reloadResultViews()
@@ -3537,9 +3783,27 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
         !self.tableView(tableView, isGroupRow: row)
     }
 
+    /// 行の左端にレールを引くための行ビュー。一覧だけ差し替える。
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        guard tableView === fileTable else { return nil }
+        let view = tableView.makeView(
+            withIdentifier: WorkspaceGroupedRowView.id,
+            owner: self
+        ) as? WorkspaceGroupedRowView ?? {
+            let created = WorkspaceGroupedRowView()
+            created.identifier = WorkspaceGroupedRowView.id
+            return created
+        }()
+        let rails = rails(atRow: row)
+        view.show(ancestors: rails.ancestors, own: rails.own)
+        return view
+    }
+
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         guard tableView === sidebarTable else {
-            return self.tableView(tableView, isGroupRow: row) ? 26 : 27
+            // 見出しは本文より5pt高い。26pt対27ptでは段差にならず、見出しが
+            // 「束の始まり」ではなく「ただの行」に見えていた。
+            return self.tableView(tableView, isGroupRow: row) ? 32 : 27
         }
         // 詰めた行高: よく使うフォルダをスクロールなしで一覧できる数が優先。
         return self.tableView(tableView, isGroupRow: row) ? 20 : 23
@@ -3587,7 +3851,8 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
                     : fileRowCount(ofSectionStartingAt: row),
                 color: title.flatMap { WorkspaceGroupPalette.color(for: $0, in: itemGroups) },
                 isCollapsed: collapsed,
-                depth: depth
+                depth: depth,
+                ancestorColors: ancestorColors(ofGroup: title)
             )
             return cell
         }
@@ -3599,11 +3864,15 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
                 owner: self
             ) as? WorkspaceNameCellView ?? WorkspaceNameCellView()
             cell.representedURL = item.url
+            let others = otherGroups(atRow: row)
+            let colors = WorkspaceGroupPalette.colors(for: itemGroups)
             cell.configure(
                 name: item.relativePath ?? item.name,
                 image: WorkspaceIconProvider.shared.quickIcon(for: item),
                 cloud: item.cloudStatus,
-                otherGroups: otherGroups(atRow: row)
+                otherGroups: others,
+                otherColors: others.compactMap { colors[$0] },
+                indent: nameIndent(atRow: row)
             )
             WorkspaceIconProvider.shared.resolveIcon(for: item) { [weak cell] image in
                 guard let cell, cell.representedURL == item.url else { return }
@@ -4021,6 +4290,9 @@ extension WorkspaceBrowserViewController: NSMenuItemValidation {
             return true
         case #selector(toggleUngroupedOnly):
             menuItem.state = preferences.listUngroupedOnly ? .on : .off
+            return true
+        case #selector(toggleGroupedOnly):
+            menuItem.state = preferences.listGroupedOnly ? .on : .off
             return true
         case #selector(pruneMissingGroupMembers):
             guard itemGroupsError == nil else { return false }
