@@ -440,13 +440,17 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
     static let maxRowsPerColumn: Double = 24
 
     /// その領域に島を何列並べるか。`cells`と重みの計算で同じ数を使う。
-    private static func columnCount(for count: Int, width: Double) -> Int {
-        max(1, min(count, Int(width / minIslandWidth)))
+    ///
+    /// 島のあいだの余白を勘定に入れる。`width / minIslandWidth`で数えていたので、
+    /// 800ptの領域に4列（1列191pt）を割り、最小幅196ptを下回って名前が切れた
+    /// （`PMU_placement_pro…`）。余白のぶんを足してから割る。
+    private static func columnCount(for count: Int, width: Double, gap: Double) -> Int {
+        max(1, min(count, Int((width + gap) / (minIslandWidth + gap))))
     }
 
     /// 島一つぶんの幅。
     private static func columnWidth(for count: Int, in width: Double, gap: Double) -> Double {
-        let columns = Double(columnCount(for: count, width: width))
+        let columns = Double(columnCount(for: count, width: width, gap: gap))
         return max((width - gap * (columns - 1)) / columns, 1)
     }
 
@@ -583,7 +587,7 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         //
         // 列は幅で決めて、次の島はいちばん空いている列へ積む（新聞の段組みと同じ）。
         // 入りきらないぶんは紙が縦に伸びる。
-        let columns = columnCount(for: count, width: area.width)
+        let columns = columnCount(for: count, width: area.width, gap: gap)
         let columnWidth = columnWidth(for: count, in: area.width, gap: gap)
         var used = [Double](repeating: 0, count: columns)
         var cells: [CGRect] = []
