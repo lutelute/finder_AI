@@ -507,4 +507,25 @@ struct WorkspaceItemGroupsTests {
         #expect(text.contains("\n"))
         #expect(text.contains("ツール開発"))
     }
+    /// 直下に何も入れていない親は見出しの数が0になる。中には子を通して入って
+    /// いるのに0と出るのは、無いものと読める。
+    @Test("親の下に居る数を数えられる。同じものが複数の子に居ても一つ")
+    func descendantMembersAreCounted() {
+        // 直下に何も入れていない親。手で書いたJSONや、中身を全部子へ移した後に起きる。
+        var groups = WorkspaceItemGroups(groups: [.init(name: "研究")])
+        groups.add("a", to: "電力系統")
+        groups.add("b", to: "電力系統")
+        groups.add("b", to: "可視化")
+        groups.add("c", to: "可視化")
+        groups.nest("電力系統", inside: "研究")
+        groups.nest("可視化", inside: "研究")
+        let present: Set<String> = ["a", "b", "c"]
+
+        // a,b,c の3つ。bは二つの子に居るが、数えるのは一度きり。
+        #expect(groups.descendantMemberCount(of: "研究", among: present) == 3)
+        // 子の下には誰も居ない。
+        #expect(groups.descendantMemberCount(of: "電力系統", among: present) == 0)
+        // 実物が無いものは数えない（別のマシンにしか無いフォルダの定義は残るので）。
+        #expect(groups.descendantMemberCount(of: "研究", among: ["a"]) == 1)
+    }
 }

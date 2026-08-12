@@ -347,13 +347,16 @@ final class WorkspaceGroupHeaderView: NSTableCellView {
     /// - Parameter isCollapsed: 畳んでいるか。三角の向きで示す。
     /// - Parameter depth: 入れ子の深さ。`A ∈ B` の A は 1 で、その分だけ右へ寄せる。
     /// - Parameter ancestorColors: 親のグループの色。近い親が末尾。
+    /// - Parameter inChildren: 子のグループの下に居る数。直下に何も入れていない親は
+    ///   数が0になり、無いものと読める。「0 (+11)」と添えて、中は空でないと示す。
     func configure(
         title: String,
         count: Int,
         color: NSColor?,
         isCollapsed: Bool,
         depth: Int = 0,
-        ancestorColors: [NSColor] = []
+        ancestorColors: [NSColor] = [],
+        inChildren: Int = 0
     ) {
         let level = min(depth, 4)
         railColors = color.map { ancestorColors.suffix(level) + [$0] } ?? []
@@ -361,7 +364,7 @@ final class WorkspaceGroupHeaderView: NSTableCellView {
         indent.constant = WorkspaceGroupRail.x(atLevel: level) + WorkspaceGroupRail.width + 9
         chip.show(initial: WorkspaceGroupPalette.initial(for: title), fill: color)
         label.stringValue = title
-        countLabel.stringValue = "\(count)"
+        countLabel.stringValue = inChildren > 0 ? "\(count) (+\(inChildren))" : "\(count)"
         chevron.image = NSImage(
             systemSymbolName: isCollapsed ? "chevron.right" : "chevron.down",
             accessibilityDescription: isCollapsed ? "開く" : "畳む"
@@ -3852,7 +3855,10 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
                 color: title.flatMap { WorkspaceGroupPalette.color(for: $0, in: itemGroups) },
                 isCollapsed: collapsed,
                 depth: depth,
-                ancestorColors: ancestorColors(ofGroup: title)
+                ancestorColors: ancestorColors(ofGroup: title),
+                inChildren: title.map {
+                    itemGroups?.descendantMemberCount(of: $0, among: presentNames) ?? 0
+                } ?? 0
             )
             return cell
         }

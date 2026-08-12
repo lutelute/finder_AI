@@ -184,6 +184,27 @@ public struct WorkspaceItemGroups: Equatable, Sendable, Codable {
         groups.filter { $0.parent == groupName }.map(\.name)
     }
 
+    /// そのグループの**下**（子孫のグループ）に居るものの数。同じものが複数の子に
+    /// 属していても一つと数える。
+    ///
+    /// 「研究」のように直下に何も入れていない親は、見出しの数が0になる。中には
+    /// 子を通して11個入っているのに0と出るのは、無いものと読める。親の見出しには
+    /// この数を「+11」として添える。
+    public func descendantMemberCount(of groupName: String, among present: Set<String>) -> Int {
+        var names: Set<String> = []
+        var queue = children(of: groupName)
+        var seen: Set<String> = [groupName]
+        while let current = queue.first {
+            queue.removeFirst()
+            guard seen.insert(current).inserted else { continue }
+            if let group = groups.first(where: { $0.name == current }) {
+                names.formUnion(group.members.filter { present.contains($0) })
+            }
+            queue.append(contentsOf: children(of: current))
+        }
+        return names.count
+    }
+
     /// 入れ子を保ったまま、上から下へ並べた順序（深さ優先）。
     ///
     /// 一覧の見出しの順であり、地図で枡を割る順でもある。親のすぐ下に子が来る。

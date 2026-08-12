@@ -744,6 +744,25 @@ final class WorkspaceMapView: NSView {
         color.withAlphaComponent(isTarget ? 0.95 : (island.depth == 0 ? 0.60 : 0.80)).setStroke()
         inner.stroke()
 
+        // 名前の帯。上の角だけ丸めて島の上端に敷く。
+        //
+        // 名前を地の上に直接置いていたので、島の上端と中身の境目が曖昧で、
+        // 一行目の項目と名前が同じ面に並んで見えた。帯があれば「ここから中身」が
+        // 一目で決まる。落とし先になっているときは帯を濃くする — 枠の太さだけより、
+        // どの島に入るかが分かりやすい。
+        // 角は島の形で切り抜く。角丸を自分で描き起こすより、島と必ず一致する。
+        let band = NSRect(
+            x: island.frame.minX,
+            y: island.frame.minY,
+            width: island.frame.width,
+            height: WorkspaceClusterLayout.islandTitleHeight + 6
+        )
+        NSGraphicsContext.saveGraphicsState()
+        inner.addClip()
+        color.withAlphaComponent(isTarget ? 0.45 : 0.20).setFill()
+        band.fill()
+        NSGraphicsContext.restoreGraphicsState()
+
         let rect = titleRect(of: island)
         drawGroupChip(named: island.name, color: color, atLeft: rect)
         // 名前をグループの色で描くのをやめた。黄土色や空色の島では地とのコントラストが
@@ -838,41 +857,69 @@ final class WorkspaceMapView: NSView {
         )
         let circle = NSBezierPath(ovalIn: rect)
 
-        // 複数のグループに属するものは、その全部の色で塗り分ける。一覧では二行に
-        // 割れてしまうものが、ここでは一つの点として両方の色を持つ。
         let colors = node.groups.compactMap { groupColors[$0] }
-        if colors.count == 1 {
-            colors[0].setFill()
-            circle.fill()
-        } else if colors.isEmpty {
+        if colors.isEmpty {
             IntegratedPanelTheme.secondaryText.withAlphaComponent(0.5).setFill()
             circle.fill()
+        } else if colors.count == 1 {
+            colors[0].setFill()
+            circle.fill()
         } else {
-            NSGraphicsContext.saveGraphicsState()
-            circle.addClip()
-            let slice = rect.width / CGFloat(colors.count)
-            for (index, color) in colors.enumerated() {
-                color.setFill()
-                NSRect(
-                    x: rect.minX + slice * CGFloat(index),
-                    y: rect.minY,
-                    width: slice,
-                    height: rect.height
-                ).fill()
-            }
-            NSGraphicsContext.restoreGraphicsState()
+            drawSharedNode(at: node.position, radius: radius, colors: colors)
         }
 
         if selectedNames.contains(node.name) {
             IntegratedPanelTheme.text.setStroke()
             circle.lineWidth = 2.5
             circle.stroke()
-        } else if node.isShared {
-            // 重なりは輪でも示す。色分けだけだと、色覚によっては読めない。
-            IntegratedPanelTheme.text.withAlphaComponent(0.7).setStroke()
-            circle.lineWidth = 1.6
-            circle.stroke()
         }
+    }
+
+    /// 複数のグループに属する点。**割れた輪**で描く。
+    ///
+    /// 左右に色を塗り分けていたが、隣り合う色が近いと一色に見え、三つ以上では
+    /// 細片になって何色あるのか数えられなかった。輪を所属の数で等分すれば、
+    /// 「輪が割れている」「いくつに割れている」が色を読まずに形で分かる。
+    /// 中央に数も出す — 割れ目が細いときの最後の手掛かりになる。
+    private func drawSharedNode(at centre: CGPoint, radius: Double, colors: [NSColor]) {
+        let ringWidth: Double = 4
+        let inner = radius - ringWidth
+        // 中は地色。塗り潰さないことで、単独所属の点と一目で違う。
+        IntegratedPanelTheme.background.setFill()
+        NSBezierPath(ovalIn: NSRect(
+            x: centre.x - inner,
+            y: centre.y - inner,
+            width: inner * 2,
+            height: inner * 2
+        )).fill()
+
+        let sweep = 360.0 / Double(colors.count)
+        for (index, color) in colors.enumerated() {
+            let path = NSBezierPath()
+            path.lineWidth = ringWidth
+            // 12時から時計回りに。並びは所属の順（定義順）と同じ。
+            let start = 90.0 - Double(index) * sweep
+            path.appendArc(
+                withCenter: centre,
+                radius: radius - ringWidth / 2,
+                startAngle: start - sweep + 1.5,
+                endAngle: start - 1.5,
+                clockwise: false
+            )
+            color.setStroke()
+            path.stroke()
+        }
+
+        let text = "\(colors.count)" as NSString
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 9, weight: .bold),
+            .foregroundColor: IntegratedPanelTheme.text
+        ]
+        let size = text.size(withAttributes: attributes)
+        text.draw(
+            at: NSPoint(x: centre.x - size.width / 2, y: centre.y - size.height / 2),
+            withAttributes: attributes
+        )
     }
 
     private func labelPriority(of node: WorkspaceClusterLayout.Node) -> Int {
@@ -1380,7 +1427,10 @@ extension WorkspaceMapView: NSTableViewDataSource, NSTableViewDelegate {
                     (itemGroups?.ancestors(of: name) ?? [])
                         .reversed()
                         .compactMap { groupColors[$0] }
-                } ?? []
+                } ?? [],
+                inChildren: title.map {
+                    itemGroups?.descendantMemberCount(of: $0, among: presentNames) ?? 0
+                } ?? 0
             )
             return cell
         }
