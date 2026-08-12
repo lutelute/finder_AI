@@ -59,7 +59,7 @@ private final class WorkspaceNameCellView: NSTableCellView {
             cloudWidth,
             otherChips.leadingAnchor.constraint(equalTo: cloudView.trailingAnchor, constant: 6),
             otherChips.centerYAnchor.constraint(equalTo: centerYAnchor),
-            otherChips.heightAnchor.constraint(equalToConstant: 10),
+            otherChips.heightAnchor.constraint(equalToConstant: 7),
             overflowLabel.leadingAnchor.constraint(equalTo: otherChips.trailingAnchor, constant: 3),
             overflowLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -5),
             overflowLabel.centerYAnchor.constraint(equalTo: centerYAnchor)
@@ -100,8 +100,8 @@ private final class WorkspaceNameCellView: NSTableCellView {
             chip.translatesAutoresizingMaskIntoConstraints = false
             chip.show(initial: WorkspaceGroupPalette.initial(for: title), fill: color)
             NSLayoutConstraint.activate([
-                chip.widthAnchor.constraint(equalToConstant: 10),
-                chip.heightAnchor.constraint(equalToConstant: 10)
+                chip.widthAnchor.constraint(equalToConstant: 7),
+                chip.heightAnchor.constraint(equalToConstant: 7)
             ])
             otherChips.addArrangedSubview(chip)
         }
@@ -315,8 +315,8 @@ final class WorkspaceGroupHeaderView: NSTableCellView {
             chevron.widthAnchor.constraint(equalToConstant: 10),
             chip.leadingAnchor.constraint(equalTo: chevron.trailingAnchor, constant: 6),
             chip.centerYAnchor.constraint(equalTo: centerYAnchor),
-            chip.widthAnchor.constraint(equalToConstant: 16),
-            chip.heightAnchor.constraint(equalToConstant: 16),
+            chip.widthAnchor.constraint(equalToConstant: 8),
+            chip.heightAnchor.constraint(equalToConstant: 8),
             label.leadingAnchor.constraint(equalTo: chip.trailingAnchor, constant: 8),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
             countLabel.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 8),

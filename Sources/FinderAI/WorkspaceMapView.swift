@@ -767,31 +767,21 @@ final class WorkspaceMapView: NSView {
             .font: NSFont.systemFont(ofSize: 12.5, weight: .semibold),
             .foregroundColor: IntegratedPanelTheme.text
         ]
-        let available = max(rect.width - 18, 1)
+        let available = max(rect.width - 14, 1)
         var title = island.name
         // 島が狭ければグループ名を詰める。名前が枠を越えると隣の島に食い込む。
         while title.size(withAttributes: attributes).width > available, title.count > 2 {
             title = String(title.dropLast())
         }
         if title != island.name { title = String(title.dropLast()) + "…" }
-        title.draw(at: NSPoint(x: rect.minX + 18, y: rect.minY), withAttributes: attributes)
+        title.draw(at: NSPoint(x: rect.minX + 14, y: rect.minY), withAttributes: attributes)
     }
 
-    /// 島の名前の左に置く印。一覧の見出しと同じ、色の面に頭文字。
+    /// 島の名前の左に置く印。一覧の見出しと同じ、色の丸。
     private func drawGroupChip(named name: String, color: NSColor, atLeft rect: NSRect) {
-        let box = NSRect(x: rect.minX, y: rect.minY + 1, width: 14, height: 14)
+        let box = NSRect(x: rect.minX, y: rect.minY + 4, width: 8, height: 8)
         color.setFill()
-        NSBezierPath(roundedRect: box, xRadius: 3.5, yRadius: 3.5).fill()
-        let initial = WorkspaceGroupPalette.initial(for: name)
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 8.5, weight: .bold),
-            .foregroundColor: WorkspaceGroupPalette.foreground(on: color)
-        ]
-        let size = initial.size(withAttributes: attributes)
-        initial.draw(
-            at: NSPoint(x: box.midX - size.width / 2, y: box.midY - size.height / 2),
-            withAttributes: attributes
-        )
+        NSBezierPath(ovalIn: box).fill()
     }
 
     /// 橋。複数のグループに属するノードから、属する島の中心へ引く。

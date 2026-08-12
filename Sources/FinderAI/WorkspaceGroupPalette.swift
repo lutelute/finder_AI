@@ -79,11 +79,11 @@ enum WorkspaceGroupPalette {
     }
 }
 
-/// グループの印。色の面に頭文字を載せた小さな角丸。
+/// グループの印。色の丸。
 ///
-/// 8ptの色丸だった。面積が50pt²しかなく、色が判別できない設定では6つの見出しが
-/// **すべて同じ見た目**になっていた。16ptにして文字を入れると面積が5倍になり、
-/// 同じ場所に色以外の手掛かりが載る。
+/// 頭文字を載せた16ptの角丸にしていた時期がある（色が読めなくても文字で見分けが
+/// つくように）。ただ、一覧の見出しに四角い札が並ぶのは重く、好みで丸へ戻した。
+/// 色以外の手掛かりは、見出しの名前と、行の左端のレールが受け持つ。
 ///
 /// `layer.backgroundColor`ではなく`draw(_:)`で塗る。`cgColor`はその瞬間の外観で
 /// 固まるので、明るさを切り替えても塗り直されない（セルは再利用されるので、
@@ -91,23 +91,23 @@ enum WorkspaceGroupPalette {
 @MainActor
 final class WorkspaceGroupChipView: NSView {
     private var fill: NSColor?
-    private var initial: String = ""
-    /// 色を持たない印＝未分類。空の破線枠で「どのグループでもない」を形で見せる。
-    private var isEmpty: Bool { fill == nil }
 
     func show(initial: String, fill: NSColor?) {
-        self.initial = initial
         self.fill = fill
         needsDisplay = true
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let radius = bounds.width / 4
-        let path = NSBezierPath(
-            roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
-            xRadius: radius,
-            yRadius: radius
-        )
+        let side = min(bounds.width, bounds.height)
+        let box = NSRect(
+            x: bounds.midX - side / 2,
+            y: bounds.midY - side / 2,
+            width: side,
+            height: side
+        ).insetBy(dx: 0.5, dy: 0.5)
+        let path = NSBezierPath(ovalIn: box)
+        // 色を持たない印＝未分類。丸を消すと文字の左端がずれるので、
+        // 空の破線の丸を置いて位置は揃える。
         guard let fill else {
             path.lineWidth = 1
             path.setLineDash([2, 2], count: 2, phase: 0)
@@ -117,20 +117,5 @@ final class WorkspaceGroupChipView: NSView {
         }
         fill.setFill()
         path.fill()
-
-        let size = bounds.width >= 15 ? 10.0 : 8.5
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: size, weight: .bold),
-            .foregroundColor: WorkspaceGroupPalette.foreground(on: fill)
-        ]
-        let text = initial as NSString
-        let measured = text.size(withAttributes: attributes)
-        text.draw(
-            at: NSPoint(
-                x: bounds.midX - measured.width / 2,
-                y: bounds.midY - measured.height / 2
-            ),
-            withAttributes: attributes
-        )
     }
 }
