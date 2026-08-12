@@ -811,6 +811,8 @@ final class WorkspaceBrowserViewController: NSViewController {
     private var twoRowConstraints: [NSLayoutConstraint] = []
     private var navigationBarHeight: NSLayoutConstraint?
     private var usesOneRowNavigation = false
+    /// サイドバーの幅を押し戻している最中か。再入を止めるための印。
+    private var isClampingSidebar = false
     private let progress = NSProgressIndicator()
     private let splitView = NSSplitView()
     private var didSetInitialSidebarPosition = false
@@ -1003,9 +1005,16 @@ final class WorkspaceBrowserViewController: NSViewController {
         super.viewDidLayout()
         layoutFileColumns()
         updateNavigationRows()
-        guard showsSidebar, !didSetInitialSidebarPosition,
-              splitView.bounds.width >= 761 else { return }
-        splitView.setPosition(preferences.sidebarWidth, ofDividerAt: 0)
+        guard showsSidebar, !didSetInitialSidebarPosition else { return }
+        // 761pt無いと初回配置をしていなかった。Terminalを右に開くと分割ビューは
+        // それを下回り、**サイドバーが幅0のまま据え置かれて消える**。
+        // 要るのは「窓が広いこと」ではなく「サイドバーと本文の両方が置けること」。
+        let room = splitView.bounds.width
+        guard room >= Self.minimumFileAreaWidth + 160 else { return }
+        splitView.setPosition(
+            min(preferences.sidebarWidth, room - Self.minimumFileAreaWidth),
+            ofDividerAt: 0
+        )
         didSetInitialSidebarPosition = true
     }
 
@@ -1018,12 +1027,13 @@ final class WorkspaceBrowserViewController: NSViewController {
         guard let navigationStack, let searchStack, let navigationBarHeight else { return }
         let width = navigationStack.superview?.bounds.width ?? 0
         guard width > 1 else { return }
-        // 住所欄に残したい幅を足して測る。ぎりぎり入るだけでは、パスが読めない
-        // 一段になってしまう。
+        // 住所欄は縮む側なので、いま入っているパスの長さではなく「最低これだけ残す」で
+        // 測る。自然幅のまま足すと、深いフォルダに居るというだけで二段のままになる。
         let needed = navigationStack.fittingSize.width
+            - pathField.fittingSize.width
+            + Self.pathRoomOnOneRow
             + searchStack.fittingSize.width
             + 30
-            + Self.pathRoomOnOneRow
         let wantsOneRow = width >= needed
         guard wantsOneRow != usesOneRowNavigation else { return }
         usesOneRowNavigation = wantsOneRow
@@ -1034,7 +1044,14 @@ final class WorkspaceBrowserViewController: NSViewController {
 
     /// 一段にするなら、住所欄にこれだけは残す。長いパスの末尾（いま居る場所）が
     /// 読めなくなるくらいなら、二段のままのほうがいい。
-    private static let pathRoomOnOneRow: CGFloat = 220
+    ///
+    /// 220ptにしていたら、実測1180ptの窓（サイドバー360を引いて本文760）で
+    /// わずかに届かず、いつまでも二段のままだった。170ptあれば等幅11.5ptで
+    /// 26文字ほど——末尾のフォルダ名は読める。
+    private static let pathRoomOnOneRow: CGFloat = 170
+
+    /// サイドバーを置いたあと、本文に最低これだけは残す。下回るならサイドバーを削る。
+    private static let minimumFileAreaWidth: CGFloat = 320
 
     private func makeSidebar() -> NSView {
         let root = NSView()
@@ -4394,18 +4411,23 @@ extension WorkspaceBrowserViewController: NSSplitViewDelegate {
     func splitViewDidResizeSubviews(_ notification: Notification) {
         guard showsSidebar, didSetInitialSidebarPosition,
               let sidebar = splitView.arrangedSubviews.first else { return }
+        let width = sidebar.frame.width
+        // 窓を広げると、サイドバーも一緒に太る。上限(360)は引くときにしか効かないので、
+        // 実測で460pt——窓幅の三割——まで育っていた。育ったら押し戻す。
+        //
+        // 押し戻すと`splitViewDidResizeSubviews`がもう一度飛んでくるので、印を立てて
+        // 二度目は素通りする（立てないまま`setPosition`を呼ぶと再入が止まらない）。
+        if width > 360, !isClampingSidebar, splitView.bounds.width > 761 {
+            isClampingSidebar = true
+            splitView.setPosition(360, ofDividerAt: 0)
+            isClampingSidebar = false
+            return
+        }
         // 引いて決められる幅と同じ範囲に収めてから覚える。ここで素通ししていたので、
-        // 上限を超えた幅が設定に残っていた。
-        preferences.sidebarWidth = min(max(sidebar.frame.width, 160), 360)
-    }
-
-    /// 窓を広げたぶんは本文へ。サイドバーは決めた幅のままにする。
-    ///
-    /// 素のままだと、窓を広げるたびにサイドバーも一緒に太る。上限は引くときにしか
-    /// 効かないので、実測で460pt——窓幅の三割——まで育っていた。名前を読むために
-    /// 一度広げると、あとは窓を広げるたびに勝手に太っていく。
-    func splitView(_ splitView: NSSplitView, shouldAdjustSizeOfSubview view: NSView) -> Bool {
-        view !== splitView.arrangedSubviews.first
+        // 上限を超えた幅が設定に残っていた。幅0は覚えない — 畳んだ状態を覚えると、
+        // 次に開いたときサイドバーが無いまま出る。
+        guard width > 1 else { return }
+        preferences.sidebarWidth = min(max(width, 160), 360)
     }
 
     func splitView(
