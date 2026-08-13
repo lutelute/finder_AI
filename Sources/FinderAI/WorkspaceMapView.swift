@@ -1418,6 +1418,28 @@ final class WorkspaceMapView: NSView {
     /// 取り消しを持っているのはあちら）。
     var onRename: ((URL, String) -> Void)?
 
+    /// returnで名前を書き換える。書き換えられたら`true`。
+    ///
+    /// 焦点が地図の面にあっても効くようにする。地図モードでは表示を切り替えた時点で
+    /// 焦点が地図側にあり、右の一覧を選んでからreturnを押しても、キーは地図の面へ
+    /// 行っていた（そこでは「地図には名前を書き換える場所がない」とビープを鳴らして
+    /// いた）。地図の点を選んでいるときは、右の一覧の同じ行を編集する — いまは
+    /// 一覧にフォルダの全部が出ているので、必ず対応する行がある。
+    func beginRenameFromKeyboard() -> Bool {
+        if othersTable.selectedRowIndexes.count == 1,
+           let row = othersTable.selectedRowIndexes.first {
+            beginRename(atRow: row)
+            return true
+        }
+        guard selectedNames.count == 1, let name = selectedNames.first,
+              let row = listRows.indices.first(where: { item(atListRow: $0)?.name == name })
+        else { return false }
+        othersTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        othersTable.scrollRowToVisible(row)
+        beginRename(atRow: row)
+        return true
+    }
+
     private func beginRename(atRow row: Int) {
         guard let item = item(atListRow: row) else { return }
         othersTable.scrollRowToVisible(row)
@@ -1832,8 +1854,9 @@ final class WorkspaceMapCanvas: NSView {
         case .quickLook:
             owner?.onQuickLook?()
         case .rename:
-            // 地図には名前を書き換える場所がない。黙って無反応にはしない。
-            NSSound.beep()
+            // 焦点が地図の面にあっても、右の一覧で名前を書き換えられるようにする。
+            // どちらも選んでいなければ、黙って無反応にはしない。
+            if owner?.beginRenameFromKeyboard() != true { NSSound.beep() }
         case .forwardToAppKit:
             if event.modifierFlags.contains(.command), event.specialKey == .downArrow {
                 owner?.openSelection()
