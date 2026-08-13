@@ -1096,7 +1096,6 @@ final class WorkspaceBrowserViewController: NSViewController {
         let navigationBar = makeNavigationBar()
         let listScroll = makeFileTable()
         let galleryScroll = makeGalleryView()
-        let statusBar = makeStatusBar()
         configureColumnView()
 
         // Both views occupy the same slot; only one is unhidden at a time.
@@ -1119,7 +1118,7 @@ final class WorkspaceBrowserViewController: NSViewController {
 
         navigationBarHeight = navigationBar.heightAnchor.constraint(equalToConstant: 76)
         let ribbon = makeRibbon()
-        [navigationBar, fileArea, ribbon, statusBar].forEach {
+        [navigationBar, fileArea, ribbon].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview($0)
         }
@@ -1134,12 +1133,8 @@ final class WorkspaceBrowserViewController: NSViewController {
             fileArea.bottomAnchor.constraint(equalTo: ribbon.topAnchor),
             ribbon.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             ribbon.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            ribbon.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
-            ribbon.heightAnchor.constraint(equalToConstant: 22),
-            statusBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            statusBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            statusBar.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            statusBar.heightAnchor.constraint(equalToConstant: 25)
+            ribbon.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            ribbon.heightAnchor.constraint(equalToConstant: 26)
         ])
         applyViewMode()
         return root
@@ -1241,17 +1236,49 @@ final class WorkspaceBrowserViewController: NSViewController {
         groupedOnlyToggle.toolTip = "どれかのグループに入れてあるものだけを出す"
         groupedOnlyToggle.state = preferences.listGroupedOnly ? .on : .off
 
-        [ribbonPath, groupedOnlyToggle, ungroupedOnlyToggle, groupingToggle].forEach {
+        // ステータスは別の帯に分けていた。パンくず22pt＋ステータス25ptで、下だけで
+        // 47pt——窓の6%を、ほとんど字の無い二本の帯に使っていた。一本にまとめる。
+        statusLabel.font = .systemFont(ofSize: 10.5)
+        statusLabel.textColor = IntegratedPanelTheme.secondaryText
+        statusLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        progress.style = .spinning
+        progress.controlSize = .small
+        progress.isDisplayedWhenStopped = false
+        let terminalButton = NSButton(
+            title: "⌘J  TERMINAL",
+            target: self,
+            action: #selector(toggleTerminal)
+        )
+        terminalButton.isBordered = false
+        terminalButton.font = .systemFont(ofSize: 10.5, weight: .medium)
+        terminalButton.contentTintColor = IntegratedPanelTheme.secondaryText
+
+        [
+            ribbonPath, statusLabel, progress,
+            groupedOnlyToggle, ungroupedOnlyToggle, groupingToggle, terminalButton
+        ].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             bar.addSubview($0)
         }
         NSLayoutConstraint.activate([
             ribbonPath.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
             ribbonPath.trailingAnchor.constraint(
-                lessThanOrEqualTo: groupedOnlyToggle.leadingAnchor,
-                constant: -10
+                lessThanOrEqualTo: statusLabel.leadingAnchor,
+                constant: -12
             ),
             ribbonPath.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            statusLabel.trailingAnchor.constraint(
+                equalTo: progress.leadingAnchor,
+                constant: -8
+            ),
+            statusLabel.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            progress.trailingAnchor.constraint(
+                equalTo: groupedOnlyToggle.leadingAnchor,
+                constant: -10
+            ),
+            progress.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            terminalButton.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -8),
+            terminalButton.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
             groupedOnlyToggle.trailingAnchor.constraint(
                 equalTo: ungroupedOnlyToggle.leadingAnchor,
                 constant: -12
@@ -1262,7 +1289,10 @@ final class WorkspaceBrowserViewController: NSViewController {
                 constant: -12
             ),
             ungroupedOnlyToggle.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
-            groupingToggle.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
+            groupingToggle.trailingAnchor.constraint(
+                equalTo: terminalButton.leadingAnchor,
+                constant: -12
+            ),
             groupingToggle.centerYAnchor.constraint(equalTo: bar.centerYAnchor)
         ])
         return bar
@@ -1972,34 +2002,6 @@ final class WorkspaceBrowserViewController: NSViewController {
         return scroll
     }
 
-    private func makeStatusBar() -> NSView {
-        let bar = NSView()
-        themePainter.register(bar) { IntegratedPanelTheme.header }
-        statusLabel.font = .systemFont(ofSize: 10.5)
-        statusLabel.textColor = IntegratedPanelTheme.secondaryText
-        progress.style = .spinning
-        progress.controlSize = .small
-        progress.isDisplayedWhenStopped = false
-
-        let terminalButton = NSButton(title: "⌘J  TERMINAL", target: self, action: #selector(toggleTerminal))
-        terminalButton.isBordered = false
-        terminalButton.font = .systemFont(ofSize: 10.5, weight: .medium)
-        terminalButton.contentTintColor = IntegratedPanelTheme.secondaryText
-
-        [statusLabel, progress, terminalButton].forEach {
-            $0.translatesAutoresizingMaskIntoConstraints = false
-            bar.addSubview($0)
-        }
-        NSLayoutConstraint.activate([
-            statusLabel.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
-            statusLabel.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
-            progress.leadingAnchor.constraint(equalTo: statusLabel.trailingAnchor, constant: 8),
-            progress.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
-            terminalButton.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -8),
-            terminalButton.centerYAnchor.constraint(equalTo: bar.centerYAnchor)
-        ])
-        return bar
-    }
 
     private func configureContextMenu() {
         let menu = NSMenu(title: "ファイル操作")

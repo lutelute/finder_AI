@@ -109,7 +109,14 @@ final class WorkspaceMapView: NSView {
     /// `layout()`がまた走るので、そこで止めないと回り続ける）。
     private var lastViewport: CGSize = .zero
 
-    private static let nodeRadius: Double = 9.5
+    /// 島の中の点。小さく、薄い。
+    ///
+    /// 9.5ptの満額の丸を並べていたが、同じ島の行は全部同じグループなので、
+    /// 7個並んだ朱色の丸は**7回同じことを言っている**。色の面積の大半をこれが
+    /// 占めていて、6島が同時に満額で鳴る原因になっていた。行の位置を示すだけの
+    /// 印なので、小さく薄くする。
+    private static let nodeRadius: Double = 5
+    /// 複数の島に属する点だけは満額で、輪も付く。ここにしか無い情報なので。
     private static let sharedNodeRadius: Double = 12.5
     private static let othersHeaderHeight: Double = 34
     private static let othersRowHeight: Double = 22
@@ -214,6 +221,14 @@ final class WorkspaceMapView: NSView {
         othersTable.addTableColumn(column)
 
         othersScroll.documentView = othersTable
+        // 最後の行が下の帯に文字の途中で切られていた。一行ぶん空ける。
+        othersScroll.automaticallyAdjustsContentInsets = false
+        othersScroll.contentInsets = NSEdgeInsets(
+            top: 0,
+            left: 0,
+            bottom: Self.othersRowHeight,
+            right: 0
+        )
         othersScroll.hasVerticalScroller = true
         othersScroll.drawsBackground = true
         othersScroll.backgroundColor = IntegratedPanelTheme.background
@@ -597,10 +612,12 @@ final class WorkspaceMapView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         layer?.backgroundColor = IntegratedPanelTheme.background.cgColor
-        guard !othersScroll.isHidden, !mapArea.isHidden else { return }
+        guard !othersScroll.isHidden, !mapScroll.isHidden else { return }
         // 地図と一覧の境目。1ptの線だけ引く。
-        IntegratedPanelTheme.secondaryText.withAlphaComponent(0.22).setFill()
-        NSRect(x: mapArea.frame.maxX, y: 0, width: 1, height: bounds.height).fill()
+        // `mapArea`は巻物の中身なので、その右端は画面上の境目とは限らない
+        // （地図を巻物に入れたとき、線が中身と一緒にずれていた）。枠のほうを使う。
+        IntegratedPanelTheme.border.setFill()
+        NSRect(x: mapScroll.frame.maxX, y: 0, width: 1, height: bounds.height).fill()
     }
 
     fileprivate func drawMap(in rect: NSRect) {
@@ -832,7 +849,9 @@ final class WorkspaceMapView: NSView {
             IntegratedPanelTheme.secondaryText.withAlphaComponent(0.5).setFill()
             circle.fill()
         } else if colors.count == 1 {
-            colors[0].setFill()
+            // 島の中では、どの行も同じグループ。色は島の枠と見出しが言っているので、
+            // ここは行の在り処を示すだけでいい。
+            colors[0].withAlphaComponent(0.75).setFill()
             circle.fill()
         } else {
             drawSharedNode(at: node.position, radius: radius, colors: colors)
