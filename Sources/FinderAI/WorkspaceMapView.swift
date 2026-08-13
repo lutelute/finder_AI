@@ -30,7 +30,9 @@ final class WorkspaceMapView: NSView {
     /// 「これだけ」の入り切り。覚えておくのは呼び出し側（設定に残す）。
     var onOthersOnlyChanged: ((Bool) -> Void)?
     /// 「見つからない N」を押したとき。定義に残った行方不明を整理する。
-    var onPruneMissing: (() -> Void)?
+    /// 押した島の名前を渡す（`nil`なら全部の束）。押した島のことを聞かれたのに
+    /// 他の束まで外れると、確かめていないものを巻き込む。
+    var onPruneMissing: ((String?) -> Void)?
 
     private var items: [WorkspaceItem] = []
     private var itemsByName: [String: WorkspaceItem] = [:]
@@ -647,6 +649,8 @@ final class WorkspaceMapView: NSView {
 
     /// 「ほか N を開く →」の的。描いたあとに埋まる。
     var overflowHitRectsForTesting: [String: NSRect] { overflowHitRects }
+    /// 「見つからない N →」の的。島ごとに入る。
+    var missingHitRectsForTesting: [String: NSRect] { missingHitRects }
     /// 「← すべての島に戻る」の的。広げているときだけ入る。
     var focusBackHitRectForTesting: NSRect? { focusBackHitRect }
     var focusedGroupForTesting: String? { focusedGroup }
@@ -1235,8 +1239,8 @@ final class WorkspaceMapView: NSView {
             return
         }
         // 「見つからない N →」を押したら整理へ。
-        if missingHitRects.values.contains(where: { $0.contains(point) }) {
-            onPruneMissing?()
+        if let name = missingHitRects.first(where: { $0.value.contains(point) })?.key {
+            onPruneMissing?(name)
             return
         }
         // グループの名前を押したら、そのグループのものをまとめて選ぶ。グループごとに何かする

@@ -1347,7 +1347,7 @@ final class WorkspaceBrowserViewController: NSViewController {
             self?.preferences.mapShowsOthersOnly = value
         }
         mapView.setShowsOthersOnly(preferences.mapShowsOthersOnly)
-        mapView.onPruneMissing = { [weak self] in self?.pruneMissingGroupMembers() }
+        mapView.onPruneMissing = { [weak self] group in self?.pruneMissingMembers(in: group) }
         // 右の一覧から島へ引いてグループに入れる。ファイルは動かないので、
         // 一覧の見出しへのドロップと同じ扱い。
         mapView.onLinkToGroup = { [weak self] urls, group in
@@ -1479,6 +1479,15 @@ final class WorkspaceBrowserViewController: NSViewController {
         }
         nestItem.submenu = nestMenu
         menu.addItem(nestItem)
+
+        // この束にだけ迷子が居るときに出す。地図の島の「見つからない N →」と同じことを、
+        // 一覧の見出しからもできるように。
+        let lost = itemGroups?.missingMembers(amongNames: presentNames)[name] ?? []
+        if !lost.isEmpty {
+            menu.addItem(.separator())
+            add("見つからない\(lost.count)件を外す…", #selector(pruneContextGroupMissing))
+        }
+
         menu.addItem(.separator())
         add("このグループを解除…", #selector(removeContextGroup))
         return menu
@@ -3052,8 +3061,17 @@ final class WorkspaceBrowserViewController: NSViewController {
     /// マシンではまだ使っている。数を島に出して気づけるようにし、外すかどうかは
     /// 一覧を見せてから本人に決めてもらう。
     @objc func pruneMissingGroupMembers() {
+        pruneMissingMembers(in: nil)
+    }
+
+    /// - Parameter groupName: 名前を渡すとその束だけ。`nil`なら全部の束。
+    ///   地図の島の「見つからない N →」は、押した島のことを聞いている。
+    func pruneMissingMembers(in groupName: String?) {
         guard itemGroupsError == nil else { return }
-        let missing = itemGroups?.missingMembers(amongNames: presentNames) ?? [:]
+        var missing = itemGroups?.missingMembers(amongNames: presentNames) ?? [:]
+        if let groupName {
+            missing = missing.filter { $0.key == groupName }
+        }
         guard !missing.isEmpty else { return }
 
         let total = missing.values.reduce(0) { $0 + $1.count }
@@ -3062,7 +3080,8 @@ final class WorkspaceBrowserViewController: NSViewController {
         }.joined(separator: "\n")
 
         let alert = NSAlert()
-        alert.messageText = "見つからない\(total)件をグループから外しますか？"
+        alert.messageText = groupName.map { "「\($0)」の見つからない\(total)件を外しますか？" }
+            ?? "見つからない\(total)件を、すべてのグループから外しますか？"
         alert.informativeText = "定義に名前は残っていますが、このフォルダに実物がありません。"
             + "移動したか、消したか、別のマシンにしか無いかのどれかです。"
             + "別のマシンにあるものを外すと、そちらでもグループから消えます。\n\n"
@@ -3072,9 +3091,15 @@ final class WorkspaceBrowserViewController: NSViewController {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         let names = presentNames
-        mutateGroups(actionName: "見つからない項目を外す") { groups in
-            groups.pruneMissingMembers(amongNames: names)
+        let actionName = groupName.map { "「\($0)」の見つからない項目を外す" } ?? "見つからない項目を外す"
+        mutateGroups(actionName: actionName) { groups in
+            groups.pruneMissingMembers(amongNames: names, in: groupName)
         }
+    }
+
+    @objc private func pruneContextGroupMissing() {
+        guard let name = contextGroupName else { return }
+        pruneMissingMembers(in: name)
     }
 
     @objc func createGroupWithSelection() {

@@ -299,6 +299,65 @@ struct WorkspaceMapRegroupTests {
 }
 
 
+/// 「見つからない N →」は、押した島のことを聞いている。
+@Suite("見つからないの整理は、押した島だけに効く")
+@MainActor
+struct WorkspaceMapPruneScopeTests {
+    @Test("押した島の名前が渡る")
+    func pressingReportsTheIsland() throws {
+        _ = NSApplication.shared
+        let root = URL(fileURLWithPath: "/tmp/finderai-prune-test", isDirectory: true)
+        func item(_ name: String) -> WorkspaceItem {
+            WorkspaceItem(
+                url: root.appendingPathComponent(name),
+                name: name,
+                isDirectory: true,
+                isHidden: false,
+                fileSize: nil,
+                modifiedAt: nil,
+                typeDescription: "フォルダ"
+            )
+        }
+        var groups = WorkspaceItemGroups()
+        groups.add("居るもの", to: "ツール開発")
+        groups.add("消えたA", to: "ツール開発")
+        groups.add("居るもの2", to: "研究")
+        groups.add("消えたB", to: "研究")
+
+        let view = WorkspaceMapView(frame: NSRect(x: 0, y: 0, width: 700, height: 400))
+        var asked: [String?] = []
+        view.onPruneMissing = { asked.append($0) }
+        view.show(
+            items: [item("居るもの"), item("居るもの2")],
+            groups: groups,
+            presentNames: ["居るもの", "居るもの2"]
+        )
+        view.layoutSubtreeIfNeeded()
+        view.renderForTesting()
+
+        // どちらの島にも迷子が一つずつ居る。
+        let rects = view.missingHitRectsForTesting
+        #expect(rects.count == 2, "島ごとに的が要る: \(rects.keys.sorted())")
+        let target = try #require(rects["研究"])
+
+        let event = try #require(NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1
+        ))
+        view.handleMapClick(at: CGPoint(x: target.midX, y: target.midY), event: event)
+
+        // 全部まとめて（nil）ではなく、押した島だけ。
+        #expect(asked == ["研究"])
+    }
+}
+
 /// 畳んだ束は、一覧と地図の右で同じものを見る。
 @Suite("畳んだ束は表示をまたいで残る")
 @MainActor

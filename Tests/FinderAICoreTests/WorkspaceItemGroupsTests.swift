@@ -435,6 +435,35 @@ struct WorkspaceItemGroupsTests {
         #expect(groups.groups[0].members.isEmpty)
     }
 
+    /// 定義に名前が残るのは「別のマシンにしか無いもの」を守るためでもある。
+    /// 一つの束を確かめて整理したいだけなのに全部の束から外れると、
+    /// 確かめていないものまで巻き込む。
+    @Test("束を名指しで整理すると、ほかの束の迷子は残る")
+    func pruningOneGroupLeavesTheOthers() {
+        var groups = WorkspaceItemGroups()
+        groups.add("finder_AI", to: "ツール開発")
+        groups.add("消したフォルダ", to: "ツール開発")
+        groups.add("向こうのマシンにあるもの", to: "研究")
+
+        groups.pruneMissingMembers(amongNames: ["finder_AI"], in: "ツール開発")
+
+        #expect(groups.groups[0].members == ["finder_AI"])
+        // 名指ししていない束は触らない
+        #expect(groups.groups[1].members == ["向こうのマシンにあるもの"])
+        #expect(groups.missingMembers(amongNames: ["finder_AI"]) == ["研究": ["向こうのマシンにあるもの"]])
+    }
+
+    @Test("名指ししなければ、今までどおり全部の束から外れる")
+    func pruningWithoutANameStillClearsEverything() {
+        var groups = WorkspaceItemGroups()
+        groups.add("消したフォルダ", to: "ツール開発")
+        groups.add("向こうのマシンにあるもの", to: "研究")
+
+        groups.pruneMissingMembers(amongNames: ["finder_AI"])
+
+        #expect(groups.groups.allSatisfy { $0.members.isEmpty })
+    }
+
     // MARK: - ファイル
 
     @Test("書いて読んで、同じものが戻る")

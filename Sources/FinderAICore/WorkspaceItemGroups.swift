@@ -331,9 +331,14 @@ public extension WorkspaceItemGroups {
         return missing
     }
 
-    /// 実物が無いメンバーを、全部のグループから外す。名前は隠しファイルを含めて渡すこと。
-    mutating func pruneMissingMembers(amongNames present: Set<String>) {
-        for index in groups.indices {
+    /// 実物が無いメンバーを外す。名前は隠しファイルを含めて渡すこと。
+    ///
+    /// - Parameter groupName: 名前を渡すとその束だけを整理する。`nil`なら全部の束。
+    ///   定義に名前が残るのは「別のマシンにしか無いもの」を守るためでもあるので、
+    ///   「この束のこれは本当に消えた」と分かっているぶんだけ外せる必要がある。
+    ///   全部まとめてしか外せないと、確かめたい束のために他の束まで巻き込む。
+    mutating func pruneMissingMembers(amongNames present: Set<String>, in groupName: String? = nil) {
+        for index in groups.indices where groupName == nil || groups[index].name == groupName {
             groups[index].members.removeAll { !present.contains($0) }
         }
     }
