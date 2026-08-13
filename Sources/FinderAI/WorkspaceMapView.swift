@@ -1431,8 +1431,16 @@ final class WorkspaceMapView: NSView {
             beginRename(atRow: row)
             return true
         }
-        guard selectedNames.count == 1, let name = selectedNames.first,
-              let row = listRows.indices.first(where: { item(atListRow: $0)?.name == name })
+        guard selectedNames.count == 1, let name = selectedNames.first else { return false }
+        // 「未分類だけ」で絞っていると、束に入っているものは一覧に居ない。
+        // 書き換える相手が見えないまま編集が始まるより、絞りを解いて出す。
+        if listRows.indices.first(where: { item(atListRow: $0)?.name == name }) == nil,
+           showsOthersOnly {
+            showsOthersOnly = false
+            applyOthersFilter()
+            applyPaneLayout()
+        }
+        guard let row = listRows.indices.first(where: { item(atListRow: $0)?.name == name })
         else { return false }
         othersTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         othersTable.scrollRowToVisible(row)

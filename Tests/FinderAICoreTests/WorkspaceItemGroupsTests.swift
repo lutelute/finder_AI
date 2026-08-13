@@ -529,3 +529,40 @@ struct WorkspaceItemGroupsTests {
         #expect(groups.descendantMemberCount(of: "研究", among: ["a"]) == 1)
     }
 }
+
+@Suite("名前を変えても束から落ちない")
+struct WorkspaceItemGroupsRenameTests {
+    @Test("属している全部のグループで名前が書き換わる")
+    func renameFollowsEveryGroup() {
+        var groups = WorkspaceItemGroups()
+        groups.add("viz_flow", to: "可視化")
+        groups.add("viz_flow", to: "ツール開発")
+        groups.add("other", to: "可視化")
+
+        groups.renameMember("viz_flow", to: "flow_viz")
+
+        #expect(groups.groupNames(for: "flow_viz") == ["可視化", "ツール開発"])
+        #expect(groups.groupNames(for: "viz_flow").isEmpty)
+        // 巻き添えで他が動かない
+        #expect(groups.groups.first { $0.name == "可視化" }?.members.contains("other") == true)
+    }
+
+    @Test("新しい名前が既に居るときは、二重に持たない")
+    func renameDoesNotDuplicate() {
+        var groups = WorkspaceItemGroups()
+        groups.add("a", to: "束")
+        groups.add("b", to: "束")
+
+        groups.renameMember("a", to: "b")
+
+        #expect(groups.groups.first?.members == ["b"])
+    }
+
+    @Test("同じ名前への変更は何もしない")
+    func renameToSameNameIsNoop() {
+        var groups = WorkspaceItemGroups()
+        groups.add("a", to: "束")
+        groups.renameMember("a", to: "a")
+        #expect(groups.groups.first?.members == ["a"])
+    }
+}

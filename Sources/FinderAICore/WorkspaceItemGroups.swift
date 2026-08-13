@@ -105,6 +105,25 @@ public struct WorkspaceItemGroups: Equatable, Sendable, Codable {
         groups[index].members.removeAll { $0 == member }
     }
 
+    /// 名前を変えた項目を、属している全部のグループで書き換える。
+    ///
+    /// メンバーを**名前**で持っているので、実体の名前が変わると定義が指す先を失う。
+    /// 黙って外すのではなく付いていく — 名前を変えただけで束から落ちるなら、
+    /// 「実体を動かさずにまとめる」という約束が守れていない。
+    ///
+    /// 新しい名前が既にそのグループに居れば、二重に持たない。
+    public mutating func renameMember(_ oldName: String, to newName: String) {
+        guard oldName != newName else { return }
+        for index in groups.indices {
+            guard let position = groups[index].members.firstIndex(of: oldName) else { continue }
+            if groups[index].members.contains(newName) {
+                groups[index].members.remove(at: position)
+            } else {
+                groups[index].members[position] = newName
+            }
+        }
+    }
+
     /// 名前ごと消えた項目を、全部のグループから外す。フォルダを実際に削除したときに使う。
     public mutating func removeFromAllGroups(_ member: String) {
         for index in groups.indices {

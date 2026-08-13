@@ -3362,6 +3362,10 @@ final class WorkspaceBrowserViewController: NSViewController {
         do {
             let renamed = try fileService.rename(source, to: newName)
             guard renamed != source else { return }
+            // 束はメンバーを**名前**で持っている。名前を変えたら定義も付いていく。
+            // 付いていかないと、束に入れたフォルダの名前を変えただけで
+            // 「見つからない」に化ける（実体を動かさずにまとめる、という約束に反する）。
+            followRenameInGroups(from: source, to: renamed)
             workspaceUndoManager?.registerUndo(withTarget: self) { target in
                 MainActor.assumeIsolated {
                     target.renameItem(at: renamed, to: originalName)
@@ -3381,6 +3385,28 @@ final class WorkspaceBrowserViewController: NSViewController {
             }
         } catch {
             presentError(title: "名前を変更できません", message: error.localizedDescription)
+        }
+    }
+
+    /// 名前を変えた項目を、グループの定義でも書き換える。
+    ///
+    /// いまのフォルダの直下のものだけ。定義は相対名で持つので、別の階層のものは
+    /// 指せない（そこを触ると、名前が同じ別のものを巻き込む）。
+    private func followRenameInGroups(from source: URL, to renamed: URL) {
+        guard itemGroupsError == nil, var groups = itemGroups else { return }
+        let parent = source.deletingLastPathComponent().standardizedFileURL
+        guard parent == navigator.currentDirectory.standardizedFileURL else { return }
+        let oldName = source.lastPathComponent
+        let newName = renamed.lastPathComponent
+        guard !groups.groupNames(for: oldName).isEmpty else { return }
+        groups.renameMember(oldName, to: newName)
+        do {
+            try groups.save(to: navigator.currentDirectory)
+            itemGroups = groups
+        } catch {
+            // 実体の名前は既に変わっている。定義だけ古いまま黙って進むと、
+            // 束から落ちた理由が分からなくなる。
+            itemGroupsError = "\(WorkspaceItemGroups.fileName) を保存できません: \(error.localizedDescription)"
         }
     }
 
@@ -3494,9 +3520,9 @@ final class WorkspaceBrowserViewController: NSViewController {
         case .list:
             beginListRename(at: fileTable.selectedRow)
         case .map:
-            // 地図には名前を書き換える場所がない。点の脇のラベルは表示であって
-            // 入力欄ではないので、一覧に戻ってからにしてもらう。
-            break
+            // 地図の点の脇のラベルは表示であって入力欄ではない。右の一覧には
+            // フォルダの全部が出ているので、そちらの同じ行で書き換える。
+            _ = mapView.beginRenameFromKeyboard()
         }
     }
 
@@ -4385,9 +4411,8 @@ extension WorkspaceBrowserViewController: NSMenuItemValidation {
         // current folder.
         case #selector(duplicateSelection), #selector(makeAliasForSelection):
             return !selectedItems.isEmpty
-        // 地図には名前を書き換える場所がないので、押せるように見せない。
         case #selector(renameSelection):
-            return effectiveViewMode != .map && selectedItems.count == 1
+            return selectedItems.count == 1
         // グループの操作は、いまのフォルダの直下を選んでいるときだけ。相対名で持つので
         // 別の階層のものは指せない。定義が読めていないときも触らせない。
         case #selector(createGroupWithSelection), #selector(removeSelectionFromAllGroups):
