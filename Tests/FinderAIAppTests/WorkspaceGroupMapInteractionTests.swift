@@ -345,6 +345,10 @@ struct WorkspaceMapStickyTitleTests {
         #expect(abs(atTop.y - (frame.minY + 6)) < 20, "スクロールしていなければ島の上端")
 
         view.scrollForTesting(toY: 200)
+        // 描き直さないと、留めた名前だけが紙と一緒に流れていく。
+        // ここを見ずに`renderForTesting`で全面を描き直すと、実機で流れていても緑になる。
+        #expect(view.mapRedrawsOnScrollForTesting, "描いた絵をずらして使い回さないこと")
+        #expect(view.mapNeedsRedrawForTesting, "スクロールしたら描き直すこと")
         let visible = view.visibleMapRectForTesting
         #expect(visible.minY > frame.minY, "島の上端は画面の外へ出た")
         let stuck = try #require(view.islandTitlePointForTesting(named: "大きい束"))
@@ -518,6 +522,9 @@ struct WorkspaceMapOthersColumnTests {
             view.othersColumnsForTesting(width: width).filter(\.visible).map(\.id)
         }
         #expect(visible(200) == ["other.name"])
+        // 入らないものが出てきたら、そこで止める。飛ばして先の列を拾うと
+        // 「変更日は無いのにサイズだけ在る」になる（実機で出た）。
+        #expect(visible(250) == ["other.name"], "サイズ(70)だけ拾わない")
         #expect(visible(300) == ["other.name", "other.modified"])
         #expect(visible(370) == ["other.name", "other.modified", "other.size"])
         #expect(visible(460).contains("other.kind"))

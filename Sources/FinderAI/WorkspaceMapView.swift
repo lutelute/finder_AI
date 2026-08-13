@@ -234,7 +234,10 @@ final class WorkspaceMapView: NSView {
         if showsGroupColumn { wanted.append((Self.groupsColumn, 90)) }
         wanted += [(Self.modifiedColumn, 120), (Self.sizeColumn, 70), (Self.kindColumn, 90)]
         var visible: Set<NSUserInterfaceItemIdentifier> = []
-        for (identifier, need) in wanted where budget >= need {
+        // 入らないものが出てきたらそこで止める。飛ばして先の列を拾うと、
+        // 「変更日は無いのにサイズだけ在る」という並びになり、一覧表示と食い違う。
+        for (identifier, need) in wanted {
+            guard budget >= need else { break }
             budget -= need
             visible.insert(identifier)
         }
@@ -300,6 +303,19 @@ final class WorkspaceMapView: NSView {
         mapScroll.autohidesScrollers = true
         mapScroll.drawsBackground = true
         mapScroll.backgroundColor = IntegratedPanelTheme.background
+        // 島の名前を見えている上端に留めるので、**スクロールのたびに描き直す**。
+        // 既定では既に描いた絵をずらして使い回すため、留めた名前だけが
+        // 紙と一緒に流れていく（実機で出た。テストは全面を描き直していたので
+        // 気づけなかった）。
+        mapScroll.contentView.copiesOnScroll = false
+        mapScroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: mapScroll.contentView,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.mapArea.needsDisplay = true }
+        }
         mapArea.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             mapArea.leadingAnchor.constraint(equalTo: mapScroll.contentView.leadingAnchor),
@@ -713,9 +729,16 @@ final class WorkspaceMapView: NSView {
 
     /// 紙を縦にスクロールする。長い地図で名前が留まるかを見るため。
     func scrollForTesting(toY y: Double) {
+        mapArea.needsDisplay = false
         mapScroll.contentView.scroll(to: NSPoint(x: 0, y: y))
         mapScroll.reflectScrolledClipView(mapScroll.contentView)
     }
+
+    /// スクロールしたあとに描き直す気があるか。
+    /// 留めた名前は、描き直さないと紙と一緒に流れていく。
+    var mapNeedsRedrawForTesting: Bool { mapArea.needsDisplay }
+    /// 描いた絵をずらして使い回さない設定になっているか。
+    var mapRedrawsOnScrollForTesting: Bool { !mapScroll.contentView.copiesOnScroll }
 
     /// いま見えている紙の範囲。
     var visibleMapRectForTesting: NSRect { mapArea.visibleRect }
