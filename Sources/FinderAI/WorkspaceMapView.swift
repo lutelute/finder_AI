@@ -710,6 +710,15 @@ final class WorkspaceMapView: NSView {
     var focusedGroupForTesting: String? { focusedGroup }
     /// 降りてきた道。戻り道が一段ずつであることを確かめるために見る。
     var focusPathForTesting: [String] { focusPath }
+
+    /// 紙を縦にスクロールする。長い地図で名前が留まるかを見るため。
+    func scrollForTesting(toY y: Double) {
+        mapScroll.contentView.scroll(to: NSPoint(x: 0, y: y))
+        mapScroll.reflectScrolledClipView(mapScroll.contentView)
+    }
+
+    /// いま見えている紙の範囲。
+    var visibleMapRectForTesting: NSRect { mapArea.visibleRect }
     /// いま地図に出ているそのグループの点の数。広げると増える（それが広げる目的）。
     func visibleNodeCountForTesting(inGroup name: String) -> Int {
         (clusterLayout?.nodes ?? []).filter { $0.groups.contains(name) }.count
@@ -834,6 +843,20 @@ final class WorkspaceMapView: NSView {
         for node in clusterLayout.nodes.sorted(by: { labelPriority(of: $0) > labelPriority(of: $1) }) {
             drawLabel(node, in: clusterLayout, avoiding: &taken)
         }
+        // 上端が画面の外へ出ている島の名前は、いちばん最後に描いて中身の上に乗せる。
+        for island in clusterLayout.islands where stickyOffset(of: island) > 0 {
+            let radius: CGFloat = island.depth == 0 ? 12 : 9
+            drawTitle(
+                of: island,
+                color: groupColors[island.name] ?? .systemGray,
+                isTarget: dropTargetIsland == island.name,
+                clip: NSBezierPath(
+                    roundedRect: island.frame.insetBy(dx: 1, dy: 1),
+                    xRadius: radius - 1,
+                    yRadius: radius - 1
+                )
+            )
+        }
     }
 
     private func drawEmptyMessage(in rect: NSRect) {
@@ -890,10 +913,25 @@ final class WorkspaceMapView: NSView {
     private func titleRect(of island: WorkspaceClusterLayout.Island) -> NSRect {
         NSRect(
             x: island.contentFrame.minX + 12,
-            y: island.contentFrame.minY + 6,
+            y: island.contentFrame.minY + 6 + stickyOffset(of: island),
             width: max(island.contentFrame.width - 24, 1),
             height: WorkspaceClusterLayout.islandTitleHeight - 6
         )
+    }
+
+    /// 島の名前を、見えている上端まで下げる量。
+    ///
+    /// 紙は中身のぶんだけ伸びる。3000項目のフォルダを狭い窓で開くと54000pt——
+    /// 100画面ぶんになり、スクロールした先では**いまどの島の中に居るのかが
+    /// 読めない**。上端が画面の外へ出ているあいだ、名前をそこに留める。
+    /// 島の下端を越えては下げない（次の島に被って嘘になる）。
+    private func stickyOffset(of island: WorkspaceClusterLayout.Island) -> Double {
+        let visible = mapArea.visibleRect
+        guard !visible.isEmpty,
+              island.frame.minY < visible.minY,
+              island.frame.maxY > visible.minY else { return 0 }
+        let band = WorkspaceClusterLayout.islandTitleHeight + 6
+        return max(min(visible.minY - island.frame.minY, island.frame.height - band), 0)
     }
 
     /// 島。薄い地色と、内側の上端に置いたグループ名。
@@ -928,21 +966,40 @@ final class WorkspaceMapView: NSView {
         color.withAlphaComponent(isTarget ? 0.95 : (island.depth == 0 ? 0.60 : 0.80)).setStroke()
         inner.stroke()
 
-        // 名前の帯。上の角だけ丸めて島の上端に敷く。
-        //
-        // 名前を地の上に直接置いていたので、島の上端と中身の境目が曖昧で、
-        // 一行目の項目と名前が同じ面に並んで見えた。帯があれば「ここから中身」が
-        // 一目で決まる。落とし先になっているときは帯を濃くする — 枠の太さだけより、
-        // どの島に入るかが分かりやすい。
-        // 角は島の形で切り抜く。角丸を自分で描き起こすより、島と必ず一致する。
+        // 上端が画面の外へ出ている島の名前は、点や行より**後**に描く。
+        // ここで描くと下に潜って読めない。
+        guard stickyOffset(of: island) == 0 else { return }
+        drawTitle(of: island, color: color, isTarget: isTarget, clip: inner)
+    }
+
+    /// 名前の帯と、その上の名前。
+    ///
+    /// 名前を地の上に直接置いていたので、島の上端と中身の境目が曖昧で、
+    /// 一行目の項目と名前が同じ面に並んで見えた。帯があれば「ここから中身」が
+    /// 一目で決まる。落とし先になっているときは帯を濃くする — 枠の太さだけより、
+    /// どの島に入るかが分かりやすい。
+    private func drawTitle(
+        of island: WorkspaceClusterLayout.Island,
+        color: NSColor,
+        isTarget: Bool,
+        clip: NSBezierPath
+    ) {
+        let offset = stickyOffset(of: island)
         let band = NSRect(
             x: island.frame.minX,
-            y: island.frame.minY,
+            y: island.frame.minY + offset,
             width: island.frame.width,
             height: WorkspaceClusterLayout.islandTitleHeight + 6
         )
         NSGraphicsContext.saveGraphicsState()
-        inner.addClip()
+        // 角は島の形で切り抜く。角丸を自分で描き起こすより、島と必ず一致する。
+        clip.addClip()
+        if offset > 0 {
+            // 留めているあいだは中身の上に乗るので、透かすと下の名前と重なって
+            // どちらも読めない。一度潰してから色を敷く。
+            IntegratedPanelTheme.background.setFill()
+            band.fill()
+        }
         color.withAlphaComponent(isTarget ? 0.45 : 0.20).setFill()
         band.fill()
         NSGraphicsContext.restoreGraphicsState()

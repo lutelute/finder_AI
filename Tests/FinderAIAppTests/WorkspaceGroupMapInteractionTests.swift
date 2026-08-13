@@ -299,6 +299,65 @@ struct WorkspaceMapRegroupTests {
 }
 
 
+/// 紙は中身のぶんだけ伸びる。伸びた先で「いまどの島に居るか」が読めないと、
+/// 全部出ていても探せない。
+@Suite("長い地図でも、いまどの島に居るか読める")
+@MainActor
+struct WorkspaceMapStickyTitleTests {
+    @Test("上端が画面の外へ出たら、島の名前は見えている上端に留まる")
+    func titleSticksWhileScrolling() throws {
+        _ = NSApplication.shared
+        let root = URL(fileURLWithPath: "/tmp/finderai-sticky-test", isDirectory: true)
+        var groups = WorkspaceItemGroups()
+        var items: [WorkspaceItem] = []
+        for index in 1...120 {
+            let name = "項目\(index)"
+            items.append(WorkspaceItem(
+                url: root.appendingPathComponent(name),
+                name: name,
+                isDirectory: true,
+                isHidden: false,
+                fileSize: nil,
+                modifiedAt: nil,
+                typeDescription: "フォルダ"
+            ))
+            groups.add(name, to: "大きい束")
+        }
+
+        let view = WorkspaceMapView(frame: NSRect(x: 0, y: 0, width: 700, height: 300))
+        view.show(items: items, groups: groups, presentNames: Set(items.map(\.name)))
+        let window = NSWindow(
+            contentRect: view.frame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = view
+        view.layoutSubtreeIfNeeded()
+        view.renderForTesting()
+
+        let frame = try #require(view.islandFrameForTesting(named: "大きい束"))
+        // 紙が窓より長いこと。長くなければ留める必要も無く、この検査は何も見ていない。
+        #expect(view.mapContentHeightForTesting > 300)
+        #expect(frame.height > 300, "島そのものが画面より高いこと")
+
+        let atTop = try #require(view.islandTitlePointForTesting(named: "大きい束"))
+        #expect(abs(atTop.y - (frame.minY + 6)) < 20, "スクロールしていなければ島の上端")
+
+        view.scrollForTesting(toY: 200)
+        let visible = view.visibleMapRectForTesting
+        #expect(visible.minY > frame.minY, "島の上端は画面の外へ出た")
+        let stuck = try #require(view.islandTitlePointForTesting(named: "大きい束"))
+        #expect(stuck.y > atTop.y, "名前は下へ移った（＝紙と一緒に流れていない）")
+        #expect(
+            abs(stuck.y - (visible.minY + 6)) < 20,
+            "見えている上端に留まる: 名前 \(stuck.y) / 上端 \(visible.minY)"
+        )
+        // 島より下へは行かない（次の島に被って嘘になる）。
+        #expect(stuck.y < frame.maxY)
+    }
+}
+
 /// 深い入れ子では、降りていく手が要る。子を広げるのが「入れ替え」だと、
 /// 一段目から先へ進めない。
 @Suite("広げた島の中から、さらに子へ降りる")

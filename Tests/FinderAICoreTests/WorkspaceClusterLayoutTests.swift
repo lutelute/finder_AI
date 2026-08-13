@@ -570,6 +570,27 @@ struct WorkspaceClusterLayoutTests {
         )) == nil)
     }
 
+    /// 伸びる高さに上限を置いていたころは、そこを超えたぶんが「ほか N」に落ちて
+    /// いた。しかも**打ち切ったことが分からない**ので、なぜここだけ隠れているのか
+    /// 読めなかった。いまは上限を置かず、伸びたぶんはスクロールに任せる。
+    @Test("項目が数千あっても、隠さずに紙が伸びる")
+    func nothingIsTruncatedAtScale() {
+        for (count, size) in [
+            (3000, CGSize(width: 1600, height: 900)),
+            // 狭い窓でも同じ。窓の大きさで隠す量が変わってはいけない。
+            (3000, CGSize(width: 300, height: 200))
+        ] {
+            var groups = WorkspaceItemGroups()
+            let names = (1...count).map { "項目\($0)" }
+            for (index, name) in names.enumerated() { groups.add(name, to: "束\(index % 3)") }
+            let map = layout(names, groups, size: size)
+
+            #expect(map.nodes.count == count, "\(size)で \(map.nodes.count)/\(count)")
+            #expect(map.islands.allSatisfy { $0.overflow == 0 }, "「ほか N」に落ちたものがある")
+            #expect(map.contentHeight > size.height, "収めるために紙が伸びている")
+        }
+    }
+
     @Test("島の上の点から、その島を引ける — ドロップ先の判定に使う")
     func islandHitTesting() {
         let map = layout(["a1", "b1"], twoGroups())
