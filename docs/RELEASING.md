@@ -1,10 +1,29 @@
 # FinderAI正式リリース手順
 
-## 現在の状態
+## いまの配り方は「手元でビルドして入れ替える」
 
-署名・notarization・Sparkle配布・GitHub公開のパイプラインは実装済みです。ただし、現在はApple Developer ProgramのDeveloper ID Application証明書がないため、正式リリースはできません。`FinderAI Local Signing`やad-hoc署名を指定しても、本番スクリプトはGitHubへ書き込む前に停止します。
+**これが現在の正式なやり方です。** 公開は v1.2.2 で意図的に止めています。
 
-初回のDeveloper ID版では、公開済み1.2.2（ローカル証明書）から署名主体が変わります。bundle IDとSparkle EdDSA鍵は維持していますが、実際の1.2.2→新ビルド更新を検証するまで公開確認フラグを設定しないでください。
+```bash
+./scripts/build-workspace-app.sh && ./scripts/install-workspace-app.sh
+```
+
+Developer ID Application証明書をこのMacが持っていないためです（`FinderAI Local Signing` しかない）。署名・notarization・Sparkle配布・GitHub公開のパイプラインは実装済みで、証明書さえ揃えば動きますが、**証明書が無い状態で `release.sh` を実行しても、GitHubへ書き込む前に停止します**（`check-release-environment.sh`）。意図せず公開してしまうことはありません。
+
+このため、次の二つは**そういうものとして受け入れています**。
+
+- **自動更新は届かない。** Sparkleのフィードは v1.2.2 のままなので、インストール済みのアプリは新しくなりません。新しくするには上のコマンドで入れ替えます
+- **手元の版のほうが、配っている版よりずっと新しい。** v1.37.0 以降は prerelease として GitHub に積んでありますが、自己署名なので他の人がダウンロードすると Gatekeeper に止められます。「配ったもの」ではありません
+
+いまどれが配られていて、手元がどれなのかは、書いたものではなく実物で読めます。
+
+```bash
+./scripts/check-working-state.sh   # 「== 配ったもの ==」の節
+```
+
+## 公開を再開するとき
+
+証明書を取ったら、以下の手順がそのまま使えます。初回のDeveloper ID版では、公開済み1.2.2（ローカル証明書）から署名主体が変わります。bundle IDとSparkle EdDSA鍵は維持していますが、実際の1.2.2→新ビルド更新を検証するまで公開確認フラグを設定しないでください。
 
 ## Apple側で必要なもの
 

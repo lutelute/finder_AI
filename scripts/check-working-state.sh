@@ -83,6 +83,29 @@ else
     echo "  入っていない"
 fi
 
+echo "== 配ったもの =="
+# 「どれが配ったものか」を文章に書くと古びる。実物を読む。
+# 配布はv1.2.2で止めていて、以後はローカルビルド運用（docs/RELEASING.md）。
+local_version=$(plutil -extract CFBundleShortVersionString raw Resources/Workspace-Info.plist 2>/dev/null || echo '?')
+printf '  手元のソース: v%s\n' "$local_version"
+if command -v gh >/dev/null 2>&1; then
+    latest=$(gh release view --json tagName --jq .tagName 2>/dev/null || echo '')
+    if [ -n "$latest" ]; then
+        printf '  配っている:   %s  ← 自動更新はここまでしか届かない\n' "$latest"
+        newest=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || echo '')
+        [ -n "$newest" ] && [ "$newest" != "$latest" ] && \
+            printf '  上に積んである: %s（prerelease。配っていない）\n' "$newest"
+    else
+        echo "  配っている:   (取得できず)"
+    fi
+fi
+if security find-identity -v -p codesigning 2>/dev/null | grep -q "Developer ID Application"; then
+    echo "  Developer ID証明書: あり → 公開を再開できる（docs/RELEASING.md）"
+else
+    echo "  Developer ID証明書: **無し** → release.sh は公開前に停止する。入れ替えは"
+    echo "     ./scripts/build-workspace-app.sh && ./scripts/install-workspace-app.sh"
+fi
+
 echo "== 動いているか =="
 if pgrep -x FinderAI >/dev/null 2>&1; then
     echo "  ⚠️ FinderAIは起動中。**使っている最中かもしれない**"

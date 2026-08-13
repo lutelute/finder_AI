@@ -8,7 +8,9 @@ FinderAIは、ファイル整理とShell・Codex・Claudeを一つのネイテ�
 
 ## すぐ使う
 
-[最新リリース](https://github.com/lutelute/finder_AI/releases/latest)から`FinderAI.zip`を落とし、`/Applications`へ入れてください。以降は自分で更新を取りに行きます。
+[最新リリース](https://github.com/lutelute/finder_AI/releases/latest)から`FinderAI.zip`を落とし、`/Applications`へ入れてください。
+
+> **配っているのは v1.2.2 までです。** それ以降は手元でビルドして入れ替える運用にしています（Developer ID証明書を持っていないため）。上に積んである prerelease は自己署名なので、落としても Gatekeeper に止められます。開発中の版を使うなら、下の「開発成果物を直接使う場合」から入れてください。経緯と再開の条件は[リリース手順](docs/RELEASING.md)にあります。
 
 インストール済みの場合:
 
@@ -23,13 +25,17 @@ Finderの右クリック「このアプリケーションで開く」やDockア�
 
 1日に1度バックグラウンドで確認し、新しいバージョンがあれば**黙ってダウンロードして、アプリを終了したときに入れ替わります**。クリックは要りません。`FinderAI`メニューの「アップデートを確認…」でその場で確認・適用もできます。
 
+ただし**いまはフィードが v1.2.2 で止まっている**ので、この経路で新しくなることはありません。手元でビルドして入れ替えてください。
+
 強制終了した場合は入れ替わりません。終了時のインストールは正常終了が前提です。
 
 現在実行中のversion・build・commit・実行場所は設定（`⌘,`）の下部で確認できます。`dist`の開発用コピーや、ディスク上だけが新版になって再起動を待っている状態もここで区別します。
 
 更新はEdDSA署名を検証してからでないと適用しません。本番成果物はさらにDeveloper ID署名、Hardened Runtime、Apple notarization、staple、署名済みappcastを必須にします。ローカル開発版だけはフォルダアクセス許可を維持するための自己署名です。どちらの秘密鍵もリポジトリには入りません。
 
-リリースは`./scripts/release.sh <version> [notes.md]`で行います。テスト、Developer ID署名、notarization、staple、ZIP再検証、Sparkle署名、署名済みappcast、GitHubのdraft検査と公開を一続きで行います。ローカル証明書や認証情報不足では公開前に停止します。詳しい準備とGitHub Actionsの秘密情報は[リリース手順](docs/RELEASING.md)にあります。
+リリースは`./scripts/release.sh <version> [notes.md]`で行います。テスト、Developer ID署名、notarization、staple、ZIP再検証、Sparkle署名、署名済みappcast、GitHubのdraft検査と公開を一続きで行います。**証明書を取るまでは公開前に停止する**ので、素直に実行しても意図せず公開されることはありません。詳しい準備とGitHub Actionsの秘密情報は[リリース手順](docs/RELEASING.md)にあります。
+
+いまどれが配られていて手元がどれなのかは、`./scripts/check-working-state.sh`の「== 配ったもの ==」で実物から読めます。
 
 開発成果物を直接使う場合:
 
