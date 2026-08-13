@@ -64,4 +64,6 @@ ffmpeg -loglevel error -y -i "$WORK/raw.mov" -i "$WORK/palette.png" \
     "$OUT"
 
 echo "書き出しました: $OUT"
-ls -lh "$OUT" | awk '{print "  " $5}'
+# `ls`ではなく`wc`で数える。shellcheckが`ls`の解析を嫌う（SC2012）うえ、
+# 欲しいのは大きさひとつなので、パースするより数えるほうが素直。
+printf '  %s KB\n' "$(( $(wc -c < "$OUT") / 1024 ))"
