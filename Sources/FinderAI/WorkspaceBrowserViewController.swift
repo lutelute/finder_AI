@@ -1332,6 +1332,16 @@ final class WorkspaceBrowserViewController: NSViewController {
         mapView.groupMenuProvider = { [weak self] name in self?.groupMenu(named: name) }
         // 畳んだ束は一覧と同じものを見る。表示を替えて畳み方が変わると、覚えたことが使えない。
         mapView.collapsedGroups = collapsedGroups
+        mapView.onOthersWidthChanged = { [weak self] width in
+            self?.preferences.mapOthersWidth = width
+        }
+        mapView.restoreOthersWidth(preferences.mapOthersWidth)
+        mapView.onSortChanged = { [weak self] identifier, ascending in
+            self?.applySort(identifier, ascending: ascending)
+        }
+        mapView.onRename = { [weak self] url, name in
+            self?.renameItem(at: url, to: name)
+        }
         mapView.onQuickLook = { [weak self] in self?.toggleQuickLook() }
         mapView.onOthersOnlyChanged = { [weak self] value in
             self?.preferences.mapShowsOthersOnly = value
@@ -4035,10 +4045,20 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
     func tableView(_ tableView: NSTableView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
         guard tableView === fileTable, let descriptor = tableView.sortDescriptors.first,
               let key = descriptor.key else { return }
-        sortIdentifier = NSUserInterfaceItemIdentifier(key)
-        sortAscending = descriptor.ascending
-        preferences.sortColumn = key
-        preferences.sortAscending = descriptor.ascending
+        applySort(NSUserInterfaceItemIdentifier(key), ascending: descriptor.ascending)
+    }
+
+    /// 並べ替えを決める。一覧の列見出しからも、地図の右の一覧の列見出しからも
+    /// ここへ来る。**順序は一つ**で、表示を替えても並びが変わらない。
+    func applySort(_ identifier: NSUserInterfaceItemIdentifier, ascending: Bool) {
+        guard sortIdentifier != identifier || sortAscending != ascending else { return }
+        sortIdentifier = identifier
+        sortAscending = ascending
+        preferences.sortColumn = identifier.rawValue
+        preferences.sortAscending = ascending
+        fileTable.sortDescriptors = [
+            NSSortDescriptor(key: identifier.rawValue, ascending: ascending)
+        ]
         if usesRecursiveSearch {
             displayedItems = sortedItems(displayedItems)
             reloadResultViews()

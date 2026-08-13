@@ -31,6 +31,7 @@ struct WorkspacePreferences {
         static let mapShowsOthersOnly = "workspace.mapShowsOthersOnly"
         static let listUngroupedOnly = "workspace.listUngroupedOnly"
         static let listGroupedOnly = "workspace.listGroupedOnly"
+        static let mapOthersWidth = "workspace.mapOthersWidth"
         static let terminalHeight = "workspace.terminalHeight"
         static let terminalWidth = "workspace.terminalWidth"
         static let terminalEdge = "workspace.terminalEdge"
@@ -420,6 +421,15 @@ struct WorkspacePreferences {
     var listGroupedOnly: Bool {
         get { defaults.bool(forKey: Key.listGroupedOnly) }
         nonmutating set { defaults.set(newValue, forKey: Key.listGroupedOnly) }
+    }
+
+    /// 地図の右の一覧の幅。0なら決めていない（窓の幅から出す）。
+    ///
+    /// どちらを厚く見たいかはそのときの用事で変わる。列を出して読むなら広く、
+    /// 島の重なりを見るなら狭く。決めた幅は次に開いたときも同じにする。
+    var mapOthersWidth: Double {
+        get { defaults.double(forKey: Key.mapOthersWidth) }
+        nonmutating set { defaults.set(newValue, forKey: Key.mapOthersWidth) }
     }
 
     // MARK: - Terminal

@@ -104,6 +104,16 @@ final class WorkspaceMapView: NSView {
     /// 「地図なんだから全部見えていてほしい」ほうが素直で、そのためには
     /// 画面の高さを配る前提をやめるしかない。
     private let mapScroll = NSScrollView()
+    /// 地図と一覧の仕切り。掴んで動かせる。
+    ///
+    /// 幅を窓の26%で決め打っていたので、一覧に列を置く余地が無かった
+    /// （280〜340ptに変更日やサイズを足せない）。どちらを厚く見たいかは
+    /// そのときの用事で変わるので、決めるのは使う人。
+    private let divider = WorkspaceMapDivider()
+    /// 使う人が決めた一覧の幅。決めていなければ`nil`で、窓の幅から出す。
+    private var othersWidthOverride: Double?
+    /// 幅が変わったことを外へ知らせる（設定に残すのは呼び出し側）。
+    var onOthersWidthChanged: ((Double) -> Void)?
     private lazy var mapHeight = mapArea.heightAnchor.constraint(equalToConstant: 1)
     /// 最後に組んだときの見える大きさ。同じなら組み直さない（高さを変えると
     /// `layout()`がまた走るので、そこで止めないと回り続ける）。
@@ -121,11 +131,95 @@ final class WorkspaceMapView: NSView {
     private static let othersHeaderHeight: Double = 34
     private static let othersRowHeight: Double = 22
 
-    /// 右欄の幅。名前に250pt残るのが目安。これを下回ると名前が切れて、
-    /// 名前順に並べた意味が薄れる。上限を340に抑えているのは、地図側にも
-    /// 名前が読める幅を残すため — 島が狭いと島の中の名前が先に切れる。
+    /// 右欄の既定の幅。名前に250pt残るのが目安。上限を340に抑えているのは、
+    /// 地図側にも名前が読める幅を残すため — 島が狭いと島の中の名前が先に切れる。
+    ///
+    /// これは**最初の幅**でしかない。掴んで動かせば、そのフォルダで何を見たいかに
+    /// 合わせて変えられる（列を出すなら広く、地図を見るなら狭く）。
     private static func othersWidth(for totalWidth: Double) -> Double {
         min(max(totalWidth * 0.26, 280), 340)
+    }
+
+    /// いまの一覧の幅。決めていなければ窓の幅から出す。
+    ///
+    /// どちらの側も潰さない。地図が240ptを切ると島の名前が読めず、一覧が220ptを
+    /// 切るとファイル名が読めない。
+    private func currentOthersWidth() -> Double {
+        let total = Double(bounds.width)
+        let wanted = othersWidthOverride ?? Self.othersWidth(for: total)
+        return min(max(wanted, 220), max(total - 240, 220))
+    }
+
+    /// 一覧の幅を決める。掴んで動かしたときと、設定から戻すときの入口。
+    func setOthersWidth(_ width: Double) {
+        let clamped = min(max(width, 220), max(Double(bounds.width) - 240, 220))
+        guard abs(clamped - (othersWidthOverride ?? -1)) > 0.5 else { return }
+        othersWidthOverride = clamped
+        onOthersWidthChanged?(clamped)
+        applyPaneLayout()
+        // 地図の幅が変わったので組み直す。列の数が変わることがある。
+        clusterLayout = nil
+        rebuildIfPossible()
+        needsDisplay = true
+    }
+
+    static let nameColumn = NSUserInterfaceItemIdentifier("other.name")
+    static let modifiedColumn = NSUserInterfaceItemIdentifier("other.modified")
+    static let sizeColumn = NSUserInterfaceItemIdentifier("other.size")
+
+    /// 並べ替えは一覧表示と**同じ順序**を使う。ここだけ別の順にすると、
+    /// 表示を替えただけで並びが変わる。押されたら呼び出し側へ渡し、
+    /// 並べ直した配列が`show`で戻ってくる。
+    var onSortChanged: ((NSUserInterfaceItemIdentifier, Bool) -> Void)?
+
+    private static func makeColumns() -> [NSTableColumn] {
+        let name = NSTableColumn(identifier: nameColumn)
+        name.title = "名前"
+        name.minWidth = 150
+        name.width = 240
+        name.sortDescriptorPrototype = NSSortDescriptor(
+            key: "name",
+            ascending: true,
+            selector: #selector(NSString.localizedStandardCompare(_:))
+        )
+        let modified = NSTableColumn(identifier: modifiedColumn)
+        modified.title = "変更日"
+        modified.minWidth = 120
+        modified.width = 140
+        modified.sortDescriptorPrototype = NSSortDescriptor(key: "modified", ascending: false)
+        let size = NSTableColumn(identifier: sizeColumn)
+        size.title = "サイズ"
+        size.minWidth = 70
+        size.width = 80
+        size.sortDescriptorPrototype = NSSortDescriptor(key: "size", ascending: true)
+        return [name, modified, size]
+    }
+
+    /// 幅に合わせて列を出し入れする。
+    ///
+    /// 狭いまま列を並べると、名前が読めなくなって本末転倒になる。名前に150pt
+    /// 残せるぶんだけ足す。列が一つのときは見出しも出さない — 押しても
+    /// 並べ替えるものが一つしかない帯は場所の無駄。
+    private func applyOthersColumns(width: Double) {
+        let modified = othersTable.tableColumns.first { $0.identifier == Self.modifiedColumn }
+        let size = othersTable.tableColumns.first { $0.identifier == Self.sizeColumn }
+        let showsModified = width >= 150 + 120 + 24
+        let showsSize = width >= 150 + 120 + 70 + 24
+        modified?.isHidden = !showsModified
+        size?.isHidden = !showsSize
+        let wantsHeader = showsModified
+        if wantsHeader, othersTable.headerView == nil {
+            othersTable.headerView = NSTableHeaderView()
+        } else if !wantsHeader, othersTable.headerView != nil {
+            othersTable.headerView = nil
+        }
+    }
+
+    /// 設定から戻すとき用。知らせは返さない（往復して書き戻すのを避ける）。
+    func restoreOthersWidth(_ width: Double) {
+        guard width > 0 else { return }
+        othersWidthOverride = width
+        applyPaneLayout()
     }
 
     override var isFlipped: Bool { true }
@@ -211,14 +305,16 @@ final class WorkspaceMapView: NSView {
         othersTable.isHeaderRow = { [weak self] row in self?.isListHeaderRow(row) ?? false }
         othersTable.onHeaderClicked = { [weak self] row in self?.toggleListSection(at: row) }
         othersTable.contextMenuProvider = { [weak self] row in self?.othersMenu(atRow: row) }
+        othersTable.onRenameRequested = { [weak self] row in self?.beginRename(atRow: row) }
         othersTable.onOpen = { [weak self] in
             guard let self, let row = self.othersTable.selectedRowIndexes.first,
                   let item = self.item(atListRow: row) else { return }
             self.onOpen?(item)
         }
-        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("other"))
-        column.resizingMask = .autoresizingMask
-        othersTable.addTableColumn(column)
+        // 一覧表示と同じ列。幅が足りないときは名前だけにする（`applyOthersColumns`）。
+        for column in Self.makeColumns() { othersTable.addTableColumn(column) }
+        othersTable.usesAlternatingRowBackgroundColors = false
+        othersTable.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
 
         othersScroll.documentView = othersTable
         // 最後の行が下の帯に文字の途中で切られていた。一行ぶん空ける。
@@ -233,7 +329,13 @@ final class WorkspaceMapView: NSView {
         othersScroll.drawsBackground = true
         othersScroll.backgroundColor = IntegratedPanelTheme.background
 
-        [mapScroll, othersHeader, othersFilter, othersOnlyToggle, othersScroll].forEach {
+        divider.onDrag = { [weak self] deltaX in
+            guard let self else { return }
+            // 掴んだ側と逆へ動かすと一覧が広がる。左へ引けば一覧が厚くなる。
+            let current = self.othersWidthOverride ?? Self.othersWidth(for: Double(self.bounds.width))
+            self.setOthersWidth(current - deltaX)
+        }
+        [mapScroll, divider, othersHeader, othersFilter, othersOnlyToggle, othersScroll].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             addSubview($0)
         }
@@ -416,8 +518,10 @@ final class WorkspaceMapView: NSView {
         // 何も無いフォルダでは欄を出さない。空の帯は場所の無駄。
         // 未分類が無くても欄は出す — ここはフォルダの全部を出す一覧になった。
         let showsOthers = !items.isEmpty
-        let width = showsOthers ? Self.othersWidth(for: Double(bounds.width)) : 0
+        let width = showsOthers ? currentOthersWidth() : 0
+        divider.isHidden = !showsOthers
 
+        applyOthersColumns(width: width)
         othersHeader.isHidden = !showsOthers
         othersFilter.isHidden = !showsOthers
         othersOnlyToggle.isHidden = !showsOthers
@@ -454,12 +558,13 @@ final class WorkspaceMapView: NSView {
                 othersScroll.topAnchor.constraint(equalTo: othersFilter.bottomAnchor, constant: 6),
                 othersScroll.bottomAnchor.constraint(equalTo: bottomAnchor)
             ]
-            constraints.append(
-                mapScroll.trailingAnchor.constraint(
-                    equalTo: othersScroll.leadingAnchor,
-                    constant: -1
-                )
-            )
+            constraints += [
+                divider.trailingAnchor.constraint(equalTo: othersScroll.leadingAnchor),
+                divider.topAnchor.constraint(equalTo: topAnchor),
+                divider.bottomAnchor.constraint(equalTo: bottomAnchor),
+                divider.widthAnchor.constraint(equalToConstant: 5),
+                mapScroll.trailingAnchor.constraint(equalTo: divider.leadingAnchor)
+            ]
         } else {
             constraints.append(mapScroll.trailingAnchor.constraint(equalTo: trailingAnchor))
         }
@@ -1309,6 +1414,27 @@ final class WorkspaceMapView: NSView {
         mapArea.beginDraggingSession(with: draggingItems, event: event, source: mapArea)
     }
 
+    /// 名前をその場で書き換える。実際に名前を変えるのは呼び出し側（ファイル操作と
+    /// 取り消しを持っているのはあちら）。
+    var onRename: ((URL, String) -> Void)?
+
+    private func beginRename(atRow row: Int) {
+        guard let item = item(atListRow: row) else { return }
+        othersTable.scrollRowToVisible(row)
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  self.item(atListRow: row)?.url == item.url,
+                  let cell = self.othersTable.view(
+                    atColumn: 0,
+                    row: row,
+                    makeIfNecessary: true
+                  ) as? WorkspaceOtherCellView else { return }
+            cell.beginRenaming(name: item.name, isDirectory: item.isDirectory) { [weak self] name in
+                self?.onRename?(item.url, name)
+            }
+        }
+    }
+
     /// 右の一覧の右クリック。
     ///
     /// 引いて落とす以外に入れる手が無かった。ドラッグは一度に一箇所へしか運べないので、
@@ -1465,6 +1591,18 @@ extension WorkspaceMapView: NSTableViewDataSource, NSTableViewDelegate {
             return cell
         }
         guard let item = item(atListRow: row) else { return nil }
+        // 名前より右の列は、字だけの軽いセル。
+        if let tableColumn, tableColumn.identifier != Self.nameColumn {
+            let identifier = NSUserInterfaceItemIdentifier(
+                "WorkspaceOtherText-\(tableColumn.identifier.rawValue)"
+            )
+            let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView
+                ?? Self.makeTextCell(identifier: identifier)
+            cell.textField?.stringValue = tableColumn.identifier == Self.modifiedColumn
+                ? Self.dateText(item.modifiedAt)
+                : Self.sizeText(item)
+            return cell
+        }
         let cell = tableView.makeView(
             withIdentifier: NSUserInterfaceItemIdentifier("WorkspaceOtherCell"),
             owner: self
@@ -1494,6 +1632,20 @@ extension WorkspaceMapView: NSTableViewDataSource, NSTableViewDelegate {
         return WorkspaceDragDrop.pasteboardWriter(for: item.url)
     }
 
+    /// 見出しを押されたら、並べ替えは呼び出し側（一覧表示）へ渡す。
+    /// ここで自前に並べると、表示を替えただけで並びが変わる。
+    func tableView(_ tableView: NSTableView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
+        guard tableView === othersTable,
+              let descriptor = tableView.sortDescriptors.first,
+              let key = descriptor.key else { return }
+        let identifier: NSUserInterfaceItemIdentifier = switch key {
+        case "modified": NSUserInterfaceItemIdentifier("modified")
+        case "size": NSUserInterfaceItemIdentifier("size")
+        default: NSUserInterfaceItemIdentifier("name")
+        }
+        onSortChanged?(identifier, descriptor.ascending)
+    }
+
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard notification.object as? NSTableView === othersTable else { return }
         let rows = othersTable.selectedRowIndexes
@@ -1511,6 +1663,46 @@ private extension Array {
     }
 }
 
+extension WorkspaceMapView {
+    /// 名前より右の列。字だけなので、アイコンも編集も持たない。
+    static func makeTextCell(identifier: NSUserInterfaceItemIdentifier) -> NSTableCellView {
+        let cell = NSTableCellView()
+        cell.identifier = identifier
+        let label = NSTextField(labelWithString: "")
+        label.font = .systemFont(ofSize: 11)
+        label.textColor = IntegratedPanelTheme.secondaryText
+        label.lineBreakMode = .byTruncatingTail
+        label.translatesAutoresizingMaskIntoConstraints = false
+        cell.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
+            label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6),
+            label.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
+        ])
+        cell.textField = label
+        return cell
+    }
+
+    static func dateText(_ date: Date?) -> String {
+        guard let date else { return "—" }
+        return dateFormatter.string(from: date)
+    }
+
+    static func sizeText(_ item: WorkspaceItem) -> String {
+        // フォルダの大きさは数えない。数えるには中を全部歩くことになり、
+        // 一覧を出すたびにディスクを舐めることになる。
+        guard !item.isDirectory, let size = item.fileSize else { return "—" }
+        return ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+    }
+
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter
+    }()
+}
+
 /// 右の一覧。Spaceでプレビュー、⌘↓で開く。
 ///
 /// 素の`NSTableView`はSpaceに何も割り当てていない。地図側でSpaceが効くのに一覧では
@@ -1523,19 +1715,30 @@ private final class WorkspaceOthersTable: NSTableView {
     var onHeaderClicked: ((Int) -> Void)?
     var isHeaderRow: ((Int) -> Bool)?
     var contextMenuProvider: ((Int) -> NSMenu?)?
+    /// 名前を書き換えたい行。returnか、選んである行の名前をもう一度押したとき。
+    var onRenameRequested: ((Int) -> Void)?
+    private let renameScheduler = FinderLikeRenameScheduler()
 
     override func menu(for event: NSEvent) -> NSMenu? {
         contextMenuProvider?(row(at: convert(event.locationInWindow, from: nil)))
     }
 
     override func mouseDown(with event: NSEvent) {
+        renameScheduler.cancel()
         let point = convert(event.locationInWindow, from: nil)
         let row = self.row(at: point)
         if row >= 0, isHeaderRow?(row) == true {
             onHeaderClicked?(row)
             return
         }
+        // 選んである行の名前をもう一度押したら書き換え。Finderと同じ手つきで、
+        // 二度押し（ダブルクリック＝開く）とは間で見分ける。
+        let wasSelected = row >= 0 && selectedRowIndexes == IndexSet(integer: row)
         super.mouseDown(with: event)
+        guard wasSelected, event.clickCount == 1, row >= 0,
+              let cell = view(atColumn: 0, row: row, makeIfNecessary: false) as? WorkspaceOtherCellView,
+              cell.containsName(at: cell.convert(point, from: self)) else { return }
+        renameScheduler.schedule { [weak self] in self?.onRenameRequested?(row) }
     }
 
     override func keyDown(with event: NSEvent) {
@@ -1546,8 +1749,11 @@ private final class WorkspaceOthersTable: NSTableView {
         case .quickLook:
             onQuickLook?()
         case .rename:
-            // ここは眺めるための一覧。名前を変えるなら一覧表示へ戻ってもらう。
-            NSSound.beep()
+            guard selectedRowIndexes.count == 1, let row = selectedRowIndexes.first else {
+                NSSound.beep()
+                return
+            }
+            onRenameRequested?(row)
         case .forwardToAppKit:
             if event.modifierFlags.contains(.command), event.specialKey == .downArrow {
                 onOpen?()
@@ -1697,7 +1903,8 @@ extension WorkspaceMapCanvas: NSDraggingSource {
 @MainActor
 private final class WorkspaceOtherCellView: NSTableCellView {
     private let iconView = NSImageView()
-    private let label = NSTextField(labelWithString: "")
+    /// 一覧表示と同じ、その場で書き換えられる名前。
+    private let label = FinderInlineRenameField()
     /// 束の中の行は、レールのぶんだけ右へ寄せる。
     private lazy var indent = iconView.leadingAnchor.constraint(
         equalTo: leadingAnchor,
@@ -1735,7 +1942,7 @@ private final class WorkspaceOtherCellView: NSTableCellView {
     }
 
     func configure(name: String, image: NSImage, indent: CGFloat = 12) {
-        label.stringValue = name
+        label.show(name)
         label.toolTip = name
         iconView.image = image
         self.indent.constant = indent
@@ -1743,5 +1950,80 @@ private final class WorkspaceOtherCellView: NSTableCellView {
 
     func updateIcon(_ image: NSImage) {
         iconView.image = image
+    }
+
+    func containsName(at point: NSPoint) -> Bool {
+        label.frame.insetBy(dx: -3, dy: -2).contains(point)
+    }
+
+    func beginRenaming(
+        name: String,
+        isDirectory: Bool,
+        onCommit: @escaping (String) -> Void
+    ) {
+        label.beginEditing(name: name, isDirectory: isDirectory, onCommit: onCommit)
+    }
+}
+
+/// 地図と一覧の仕切り。掴んで動かせることが見て分かるように、触れると太くなる。
+@MainActor
+final class WorkspaceMapDivider: NSView {
+    var onDrag: ((Double) -> Void)?
+    private var trackingArea: NSTrackingArea?
+    private var isHot = false
+
+    override func draw(_ dirtyRect: NSRect) {
+        // 普段は1ptの線。触れているあいだだけ、掴める幅ぜんぶを見せる。
+        IntegratedPanelTheme.border.setFill()
+        let line = isHot
+            ? bounds
+            : NSRect(x: bounds.midX - 0.5, y: 0, width: 1, height: bounds.height)
+        line.fill()
+    }
+
+    override func resetCursorRects() {
+        // 横にしか動かせないので、その形にする。
+        addCursorRect(bounds, cursor: .resizeLeftRight)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInKeyWindow],
+            owner: self
+        )
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHot = true
+        needsDisplay = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHot = false
+        needsDisplay = true
+    }
+
+    /// 掴んで離すまでを、ここで受け切る。イベントを待つあいだに他の面へ
+    /// 逃げても追えるように、`nextEvent`で自分に引き寄せる。
+    override func mouseDown(with event: NSEvent) {
+        var last = convert(event.locationInWindow, from: nil).x
+        while let next = window?.nextEvent(
+            matching: [.leftMouseUp, .leftMouseDragged],
+            until: .distantFuture,
+            inMode: .eventTracking,
+            dequeue: true
+        ) {
+            guard next.type == .leftMouseDragged else { return }
+            let point = convert(next.locationInWindow, from: nil).x
+            let delta = point - last
+            guard abs(delta) > 0.5 else { continue }
+            last = point
+            onDrag?(Double(delta))
+        }
     }
 }
