@@ -298,14 +298,7 @@ final class WorkspaceColumnView: NSView {
         table.target = self
         table.doubleAction = #selector(openDoubleClicked(_:))
         table.registerForDraggedTypes([.fileURL])
-        table.setDraggingSourceOperationMask(
-            WorkspaceDragDrop.localSourceOperations,
-            forLocal: true
-        )
-        table.setDraggingSourceOperationMask(
-            WorkspaceDragDrop.externalSourceOperations,
-            forLocal: false
-        )
+        WorkspaceDragDrop.configureDragSource(table)
         table.contextMenuProvider = { [weak self] in self?.contextMenuProvider?() }
         table.onBecameActive = { [weak self, weak column] in
             self?.activeColumn = column

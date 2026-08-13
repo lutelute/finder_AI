@@ -298,3 +298,23 @@ struct WorkspaceMapRegroupTests {
     }
 }
 
+
+/// 畳んだ束は、一覧と地図の右で同じものを見る。
+@Suite("畳んだ束は表示をまたいで残る")
+@MainActor
+struct WorkspaceCollapsedGroupsTests {
+    @Test("片方で畳めば、もう片方でも畳まれている")
+    func collapseIsShared() {
+        let shared = WorkspaceCollapsedGroups()
+        #expect(!shared.contains("研究"))
+
+        // 一覧で畳む
+        #expect(shared.toggle("研究") == true)
+        // 地図の右も同じものを見ているので、畳まれている
+        #expect(shared.contains("研究"))
+
+        // 地図で開く
+        #expect(shared.toggle("研究") == false)
+        #expect(!shared.contains("研究"))
+    }
+}

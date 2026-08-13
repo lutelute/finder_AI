@@ -59,7 +59,7 @@ private final class WorkspaceNameCellView: NSTableCellView {
             cloudWidth,
             otherChips.leadingAnchor.constraint(equalTo: cloudView.trailingAnchor, constant: 6),
             otherChips.centerYAnchor.constraint(equalTo: centerYAnchor),
-            otherChips.heightAnchor.constraint(equalToConstant: 10),
+            otherChips.heightAnchor.constraint(equalToConstant: 7),
             overflowLabel.leadingAnchor.constraint(equalTo: otherChips.trailingAnchor, constant: 3),
             overflowLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -5),
             overflowLabel.centerYAnchor.constraint(equalTo: centerYAnchor)
@@ -100,8 +100,8 @@ private final class WorkspaceNameCellView: NSTableCellView {
             chip.translatesAutoresizingMaskIntoConstraints = false
             chip.show(initial: WorkspaceGroupPalette.initial(for: title), fill: color)
             NSLayoutConstraint.activate([
-                chip.widthAnchor.constraint(equalToConstant: 10),
-                chip.heightAnchor.constraint(equalToConstant: 10)
+                chip.widthAnchor.constraint(equalToConstant: 7),
+                chip.heightAnchor.constraint(equalToConstant: 7)
             ])
             otherChips.addArrangedSubview(chip)
         }
@@ -175,6 +175,12 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
         identifier = NSUserInterfaceItemIdentifier("WorkspaceSidebarCell")
         label.font = .systemFont(ofSize: 11.5, weight: .medium)
         label.textColor = IntegratedPanelTheme.text
+        // 長い名前は中ほどを省く。省かずに全部出していたので、読むにはサイドバーを
+        // 広げるしかなく、「幅が要る」のではなく「省略していない」のが原因だった。
+        // 末尾ではなく中ほどを落とすのは、日付や連番で見分けているものがあるから。
+        label.lineBreakMode = .byTruncatingMiddle
+        label.cell?.truncatesLastVisibleLine = true
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         iconView.contentTintColor = IntegratedPanelTheme.secondaryText
         [iconView, label].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
@@ -309,8 +315,8 @@ final class WorkspaceGroupHeaderView: NSTableCellView {
             chevron.widthAnchor.constraint(equalToConstant: 10),
             chip.leadingAnchor.constraint(equalTo: chevron.trailingAnchor, constant: 6),
             chip.centerYAnchor.constraint(equalTo: centerYAnchor),
-            chip.widthAnchor.constraint(equalToConstant: 16),
-            chip.heightAnchor.constraint(equalToConstant: 16),
+            chip.widthAnchor.constraint(equalToConstant: 8),
+            chip.heightAnchor.constraint(equalToConstant: 8),
             label.leadingAnchor.constraint(equalTo: chip.trailingAnchor, constant: 8),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
             countLabel.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 8),
@@ -744,7 +750,8 @@ final class WorkspaceBrowserViewController: NSViewController {
     ///
     /// グループが増えると一覧が縦に長くなる。いま見ていないグループを畳めれば、
     /// 見たいグループだけを目の前に置ける。フォルダを移っても覚えておく。
-    private var collapsedGroups: Set<String> = []
+    /// 畳んだ束。地図の右の一覧と同じものを見る（表示を替えても畳み方が変わらない）。
+    let collapsedGroups = WorkspaceCollapsedGroups()
     private var listingTask: Task<Void, Never>?
     private var cloudStatusTask: Task<Void, Never>?
     private var loadingIndicatorTask: Task<Void, Never>?
@@ -797,6 +804,15 @@ final class WorkspaceBrowserViewController: NSViewController {
     private let newFolderButton = NSButton()
     private let newGroupButton = NSButton()
     private let statusLabel = NSTextField(labelWithString: "")
+    /// ナビゲーションバーの二つの並べ方。幅を見てどちらかを効かせる。
+    private weak var navigationStack: NSStackView?
+    private weak var searchStack: NSStackView?
+    private var oneRowConstraints: [NSLayoutConstraint] = []
+    private var twoRowConstraints: [NSLayoutConstraint] = []
+    private var navigationBarHeight: NSLayoutConstraint?
+    private var usesOneRowNavigation = false
+    /// サイドバーの幅を押し戻している最中か。再入を止めるための印。
+    private var isClampingSidebar = false
     private let progress = NSProgressIndicator()
     private let splitView = NSSplitView()
     private var didSetInitialSidebarPosition = false
@@ -988,11 +1004,54 @@ final class WorkspaceBrowserViewController: NSViewController {
     override func viewDidLayout() {
         super.viewDidLayout()
         layoutFileColumns()
-        guard showsSidebar, !didSetInitialSidebarPosition,
-              splitView.bounds.width >= 761 else { return }
-        splitView.setPosition(preferences.sidebarWidth, ofDividerAt: 0)
+        updateNavigationRows()
+        guard showsSidebar, !didSetInitialSidebarPosition else { return }
+        // 761pt無いと初回配置をしていなかった。Terminalを右に開くと分割ビューは
+        // それを下回り、**サイドバーが幅0のまま据え置かれて消える**。
+        // 要るのは「窓が広いこと」ではなく「サイドバーと本文の両方が置けること」。
+        let room = splitView.bounds.width
+        guard room >= Self.minimumFileAreaWidth + 160 else { return }
+        splitView.setPosition(
+            min(preferences.sidebarWidth, room - Self.minimumFileAreaWidth),
+            ofDividerAt: 0
+        )
         didSetInitialSidebarPosition = true
     }
+
+    /// ナビゲーションを一段にするか二段にするかを、幅を見て決める。
+    ///
+    /// 常に二段だと、広いときに二段目の八割が空いたまま残る。空いた帯が上に一本
+    /// 乗っているのは、中身を見る前に「作りかけ」と読まれる。かといって常に一段だと、
+    /// 分割表示（ペインが窓の半分）で住所欄が潰れる。入るときだけ一段にする。
+    private func updateNavigationRows() {
+        guard let navigationStack, let searchStack, let navigationBarHeight else { return }
+        let width = navigationStack.superview?.bounds.width ?? 0
+        guard width > 1 else { return }
+        // 住所欄は縮む側なので、いま入っているパスの長さではなく「最低これだけ残す」で
+        // 測る。自然幅のまま足すと、深いフォルダに居るというだけで二段のままになる。
+        let needed = navigationStack.fittingSize.width
+            - pathField.fittingSize.width
+            + Self.pathRoomOnOneRow
+            + searchStack.fittingSize.width
+            + 30
+        let wantsOneRow = width >= needed
+        guard wantsOneRow != usesOneRowNavigation else { return }
+        usesOneRowNavigation = wantsOneRow
+        NSLayoutConstraint.deactivate(wantsOneRow ? twoRowConstraints : oneRowConstraints)
+        NSLayoutConstraint.activate(wantsOneRow ? oneRowConstraints : twoRowConstraints)
+        navigationBarHeight.constant = wantsOneRow ? 39 : 76
+    }
+
+    /// 一段にするなら、住所欄にこれだけは残す。長いパスの末尾（いま居る場所）が
+    /// 読めなくなるくらいなら、二段のままのほうがいい。
+    ///
+    /// 220ptにしていたら、実測1180ptの窓（サイドバー360を引いて本文760）で
+    /// わずかに届かず、いつまでも二段のままだった。170ptあれば等幅11.5ptで
+    /// 26文字ほど——末尾のフォルダ名は読める。
+    private static let pathRoomOnOneRow: CGFloat = 170
+
+    /// サイドバーを置いたあと、本文に最低これだけは残す。下回るならサイドバーを削る。
+    private static let minimumFileAreaWidth: CGFloat = 320
 
     private func makeSidebar() -> NSView {
         let root = NSView()
@@ -1037,7 +1096,6 @@ final class WorkspaceBrowserViewController: NSViewController {
         let navigationBar = makeNavigationBar()
         let listScroll = makeFileTable()
         let galleryScroll = makeGalleryView()
-        let statusBar = makeStatusBar()
         configureColumnView()
 
         // Both views occupy the same slot; only one is unhidden at a time.
@@ -1058,8 +1116,9 @@ final class WorkspaceBrowserViewController: NSViewController {
         galleryScrollView = galleryScroll
         configureListingErrorState()
 
+        navigationBarHeight = navigationBar.heightAnchor.constraint(equalToConstant: 76)
         let ribbon = makeRibbon()
-        [navigationBar, fileArea, ribbon, statusBar].forEach {
+        [navigationBar, fileArea, ribbon].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview($0)
         }
@@ -1067,19 +1126,15 @@ final class WorkspaceBrowserViewController: NSViewController {
             navigationBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             navigationBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             navigationBar.topAnchor.constraint(equalTo: root.topAnchor),
-            navigationBar.heightAnchor.constraint(equalToConstant: 76),
+            navigationBarHeight!,
             fileArea.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             fileArea.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             fileArea.topAnchor.constraint(equalTo: navigationBar.bottomAnchor),
             fileArea.bottomAnchor.constraint(equalTo: ribbon.topAnchor),
             ribbon.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             ribbon.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            ribbon.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
-            ribbon.heightAnchor.constraint(equalToConstant: 22),
-            statusBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            statusBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            statusBar.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            statusBar.heightAnchor.constraint(equalToConstant: 25)
+            ribbon.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            ribbon.heightAnchor.constraint(equalToConstant: 26)
         ])
         applyViewMode()
         return root
@@ -1096,14 +1151,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         galleryView.isSelectable = true
         galleryView.allowsMultipleSelection = true
         galleryView.registerForDraggedTypes([.fileURL])
-        galleryView.setDraggingSourceOperationMask(
-            WorkspaceDragDrop.localSourceOperations,
-            forLocal: true
-        )
-        galleryView.setDraggingSourceOperationMask(
-            WorkspaceDragDrop.externalSourceOperations,
-            forLocal: false
-        )
+        WorkspaceDragDrop.configureDragSource(galleryView)
         galleryView.dataSource = self
         galleryView.delegate = self
         galleryView.register(
@@ -1188,17 +1236,49 @@ final class WorkspaceBrowserViewController: NSViewController {
         groupedOnlyToggle.toolTip = "どれかのグループに入れてあるものだけを出す"
         groupedOnlyToggle.state = preferences.listGroupedOnly ? .on : .off
 
-        [ribbonPath, groupedOnlyToggle, ungroupedOnlyToggle, groupingToggle].forEach {
+        // ステータスは別の帯に分けていた。パンくず22pt＋ステータス25ptで、下だけで
+        // 47pt——窓の6%を、ほとんど字の無い二本の帯に使っていた。一本にまとめる。
+        statusLabel.font = .systemFont(ofSize: 10.5)
+        statusLabel.textColor = IntegratedPanelTheme.secondaryText
+        statusLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        progress.style = .spinning
+        progress.controlSize = .small
+        progress.isDisplayedWhenStopped = false
+        let terminalButton = NSButton(
+            title: "⌘J  TERMINAL",
+            target: self,
+            action: #selector(toggleTerminal)
+        )
+        terminalButton.isBordered = false
+        terminalButton.font = .systemFont(ofSize: 10.5, weight: .medium)
+        terminalButton.contentTintColor = IntegratedPanelTheme.secondaryText
+
+        [
+            ribbonPath, statusLabel, progress,
+            groupedOnlyToggle, ungroupedOnlyToggle, groupingToggle, terminalButton
+        ].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             bar.addSubview($0)
         }
         NSLayoutConstraint.activate([
             ribbonPath.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
             ribbonPath.trailingAnchor.constraint(
-                lessThanOrEqualTo: groupedOnlyToggle.leadingAnchor,
-                constant: -10
+                lessThanOrEqualTo: statusLabel.leadingAnchor,
+                constant: -12
             ),
             ribbonPath.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            statusLabel.trailingAnchor.constraint(
+                equalTo: progress.leadingAnchor,
+                constant: -8
+            ),
+            statusLabel.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            progress.trailingAnchor.constraint(
+                equalTo: groupedOnlyToggle.leadingAnchor,
+                constant: -10
+            ),
+            progress.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            terminalButton.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -8),
+            terminalButton.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
             groupedOnlyToggle.trailingAnchor.constraint(
                 equalTo: ungroupedOnlyToggle.leadingAnchor,
                 constant: -12
@@ -1209,7 +1289,10 @@ final class WorkspaceBrowserViewController: NSViewController {
                 constant: -12
             ),
             ungroupedOnlyToggle.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
-            groupingToggle.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
+            groupingToggle.trailingAnchor.constraint(
+                equalTo: terminalButton.leadingAnchor,
+                constant: -12
+            ),
             groupingToggle.centerYAnchor.constraint(equalTo: bar.centerYAnchor)
         ])
         return bar
@@ -1246,6 +1329,9 @@ final class WorkspaceBrowserViewController: NSViewController {
         }
         mapView.onSelectionChange = { [weak self] _ in self?.updateStatus() }
         mapView.contextMenuProvider = { [weak self] in self?.fileTable.menu }
+        mapView.groupMenuProvider = { [weak self] name in self?.groupMenu(named: name) }
+        // 畳んだ束は一覧と同じものを見る。表示を替えて畳み方が変わると、覚えたことが使えない。
+        mapView.collapsedGroups = collapsedGroups
         mapView.onQuickLook = { [weak self] in self?.toggleQuickLook() }
         mapView.onOthersOnlyChanged = { [weak self] value in
             self?.preferences.mapShowsOthersOnly = value
@@ -1332,6 +1418,12 @@ final class WorkspaceBrowserViewController: NSViewController {
         guard fileRows.indices.contains(row),
               case .header(let title, _) = fileRows[row],
               let name = title else { return nil }
+        return groupMenu(named: name)
+    }
+
+    /// 束そのものへの操作。一覧の見出しからも、地図の右の見出しからも同じものを出す。
+    func groupMenu(named name: String) -> NSMenu? {
+        guard itemGroups?.groups.contains(where: { $0.name == name }) == true else { return nil }
         contextGroupName = name
 
         let menu = NSMenu(title: name)
@@ -1595,6 +1687,13 @@ final class WorkspaceBrowserViewController: NSViewController {
                 showHiddenFiles: preferences.showHiddenFiles
             )
         }
+        // 地図で畳んだ束が一覧にも効くように、戻ってきたら組み直す。
+        if mode == .list {
+            let selection = selectedItems.map(\.url)
+            rebuildFileRows()
+            fileTable.reloadData()
+            restoreFlatSelection(selection)
+        }
         // 開いたときに組み直す。地図は決定的なので、組めばそれで完成している。
         if mode == .map {
             mapView.show(items: displayedItems, groups: itemGroups, presentNames: presentNames)
@@ -1655,6 +1754,10 @@ final class WorkspaceBrowserViewController: NSViewController {
         searchScopeControl.setWidth(42, forSegment: 0)
         searchScopeControl.setWidth(42, forSegment: 1)
         searchScopeControl.selectedSegment = 0
+        // 検索していないときは出さない。何も打っていないのに「直下／配下」だけが
+        // 帯の右端に浮いていて、何に効くのか読めなかった。Finderと同じで、
+        // 範囲は探し始めてから選ぶもの。
+        searchScopeControl.isHidden = true
         searchScopeControl.trackingMode = .selectOne
         searchScopeControl.target = self
         searchScopeControl.action = #selector(searchScopeChanged)
@@ -1689,10 +1792,10 @@ final class WorkspaceBrowserViewController: NSViewController {
         searchField.setContentHuggingPriority(.defaultLow, for: .horizontal)
         searchField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        // A split pane is only about half of the window. Keeping path, three view
-        // modes, two search scopes, and the search field on one row forces Auto
-        // Layout to crush the address field at exactly the size where it matters
-        // most. Navigation stays on top and search gets a dedicated compact row.
+        // 分割表示ではペインが窓の半分しかない。全部を一段に押し込むと、いちばん
+        // 効く場所——住所欄——から潰れる。かといって常に二段だと、広いときは
+        // 二段目の八割が空いたままで、それが「作りかけ」に見える。
+        // **入るときだけ一段**にする（`updateNavigationRows()`が幅を見て決める）。
         configureAppearanceButton()
         let navigationStack = NSStackView(views: [
             backButton, forwardButton, upButton, pathSlot, copyCDButton,
@@ -1716,18 +1819,34 @@ final class WorkspaceBrowserViewController: NSViewController {
         searchStack.translatesAutoresizingMaskIntoConstraints = false
         bar.addSubview(navigationStack)
         bar.addSubview(searchStack)
+        self.navigationStack = navigationStack
+        self.searchStack = searchStack
         NSLayoutConstraint.activate([
             navigationStack.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
-            navigationStack.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
             navigationStack.topAnchor.constraint(equalTo: bar.topAnchor, constant: 6),
             navigationStack.heightAnchor.constraint(equalToConstant: 27),
-            searchStack.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
-            searchStack.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
-            searchStack.topAnchor.constraint(equalTo: navigationStack.bottomAnchor, constant: 5),
-            searchStack.bottomAnchor.constraint(equalTo: bar.bottomAnchor, constant: -6),
             searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: 140),
             searchField.widthAnchor.constraint(lessThanOrEqualToConstant: 240)
         ])
+        // 一段のとき: 検索は同じ行の右端。
+        oneRowConstraints = [
+            navigationStack.trailingAnchor.constraint(
+                equalTo: searchStack.leadingAnchor,
+                constant: -10
+            ),
+            searchStack.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
+            searchStack.centerYAnchor.constraint(equalTo: navigationStack.centerYAnchor),
+            navigationStack.bottomAnchor.constraint(equalTo: bar.bottomAnchor, constant: -6)
+        ]
+        // 二段のとき: 検索は下の行いっぱい。
+        twoRowConstraints = [
+            navigationStack.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
+            searchStack.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
+            searchStack.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
+            searchStack.topAnchor.constraint(equalTo: navigationStack.bottomAnchor, constant: 5),
+            searchStack.bottomAnchor.constraint(equalTo: bar.bottomAnchor, constant: -6)
+        ]
+        NSLayoutConstraint.activate(twoRowConstraints)
         return bar
     }
 
@@ -1852,14 +1971,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         fileTable.target = self
         fileTable.doubleAction = #selector(openSelection)
         fileTable.registerForDraggedTypes([.fileURL])
-        fileTable.setDraggingSourceOperationMask(
-            WorkspaceDragDrop.localSourceOperations,
-            forLocal: true
-        )
-        fileTable.setDraggingSourceOperationMask(
-            WorkspaceDragDrop.externalSourceOperations,
-            forLocal: false
-        )
+        WorkspaceDragDrop.configureDragSource(fileTable)
         // 列見出しの右クリックで列を出し入れする（Finderと同じ場所）。
         let headerMenu = NSMenu(title: "列")
         let groupColumnItem = NSMenuItem(
@@ -1890,34 +2002,6 @@ final class WorkspaceBrowserViewController: NSViewController {
         return scroll
     }
 
-    private func makeStatusBar() -> NSView {
-        let bar = NSView()
-        themePainter.register(bar) { IntegratedPanelTheme.header }
-        statusLabel.font = .systemFont(ofSize: 10.5)
-        statusLabel.textColor = IntegratedPanelTheme.secondaryText
-        progress.style = .spinning
-        progress.controlSize = .small
-        progress.isDisplayedWhenStopped = false
-
-        let terminalButton = NSButton(title: "⌘J  TERMINAL", target: self, action: #selector(toggleTerminal))
-        terminalButton.isBordered = false
-        terminalButton.font = .systemFont(ofSize: 10.5, weight: .medium)
-        terminalButton.contentTintColor = IntegratedPanelTheme.secondaryText
-
-        [statusLabel, progress, terminalButton].forEach {
-            $0.translatesAutoresizingMaskIntoConstraints = false
-            bar.addSubview($0)
-        }
-        NSLayoutConstraint.activate([
-            statusLabel.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
-            statusLabel.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
-            progress.leadingAnchor.constraint(equalTo: statusLabel.trailingAnchor, constant: 8),
-            progress.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
-            terminalButton.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -8),
-            terminalButton.centerYAnchor.constraint(equalTo: bar.centerYAnchor)
-        ])
-        return bar
-    }
 
     private func configureContextMenu() {
         let menu = NSMenu(title: "ファイル操作")
@@ -4205,6 +4289,7 @@ extension WorkspaceBrowserViewController: NSSearchFieldDelegate {
     /// in large folders. Coalesce bursts; a lone keystroke still lands quickly.
     func controlTextDidChange(_ obj: Notification) {
         guard obj.object as? NSTextField !== pathField else { return }
+        searchScopeControl.isHidden = !searchHasText
         filterTask?.cancel()
         filterTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(60))
@@ -4328,7 +4413,23 @@ extension WorkspaceBrowserViewController: NSSplitViewDelegate {
     func splitViewDidResizeSubviews(_ notification: Notification) {
         guard showsSidebar, didSetInitialSidebarPosition,
               let sidebar = splitView.arrangedSubviews.first else { return }
-        preferences.sidebarWidth = sidebar.frame.width
+        let width = sidebar.frame.width
+        // 窓を広げると、サイドバーも一緒に太る。上限(360)は引くときにしか効かないので、
+        // 実測で460pt——窓幅の三割——まで育っていた。育ったら押し戻す。
+        //
+        // 押し戻すと`splitViewDidResizeSubviews`がもう一度飛んでくるので、印を立てて
+        // 二度目は素通りする（立てないまま`setPosition`を呼ぶと再入が止まらない）。
+        if width > 360, !isClampingSidebar, splitView.bounds.width > 761 {
+            isClampingSidebar = true
+            splitView.setPosition(360, ofDividerAt: 0)
+            isClampingSidebar = false
+            return
+        }
+        // 引いて決められる幅と同じ範囲に収めてから覚える。ここで素通ししていたので、
+        // 上限を超えた幅が設定に残っていた。幅0は覚えない — 畳んだ状態を覚えると、
+        // 次に開いたときサイドバーが無いまま出る。
+        guard width > 1 else { return }
+        preferences.sidebarWidth = min(max(width, 160), 360)
     }
 
     func splitView(

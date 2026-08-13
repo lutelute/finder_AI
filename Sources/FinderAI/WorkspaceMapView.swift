@@ -17,6 +17,8 @@ final class WorkspaceMapView: NSView {
     var onOpen: ((WorkspaceItem) -> Void)?
     var onSelectionChange: (([WorkspaceItem]) -> Void)?
     var contextMenuProvider: (() -> NSMenu?)?
+    /// 束そのものへの操作（名前を変える、解く、入れ子にする）。見出しを右クリックしたとき。
+    var groupMenuProvider: ((String) -> NSMenu?)?
     /// 島に落とされたものをグループに入れる。実際に入ったら`true`。
     var onLinkToGroup: (([URL], String) -> Bool)?
     /// 島から島へ張り替える。掴んだ島から外して、落とした島に入れる。
@@ -55,8 +57,8 @@ final class WorkspaceMapView: NSView {
     private var listItems: [WorkspaceItem] = []
     private var listRows: [ListRow] = []
     private var listSections: [SectionPlacement?] = []
-    /// 畳んでいる見出し。一覧表示と同じで、畳んでも定義は変わらない。
-    private var collapsedGroups: Set<String> = []
+    /// 畳んでいる見出し。一覧表示と**同じもの**を見る。畳んでも定義は変わらない。
+    var collapsedGroups = WorkspaceCollapsedGroups()
     /// グループに属するものと、その定義。表示された瞬間はまだ大きさが決まっていないので、
     /// 組むのを`layout()`まで待てるように控えておく。
     private var groupedItems: [WorkspaceItem] = []
@@ -107,7 +109,14 @@ final class WorkspaceMapView: NSView {
     /// `layout()`がまた走るので、そこで止めないと回り続ける）。
     private var lastViewport: CGSize = .zero
 
-    private static let nodeRadius: Double = 9.5
+    /// 島の中の点。小さく、薄い。
+    ///
+    /// 9.5ptの満額の丸を並べていたが、同じ島の行は全部同じグループなので、
+    /// 7個並んだ朱色の丸は**7回同じことを言っている**。色の面積の大半をこれが
+    /// 占めていて、6島が同時に満額で鳴る原因になっていた。行の位置を示すだけの
+    /// 印なので、小さく薄くする。
+    private static let nodeRadius: Double = 5
+    /// 複数の島に属する点だけは満額で、輪も付く。ここにしか無い情報なので。
     private static let sharedNodeRadius: Double = 12.5
     private static let othersHeaderHeight: Double = 34
     private static let othersRowHeight: Double = 22
@@ -196,18 +205,12 @@ final class WorkspaceMapView: NSView {
         // 島へ引いてグループに入れる操作は`.link`で受ける。**引く側**が許していない
         // 操作は、受け側が何を返してもOSが弾く。ここを設定していなかったので、
         // この一覧から島へ引いても何も起きなかった。
-        othersTable.setDraggingSourceOperationMask(
-            WorkspaceDragDrop.localSourceOperations,
-            forLocal: true
-        )
-        othersTable.setDraggingSourceOperationMask(
-            WorkspaceDragDrop.externalSourceOperations,
-            forLocal: false
-        )
+        WorkspaceDragDrop.configureDragSource(othersTable)
         // 一覧でもSpaceでプレビューできるように。地図側と同じ手が通る。
         othersTable.onQuickLook = { [weak self] in self?.onQuickLook?() }
         othersTable.isHeaderRow = { [weak self] row in self?.isListHeaderRow(row) ?? false }
         othersTable.onHeaderClicked = { [weak self] row in self?.toggleListSection(at: row) }
+        othersTable.contextMenuProvider = { [weak self] row in self?.othersMenu(atRow: row) }
         othersTable.onOpen = { [weak self] in
             guard let self, let row = self.othersTable.selectedRowIndexes.first,
                   let item = self.item(atListRow: row) else { return }
@@ -218,6 +221,14 @@ final class WorkspaceMapView: NSView {
         othersTable.addTableColumn(column)
 
         othersScroll.documentView = othersTable
+        // 最後の行が下の帯に文字の途中で切られていた。一行ぶん空ける。
+        othersScroll.automaticallyAdjustsContentInsets = false
+        othersScroll.contentInsets = NSEdgeInsets(
+            top: 0,
+            left: 0,
+            bottom: Self.othersRowHeight,
+            right: 0
+        )
         othersScroll.hasVerticalScroller = true
         othersScroll.drawsBackground = true
         othersScroll.backgroundColor = IntegratedPanelTheme.background
@@ -480,38 +491,22 @@ final class WorkspaceMapView: NSView {
         clusterLayout = built
         // 伸ばしたぶんだけ紙を長くする。高さを変えると`layout()`がまた走るが、
         // `lastViewport`が同じなのでそこで止まる。
-        mapHeight.constant = built.size.height
+        mapHeight.constant = max(built.contentHeight, viewport.height)
         mapArea.needsDisplay = true
     }
 
-    /// 全部の島の中身が入るまで、縦に伸ばして組み直す。
+    /// 地図を組む。
     ///
-    /// 画面に収まる範囲で配っていたので、収まらないぶんが「ほか N」になっていた。
-    /// 地図なのだから全部見えているほうが素直で、そのためには「画面の高さに配る」を
-    /// やめて、必要なだけ長い紙に描いてスクロールで辿るしかない。
-    ///
-    /// 際限なく伸ばすと、何千個入ったフォルダで紙が数十メートルになる。見える高さの
-    /// 12倍で打ち切って、そこから先は今までどおり「ほか N」で示す。
+    /// 島は中身のぶんだけ縦に積まれ、要るだけ紙が伸びる（`contentHeight`）。
+    /// 画面に配ろうとしていたころは、収まらないぶんが「ほか N」に落ちていた。
     private func buildFittingLayout(viewport: CGSize) -> WorkspaceClusterLayout {
         let focused = focusedDefinition()
-        func build(_ size: CGSize) -> WorkspaceClusterLayout {
-            WorkspaceClusterLayout(
-                groupedItems: focused.items,
-                groups: focused.groups,
-                size: size,
-                presentNames: presentNames.isEmpty ? nil : presentNames
-            )
-        }
-        var size = viewport
-        var layout = build(size)
-        let limit = viewport.height * 12
-        var rounds = 0
-        while layout.islands.contains(where: { $0.overflow > 0 }), size.height < limit, rounds < 24 {
-            size.height *= 1.25
-            layout = build(size)
-            rounds += 1
-        }
-        return layout
+        return WorkspaceClusterLayout(
+            groupedItems: focused.items,
+            groups: focused.groups,
+            size: viewport,
+            presentNames: presentNames.isEmpty ? nil : presentNames
+        )
     }
 
     /// 広げているグループと、その中身。広げていなければ全部をそのまま返す。
@@ -617,10 +612,12 @@ final class WorkspaceMapView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         layer?.backgroundColor = IntegratedPanelTheme.background.cgColor
-        guard !othersScroll.isHidden, !mapArea.isHidden else { return }
+        guard !othersScroll.isHidden, !mapScroll.isHidden else { return }
         // 地図と一覧の境目。1ptの線だけ引く。
-        IntegratedPanelTheme.secondaryText.withAlphaComponent(0.22).setFill()
-        NSRect(x: mapArea.frame.maxX, y: 0, width: 1, height: bounds.height).fill()
+        // `mapArea`は巻物の中身なので、その右端は画面上の境目とは限らない
+        // （地図を巻物に入れたとき、線が中身と一緒にずれていた）。枠のほうを使う。
+        IntegratedPanelTheme.border.setFill()
+        NSRect(x: mapScroll.frame.maxX, y: 0, width: 1, height: bounds.height).fill()
     }
 
     fileprivate func drawMap(in rect: NSRect) {
@@ -771,31 +768,21 @@ final class WorkspaceMapView: NSView {
             .font: NSFont.systemFont(ofSize: 12.5, weight: .semibold),
             .foregroundColor: IntegratedPanelTheme.text
         ]
-        let available = max(rect.width - 18, 1)
+        let available = max(rect.width - 14, 1)
         var title = island.name
         // 島が狭ければグループ名を詰める。名前が枠を越えると隣の島に食い込む。
         while title.size(withAttributes: attributes).width > available, title.count > 2 {
             title = String(title.dropLast())
         }
         if title != island.name { title = String(title.dropLast()) + "…" }
-        title.draw(at: NSPoint(x: rect.minX + 18, y: rect.minY), withAttributes: attributes)
+        title.draw(at: NSPoint(x: rect.minX + 14, y: rect.minY), withAttributes: attributes)
     }
 
-    /// 島の名前の左に置く印。一覧の見出しと同じ、色の面に頭文字。
+    /// 島の名前の左に置く印。一覧の見出しと同じ、色の丸。
     private func drawGroupChip(named name: String, color: NSColor, atLeft rect: NSRect) {
-        let box = NSRect(x: rect.minX, y: rect.minY + 1, width: 14, height: 14)
+        let box = NSRect(x: rect.minX, y: rect.minY + 4, width: 8, height: 8)
         color.setFill()
-        NSBezierPath(roundedRect: box, xRadius: 3.5, yRadius: 3.5).fill()
-        let initial = WorkspaceGroupPalette.initial(for: name)
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 8.5, weight: .bold),
-            .foregroundColor: WorkspaceGroupPalette.foreground(on: color)
-        ]
-        let size = initial.size(withAttributes: attributes)
-        initial.draw(
-            at: NSPoint(x: box.midX - size.width / 2, y: box.midY - size.height / 2),
-            withAttributes: attributes
-        )
+        NSBezierPath(ovalIn: box).fill()
     }
 
     /// 橋。複数のグループに属するノードから、属する島の中心へ引く。
@@ -862,7 +849,9 @@ final class WorkspaceMapView: NSView {
             IntegratedPanelTheme.secondaryText.withAlphaComponent(0.5).setFill()
             circle.fill()
         } else if colors.count == 1 {
-            colors[0].setFill()
+            // 島の中では、どの行も同じグループ。色は島の枠と見出しが言っているので、
+            // ここは行の在り処を示すだけでいい。
+            colors[0].withAlphaComponent(0.75).setFill()
             circle.fill()
         } else {
             drawSharedNode(at: node.position, radius: radius, colors: colors)
@@ -974,11 +963,24 @@ final class WorkspaceMapView: NSView {
                 max(node.position.x - size.width / 2, mapArea.bounds.minX + 4),
                 mapArea.bounds.maxX - size.width - 4
             )
+            // 下・上・右・左に加えて、斜めと、少し離した場所も試す。四方だけだと
+            // 島に挟まれた点で逃げ場が尽き、島の名前の帯に着地して
+            // 「サーバー viz-note-kit」のようにグループ名の一部に読めていた。
+            let above = node.position.y - r - size.height - 3
+            let below = node.position.y + r + 3
+            let right = node.position.x + r + 5
+            let left = node.position.x - r - 5 - size.width
             let candidates = [
-                NSPoint(x: centred, y: node.position.y + r + 3),
-                NSPoint(x: centred, y: node.position.y - r - size.height - 3),
-                NSPoint(x: node.position.x + r + 5, y: node.position.y - size.height / 2),
-                NSPoint(x: node.position.x - r - 5 - size.width, y: node.position.y - size.height / 2)
+                NSPoint(x: centred, y: below),
+                NSPoint(x: centred, y: above),
+                NSPoint(x: right, y: node.position.y - size.height / 2),
+                NSPoint(x: left, y: node.position.y - size.height / 2),
+                NSPoint(x: right, y: below),
+                NSPoint(x: left, y: below),
+                NSPoint(x: right, y: above),
+                NSPoint(x: left, y: above),
+                NSPoint(x: centred, y: below + 13),
+                NSPoint(x: centred, y: above - 13)
             ]
             let islands = clusterLayout.islands.map(\.frame)
             let clear = candidates.first { origin in
@@ -988,6 +990,16 @@ final class WorkspaceMapView: NSView {
                     && mapArea.bounds.contains(rect)
             }
             let origin = clear ?? candidates[0]
+            if clear == nil {
+                // どこも空いていない。島に重ねるしかないので、下敷きを敷いて
+                // 島の名前や中身と混ざらないようにする。
+                IntegratedPanelTheme.background.withAlphaComponent(0.92).setFill()
+                NSBezierPath(
+                    roundedRect: NSRect(origin: origin, size: size).insetBy(dx: -4, dy: -2),
+                    xRadius: 4,
+                    yRadius: 4
+                ).fill()
+            }
             taken.append(NSRect(origin: origin, size: size))
             shown.draw(at: origin, withAttributes: attributes)
         }
@@ -1270,7 +1282,7 @@ final class WorkspaceMapView: NSView {
     }
 
     /// 紙の長さ。見える高さより長ければ、スクロールして続きを見ることになる。
-    var mapContentHeightForTesting: Double { Double(clusterLayout?.size.height ?? 0) }
+    var mapContentHeightForTesting: Double { clusterLayout?.contentHeight ?? 0 }
 
     func islandCentreForTesting(named name: String) -> CGPoint? {
         clusterLayout?.island(named: name).map { CGPoint(x: $0.frame.midX, y: $0.frame.midY) }
@@ -1295,6 +1307,24 @@ final class WorkspaceMapView: NSView {
 
         draggingFromIsland = payload.from
         mapArea.beginDraggingSession(with: draggingItems, event: event, source: mapArea)
+    }
+
+    /// 右の一覧の右クリック。
+    ///
+    /// 引いて落とす以外に入れる手が無かった。ドラッグは一度に一箇所へしか運べないので、
+    /// まとめて入れるにはメニューが要る。一覧表示と同じものを出す — 同じ一覧なのに
+    /// 出るものが違うと、どちらの流儀で触っているのか覚えていないといけない。
+    func othersMenu(atRow row: Int) -> NSMenu? {
+        if listRows.indices.contains(row), case .header(let title, _) = listRows[row] {
+            return title.flatMap { groupMenuProvider?($0) }
+        }
+        guard item(atListRow: row) != nil else { return contextMenuProvider?() }
+        // 右クリックした行が選択に入っていなければ、そこを選び直す。選んでいない
+        // ものにメニューが効くと、押した先で違うものが動く。
+        if !othersTable.selectedRowIndexes.contains(row) {
+            othersTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        }
+        return contextMenuProvider?()
     }
 
     func mapMenu(at point: CGPoint) -> NSMenu? {
@@ -1492,6 +1522,11 @@ private final class WorkspaceOthersTable: NSTableView {
     /// 見出しを押したとき。見出しの行は選べないので、普通の経路には乗らない。
     var onHeaderClicked: ((Int) -> Void)?
     var isHeaderRow: ((Int) -> Bool)?
+    var contextMenuProvider: ((Int) -> NSMenu?)?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        contextMenuProvider?(row(at: convert(event.locationInWindow, from: nil)))
+    }
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)

@@ -77,6 +77,11 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
     /// メニューを知っている人しかグループを作れない。
     public private(set) var newGroupSlot: CGRect?
 
+    /// 中身を全部置くのに要る高さ。見える高さより長ければ、紙のほうを伸ばして
+    /// スクロールで辿る。島の高さを中身ぴったりにした以上、必要な高さは
+    /// 中身が決めるもので、画面が決めるものではない。
+    public private(set) var contentHeight: Double = 0
+
     private let groupedItems: [WorkspaceItem]
     private let groups: WorkspaceItemGroups?
     private let presentNames: Set<String>?
@@ -104,7 +109,7 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         self.groups = groups
         self.presentNames = presentNames
         self.size = size
-        (islands, nodes, bridges, newGroupSlot) = Self.build(
+        (islands, nodes, bridges, newGroupSlot, contentHeight) = Self.build(
             items: groupedItems,
             groups: groups,
             size: size,
@@ -119,29 +124,13 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         groups: WorkspaceItemGroups?,
         size: CGSize,
         presentNames: Set<String>?
-    ) -> ([Island], [Node], [Int], CGRect?) {
+    ) -> ([Island], [Node], [Int], CGRect?, Double) {
         let names = groups?.adjacencyOrderedNames() ?? []
-        guard size.width > 1, size.height > 1 else { return ([], [], [], nil) }
+        guard size.width > 1, size.height > 1 else { return ([], [], [], nil, size.height) }
 
-        // 「新しいグループ」は下端の帯に置く。
-        //
-        // 枡を一つ多く割って最後を充てていたが、6グループのときに枡が3×2から3×3になり、
-        // 島の高さが三分の二に縮んで7項目のうち2つが「ほか」に落ちた。新しいグループを
-        // 置ける代わりに既にあるグループが読めなくなるのは筋が悪い。帯なら島は縮まない。
         let margin: Double = 14
         let slotHeight: Double = 44
         let slotGap: Double = 12
-        // 狭すぎるときは帯を出さない。出すと島に残る高さが無くなり、グループが
-        // あるのに何も見えなくなる（実測: 60x50の窓で島がゼロになった）。
-        let hasRoomForSlot = size.height > margin * 2 + slotHeight + slotGap + rowHeight * 3
-        let newGroupSlot: CGRect? = hasRoomForSlot
-            ? CGRect(
-                x: margin,
-                y: size.height - margin - slotHeight,
-                width: max(size.width - margin * 2, 1),
-                height: slotHeight
-            )
-            : nil
 
         // グループが一つも無ければ、帯ではなく全面を入口にする。ここしか入口がない。
         guard !names.isEmpty else {
@@ -150,7 +139,7 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
                 y: margin,
                 width: max(size.width - margin * 2, 1),
                 height: max(size.height - margin * 2, 1)
-            ))
+            ), size.height)
         }
 
         // 定義にあるのに実物が無いものを数える。呼び出し側はグループに属するものだけを
@@ -174,14 +163,12 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
 
         // 入れ子のまま枠を割る。最上位だけが領域を取り合い、子は親の枠の内側を分ける。
         // 平らな定義なら、これは今までどおりの格子と同じ結果になる。
+        // 高さは決めない。島は中身のぶんだけ縦に積まれ、要るだけ紙が伸びる。
         let area = CGRect(
             x: margin,
             y: margin,
             width: max(size.width - margin * 2, 1),
-            height: max(
-                size.height - margin * 2 - (hasRoomForSlot ? slotHeight + slotGap : 0),
-                1
-            )
+            height: max(size.height - margin * 2, 1)
         )
         var islands: [Island] = []
         if let groups {
@@ -268,7 +255,23 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         }
 
         let bridges = built.indices.filter { built[$0].isShared }
-        return (islands, built, bridges, newGroupSlot)
+        // 「新しいグループ」の帯は、中身の下に置く。島の高さを中身ぴったりにした以上、
+        // 下端は画面ではなく中身が決める。
+        let bottom = islands.map(\.frame.maxY).max() ?? area.minY
+        let slotTop = max(bottom + slotGap, size.height - margin - slotHeight)
+        let newGroupSlot = CGRect(
+            x: margin,
+            y: slotTop,
+            width: max(size.width - margin * 2, 1),
+            height: slotHeight
+        )
+        return (
+            islands,
+            built,
+            bridges,
+            newGroupSlot,
+            max(slotTop + slotHeight + margin, size.height)
+        )
     }
 
     /// 島の中に名前順で並べる。入りきらない分は数だけ返す。
@@ -304,16 +307,18 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         // 隠すのは、広げても中身が見えないということ（島を全面に広げても
         // 表示数が変わらなかったのはこれが理由）。
         // 入りきらないときは、いちばん下の一行を「ほか N」の帯に譲る。
-        var columns = 1
-        var usableRows = rows
-        if items.count > rows {
-            usableRows = max(rows - 1, 0)
-            let byWidth = max(Int(usable.width / minColumnWidth), 1)
-            let needed = usableRows > 0
-                ? Int((Double(items.count) / Double(usableRows)).rounded(.up))
-                : 1
-            columns = min(byWidth, max(needed, 1))
-        }
+        // まず幅を列に使う。列を増やしても入らないときだけ、最後の一行を
+        // 「ほか N」の帯に譲る。先に一行譲ってから列を数えていたので、
+        // 高さを中身ぴったりに配った島で辻褄が合わず、7個のうち4個しか出なかった。
+        let columns = max(
+            columnsInside(count: items.count, width: frame.width),
+            // 高さが足りないときは、幅の許す範囲で増やして詰める。
+            min(
+                max(Int(usable.width / minColumnWidth), 1),
+                max(Int((Double(items.count) / Double(rows)).rounded(.up)), 1)
+            )
+        )
+        let usableRows = items.count > rows * columns ? max(rows - 1, 1) : rows
         let capacity = usableRows * columns
         guard capacity > 0 else { return ([], items.count) }
 
@@ -388,23 +393,65 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
     /// 子グループの数だけで割っていた。8個入った島と2個の島が同じ大きさになり、
     /// 大きいほうだけが「ほか N」で隠れる — 見たいのは中身なのに、枠の数で
     /// 場所を配っていた。中身の数を主にして、子の枠が食う場所を足す。
+    /// - Parameter width: その島に配られる幅。中を何列に割れるかが決まるので、
+    ///   要る高さは幅次第で変わる。幅を見ずに「一行×件数」で数えると、80個入った
+    ///   束が1500ptの縦長になり、紙をひたすらスクロールすることになる。
     private static func weight(
         of name: String,
         in groups: WorkspaceItemGroups,
         ownCounts: [String: Int],
-        missing: [String: [String]]
+        missing: [String: [String]],
+        width: Double
     ) -> Double {
         let own = Double(ownCounts[name] ?? 0)
         // 「見つからない N →」も一行を占める。数えないと、その一行を空けるために
         // 中身が押し出される（実測: 4個入った島が2個しか出なくなった）。
         let notes = missing[name]?.isEmpty == false ? 1.0 : 0.0
+        let columns = Double(columnsInside(count: Int(own), width: width))
+        let rows = (own / columns).rounded(.up) + notes
         let children = groups.children(of: name)
+        let childWidth = max(width - islandInset.width * 4, 1)
         let inside = children.isEmpty
             ? 0
             : children.reduce(0.0) {
-                $0 + weight(of: $1, in: groups, ownCounts: ownCounts, missing: missing)
-            } + Double(children.count - 1) * 8 + islandInset.height
-        return islandTitleHeight + islandInset.height * 2 + rowHeight * (own + notes) + inside
+                $0 + weight(
+                    of: $1,
+                    in: groups,
+                    ownCounts: ownCounts,
+                    missing: missing,
+                    width: childWidth
+                )
+            } + Double(children.count - 1) * 8 + islandInset.height * 2
+        return islandTitleHeight + islandInset.height * 2 + rowHeight * rows + inside
+    }
+
+    /// 一つの島の中を何列に割るか。**縦に長くなりすぎるときだけ**増やす。
+    ///
+    /// 幅があるからと常に割ると、7個の束が2列に折り返して読む順が分かりにくくなる。
+    /// 一列で読めるうちは一列。長くなってきたら、幅の許す範囲で列を増やす。
+    static func columnsInside(count: Int, width: Double) -> Int {
+        let inner = max(width - islandInset.width * 2, 1)
+        let byWidth = max(Int(inner / minColumnWidth), 1)
+        let byLength = max(Int((Double(count) / maxRowsPerColumn).rounded(.up)), 1)
+        return max(1, min(byWidth, byLength))
+    }
+
+    /// 一列に積む行数の目安。これを超えたら列を増やす。
+    static let maxRowsPerColumn: Double = 24
+
+    /// その領域に島を何列並べるか。`cells`と重みの計算で同じ数を使う。
+    ///
+    /// 島のあいだの余白を勘定に入れる。`width / minIslandWidth`で数えていたので、
+    /// 800ptの領域に4列（1列191pt）を割り、最小幅196ptを下回って名前が切れた
+    /// （`PMU_placement_pro…`）。余白のぶんを足してから割る。
+    private static func columnCount(for count: Int, width: Double, gap: Double) -> Int {
+        max(1, min(count, Int((width + gap) / (minIslandWidth + gap))))
+    }
+
+    /// 島一つぶんの幅。
+    private static func columnWidth(for count: Int, in width: Double, gap: Double) -> Double {
+        let columns = Double(columnCount(for: count, width: width, gap: gap))
+        return max((width - gap * (columns - 1)) / columns, 1)
     }
 
     /// 島がまともに見えるための最小の高さ。名前の帯と、中身の一行分。
@@ -434,11 +481,13 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
             : groups.children(of: parent)
         guard !names.isEmpty else { return [] }
 
-        // 中身の多い島ほど場所を取る。
+        // 中身の多い島ほど場所を取る。幅は先に決める — 何列に割れるかで要る高さが変わる。
+        let gap: Double = depth == 0 ? 12 : 8
+        let cellWidth = columnWidth(for: names.count, in: area.width, gap: gap)
         let weights = names.map {
-            weight(of: $0, in: groups, ownCounts: ownCounts, missing: missing)
+            weight(of: $0, in: groups, ownCounts: ownCounts, missing: missing, width: cellWidth)
         }
-        let boxes = cells(weights: weights, in: area, gap: depth == 0 ? 12 : 8)
+        let boxes = cells(weights: weights, in: area, gap: gap)
         guard boxes.count == names.count else { return [] }
 
         var result: [Island] = []
@@ -459,14 +508,36 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
                 continue
             }
 
-            // 自分の行に使う高さ。子の場所を残すため、最大でも枠の四割まで。
-            let wanted = islandTitleHeight + rowHeight * Double(ownCounts[name] ?? 0)
-            let ownHeight = min(max(wanted, islandTitleHeight), inset.height * 0.4)
+            // 自分の行と子の場所を、それぞれが欲しい高さで分ける。
+            //
+            // 「子の場所を残すため、自分は最大でも枠の四割まで」と決め打っていた。
+            // 子が小さくても親の直下が四割で頭打ちになり、空いているのに親の
+            // メンバーが「ほか N」に落ちた。枡の大きさを中身の量で配るように
+            // した以上、この中でも同じ配り方をするのが筋。
+            let notes = missing[name]?.isEmpty == false ? 1.0 : 0.0
+            let ownColumns = Double(columnsInside(count: ownCounts[name] ?? 0, width: box.width))
+            let ownRows = (Double(ownCounts[name] ?? 0) / ownColumns).rounded(.up) + notes
+            let ownWanted = islandTitleHeight + islandInset.height * 2 + rowHeight * ownRows
+            let childrenWanted = children.reduce(0.0) {
+                $0 + weight(
+                    of: $1,
+                    in: groups,
+                    ownCounts: ownCounts,
+                    missing: missing,
+                    width: max(inset.width - islandInset.width * 2, 1)
+                )
+            } + Double(children.count - 1) * 8
+            // 入るなら両方に欲しいだけ渡す。按分すると、端数のせいで親の最後の一行が
+            // 落ちる（実測: 10個入れた親が4個しか出なかった）。
+            let floor = islandTitleHeight + islandInset.height * 2
+            let ownHeight = inset.height >= ownWanted + childrenWanted
+                ? ownWanted
+                : max(share(inset.height, among: [ownWanted, childrenWanted])[0], floor)
             let contentFrame = CGRect(
                 x: box.minX,
                 y: box.minY,
                 width: box.width,
-                height: ownHeight + islandInset.height * 2
+                height: max(ownHeight, floor)
             )
             let childArea = CGRect(
                 x: inset.minX,
@@ -495,12 +566,9 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         return result
     }
 
-    /// 領域を枡に割る。入れ子の各段でこれを呼ぶ。
+    /// 領域に島を並べる。入れ子の各段でこれを呼ぶ。
     ///
-    /// `weights`は各枡の欲しい大きさ。**子を抱えた親は中に島を並べる場所が要る**ので、
-    /// 均等に割ると子が扁平になって中身が一行も入らなかった（実測: 子の島が高さ22ptに
-    /// なり「ほか 5」しか出なかった）。縦一列のときだけ重みで高さを配る — 横に並ぶときは
-    /// 幅が揃っているほうが読みやすいので均等のまま。
+    /// `weights`は各島が欲しい高さ（`weight(of:)`が中身の量から出す）。
     private static func cells(
         weights: [Double],
         in area: CGRect,
@@ -509,12 +577,46 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         let count = weights.count
         // 潰れた領域でも枡は返す。ここで空を返すと島そのものが消え、
         // 「グループがあるのに何も見えない」になる。
+        guard count > 0, area.width > 0 else { return [] }
+
+        // 島の高さは**中身の量そのもの**。画面の高さに合わせて引き伸ばさない。
+        //
+        // 行の格子に揃えていたので、同じ行の島が全部同じ高さになり、5項目の島が
+        // 385pt、隣の行の4項目の島が154ptという並びになっていた。同じ種類のものが
+        // 理由なく2.5倍違うのが、この画面でいちばん強い「作りかけ」の合図だった。
+        //
+        // 列は幅で決めて、次の島はいちばん空いている列へ積む（新聞の段組みと同じ）。
+        // 入りきらないぶんは紙が縦に伸びる。
+        let columns = columnCount(for: count, width: area.width, gap: gap)
+        let columnWidth = columnWidth(for: count, in: area.width, gap: gap)
+        var used = [Double](repeating: 0, count: columns)
+        var cells: [CGRect] = []
+        for weight in weights {
+            let column = used.enumerated().min { lhs, rhs in
+                // 高さが同じなら左から埋める。同じフォルダなら同じ地図になるように。
+                lhs.element == rhs.element ? lhs.offset < rhs.offset : lhs.element < rhs.element
+            }?.offset ?? 0
+            let top = area.minY + used[column] + (used[column] > 0 ? gap : 0)
+            cells.append(CGRect(
+                x: area.minX + (columnWidth + gap) * Double(column),
+                y: top,
+                width: columnWidth,
+                height: max(weight, minIslandHeight)
+            ))
+            used[column] = top - area.minY + max(weight, minIslandHeight)
+        }
+        return cells
+    }
+
+    /// 使わなくなった格子の割り方。`gridShape`の試験が参照している。
+    private static func gridCells(
+        weights: [Double],
+        in area: CGRect,
+        gap: Double
+    ) -> [CGRect] {
+        let count = weights.count
         guard count > 0, area.width > 0, area.height > 0 else { return [] }
-        let shape = gridShape(
-            count: count,
-            aspect: area.width / area.height,
-            width: area.width
-        )
+        let shape = gridShape(count: count, aspect: area.width / area.height, width: area.width)
 
         if shape.columns == 1, count > 1 {
             let usable = max(area.height - gap * Double(count - 1), 0)
@@ -680,7 +782,7 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         guard newSize.width > 1, newSize.height > 1 else { return }
         size = newSize
         // 引き伸ばすのではなく組み直す。決定的なので、同じ大きさなら必ず同じ地図。
-        (islands, nodes, bridges, newGroupSlot) = Self.build(
+        (islands, nodes, bridges, newGroupSlot, contentHeight) = Self.build(
             items: groupedItems,
             groups: groups,
             size: newSize,

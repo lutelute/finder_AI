@@ -114,17 +114,22 @@ struct WorkspaceClusterLayoutTests {
         #expect(map.nodes.allSatisfy { $0.labelPlacement == .trailing })
     }
 
-    @Test("島に入りきらない分は数で示す")
-    func overflowIsReported() {
+    /// 画面に配っていたころは、収まらないぶんが「ほか N」に落ちた。いまは島が
+    /// 中身のぶんだけ伸び、足りないぶんは紙のほうが長くなる。
+    @Test("300個あっても隠さない。紙のほうが長くなる")
+    func everythingIsPlaced() {
         var groups = WorkspaceItemGroups()
         let names = (0..<300).map { "n\(String(format: "%03d", $0))" }
         for name in names { groups.add(name, to: "グループ") }
         let map = layout(names, groups)
 
         let island = try! #require(map.island(named: "グループ"))
-        #expect(island.overflow > 0)
+        #expect(island.overflow == 0)
+        #expect(map.nodes.count == names.count)
         // 見せた数と「ほか」の数を足せば、必ず元の数になる。
         #expect(map.nodes.count + island.overflow == names.count)
+        // 画面より長い紙になっている。続きはスクロールで辿る。
+        #expect(map.contentHeight > size.height)
     }
 
     /// 高さだけで数えていたころは、島が横に広くても一列しか使わず、置ける場所を
@@ -166,10 +171,11 @@ struct WorkspaceClusterLayoutTests {
         #expect(small.overflow == 0)
         #expect(map.nodes.filter { $0.groups.contains("少ない") }.count == 2)
         #expect(small.frame.height >= WorkspaceClusterLayout.minIslandHeight)
-        // 削るなら多いほうから。あちらは「ほか N」で続きを示せる。
+        // 多いほうも隠さない。中身のぶんだけ縦に伸びる。
         let big = try! #require(map.island(named: "多い"))
-        #expect(big.overflow > 0)
-        #expect(map.nodes.filter { $0.groups.contains("多い") }.count + big.overflow == many.count)
+        #expect(big.overflow == 0)
+        #expect(map.nodes.filter { $0.groups.contains("多い") }.count == many.count)
+        #expect(big.frame.height > small.frame.height)
     }
 
     /// 縦に積むときは、中身の多い束のほうが高くなる。均等に割ると、8個入った島と
@@ -186,6 +192,27 @@ struct WorkspaceClusterLayoutTests {
         let small = try! #require(map.island(named: "少ない"))
         #expect(big.frame.height > small.frame.height)
         #expect(small.frame.height >= WorkspaceClusterLayout.minIslandHeight)
+    }
+
+    /// 「子の場所を残すため親は四割まで」と決め打っていたので、子が小さくても
+    /// 親の直下が頭打ちになり、空いているのに親のメンバーが「ほか N」に落ちた。
+    @Test("子が小さければ、親は直下のメンバーに場所を使える")
+    func parentTakesTheRoomItsChildrenDoNotNeed() {
+        var groups = WorkspaceItemGroups()
+        let mine = (0..<10).map { "p\($0)" }
+        for name in mine { groups.add(name, to: "親") }
+        groups.add("c1", to: "子")
+        groups.nest("子", inside: "親")
+        let map = layout(mine + ["c1"], groups, size: CGSize(width: 420, height: 560))
+
+        let parent = try! #require(map.island(named: "親"))
+        #expect(parent.overflow == 0)
+        #expect(map.nodes.filter { $0.groups.contains("親") }.count == 10)
+        // 子も潰れない。
+        let child = try! #require(map.island(named: "子"))
+        #expect(child.overflow == 0)
+        #expect(parent.frame.contains(child.frame))
+        #expect(!parent.contentFrame.intersects(child.frame))
     }
 
     @Test("入りきるなら「ほか」は出ない")
