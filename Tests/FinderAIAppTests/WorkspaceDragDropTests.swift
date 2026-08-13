@@ -89,22 +89,27 @@ struct WorkspaceDragDropTests {
 /// マスクを各所で書くと、書き忘れた場所だけ静かに死ぬ（実際に二度起きた）。
 @Suite("ドラッグ元の名乗りは一箇所に集める")
 struct WorkspaceDragSourcePolicyTests {
-    @Test("マスクを直に設定している場所が、WorkspaceDragDrop以外に無い")
-    func everyDragSourceGoesThroughTheHelper() throws {
+    /// `Sources/FinderAI`のSwiftファイル。下の階層まで辿る。
+    /// contentsOfDirectoryだと、あとでフォルダを切ったときにその中を黙って見逃す
+    /// （今はフォルダが無いので、見逃しても誰も気づけない）。
+    static func sourceFiles() throws -> [URL] {
         let sources = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()   // FinderAIAppTests
             .deletingLastPathComponent()   // Tests
             .deletingLastPathComponent()   // リポジトリの根
             .appendingPathComponent("Sources/FinderAI")
-        // 下の階層まで辿る。contentsOfDirectoryだと、あとでフォルダを切ったときに
-        // その中の違反を黙って見逃す（今はフォルダが無いので、見逃しても誰も気づけない）。
         let walker = try #require(
             FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil),
             "探し場所が違う: \(sources.path)"
         )
-        let files = walker.compactMap { $0 as? URL }
-            .filter { $0.pathExtension == "swift" && $0.lastPathComponent != "WorkspaceDragDrop.swift" }
+        let files = walker.compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
         #expect(!files.isEmpty, "探し場所が違う: \(sources.path)")
+        return files
+    }
+
+    @Test("マスクを直に設定している場所が、WorkspaceDragDrop以外に無い")
+    func everyDragSourceGoesThroughTheHelper() throws {
+        let files = try Self.sourceFiles().filter { $0.lastPathComponent != "WorkspaceDragDrop.swift" }
 
         var offenders: [String] = []
         var configured = 0
@@ -121,5 +126,65 @@ struct WorkspaceDragSourcePolicyTests {
         )
         // 呼び出し口が消えていたら、違反が無いのではなく検査が空を撫でている。
         #expect(configured > 0, "\(files.count)個のファイルに、ドラッグ元の名乗りが一つも無い")
+    }
+
+    /// 落とすだけで、そこから引くことはない場所。**理由を書いたものだけ**通る。
+    ///
+    /// ここに書いていない新顔は落とす。「直に書いた違反」しか見ない検査だと、
+    /// 新しい一覧が**そもそも何も名乗らない**ときに素通りしてしまい、
+    /// 引いても何も起きない（実際に二度起きた壊れ方と同じ見え方になる）。
+    static let dropOnlySites: [String: String] = [
+        "WorkspaceBrowserViewController.swift:sidebarTable":
+            "よく使う場所。落として登録するだけで、ここから引いて出すことはない",
+        "EdgeTabButton.swift:self":
+            "袖のタブ。落として移す先で、ボタン自身は掴めない"
+    ]
+
+    @Test("落とせる場所は、引ける場所かどうかを言い切っている")
+    func everyDropTargetSaysWhetherItCanBeDragged() throws {
+        var sites: [(key: String, ok: Bool)] = []
+        for file in try Self.sourceFiles() {
+            let name = file.lastPathComponent
+            let text = try String(contentsOf: file, encoding: .utf8)
+            // 落とし先として名乗る場所を全部出す（手で並べない）。
+            for line in text.components(separatedBy: .newlines)
+            where line.contains(".registerForDraggedTypes(") || line.contains("registerForDraggedTypes(") {
+                guard let head = line.components(separatedBy: "registerForDraggedTypes(").first else { continue }
+                let receiver = head
+                    .trimmingCharacters(in: .whitespaces)
+                    .hasSuffix(".")
+                    ? String(head.trimmingCharacters(in: .whitespaces).dropLast())
+                        .components(separatedBy: CharacterSet(charactersIn: " \t=("))
+                        .last ?? "self"
+                    : "self"
+                let key = "\(name):\(receiver)"
+                // 引けるなら、名乗り方は二つだけ。ヘルパを通すか、
+                // NSDraggingSourceで`localSourceOperations`を返すか。
+                let viaHelper = text.contains("WorkspaceDragDrop.configureDragSource(\(receiver))")
+                // 「このファイルのどこかにNSDraggingSourceがある」では駄目。
+                // それだと同じファイルに足した新顔まで免除されて、素通りする
+                // （地図のファイルで実際に見逃した）。その受け手が引き手として
+                // 渡されていることまで見る。
+                let viaProtocol = text.contains("NSDraggingSource")
+                    && text.contains("WorkspaceDragDrop.localSourceOperations")
+                    && text.contains("source: \(receiver))")
+                sites.append((key, viaHelper || viaProtocol || Self.dropOnlySites[key] != nil))
+            }
+        }
+
+        #expect(!sites.isEmpty, "落とし先が一つも見つからない。検査が空を撫でている")
+        let unexplained = sites.filter { !$0.ok }.map(\.key)
+        #expect(
+            unexplained.isEmpty,
+            """
+            落とせるのに、引けるかどうかを言っていない: \(unexplained.joined(separator: ", "))
+            引けるなら WorkspaceDragDrop.configureDragSource(_:) を通す。
+            落とすだけなら dropOnlySites に理由を書く。
+            """
+        )
+
+        // 実体の消えた但し書きは、次に読む人を騙す。
+        let stale = Self.dropOnlySites.keys.filter { key in !sites.contains { $0.key == key } }
+        #expect(stale.isEmpty, "dropOnlySitesに、もう無い場所が残っている: \(stale.joined(separator: ", "))")
     }
 }
