@@ -168,6 +168,8 @@ final class WorkspaceMapView: NSView {
     static let nameColumn = NSUserInterfaceItemIdentifier("other.name")
     static let modifiedColumn = NSUserInterfaceItemIdentifier("other.modified")
     static let sizeColumn = NSUserInterfaceItemIdentifier("other.size")
+    static let kindColumn = NSUserInterfaceItemIdentifier("other.kind")
+    static let groupsColumn = NSUserInterfaceItemIdentifier("other.groups")
 
     /// 並べ替えは一覧表示と**同じ順序**を使う。ここだけ別の順にすると、
     /// 表示を替えただけで並びが変わる。押されたら呼び出し側へ渡し、
@@ -194,7 +196,23 @@ final class WorkspaceMapView: NSView {
         size.minWidth = 70
         size.width = 80
         size.sortDescriptorPrototype = NSSortDescriptor(key: "size", ascending: true)
-        return [name, modified, size]
+        let kind = NSTableColumn(identifier: kindColumn)
+        kind.title = "種類"
+        kind.minWidth = 90
+        kind.width = 120
+        kind.sortDescriptorPrototype = NSSortDescriptor(key: "kind", ascending: true)
+        // 一覧表示と同じく既定は隠す。所属は見出しでも読めるので、列は要る人だけが出す。
+        let groups = NSTableColumn(identifier: groupsColumn)
+        groups.title = "グループ"
+        groups.minWidth = 90
+        groups.width = 130
+        groups.isHidden = true
+        groups.sortDescriptorPrototype = NSSortDescriptor(
+            key: "groups",
+            ascending: true,
+            selector: #selector(NSString.localizedStandardCompare(_:))
+        )
+        return [name, modified, size, kind, groups]
     }
 
     /// 幅に合わせて列を出し入れする。
@@ -203,18 +221,43 @@ final class WorkspaceMapView: NSView {
     /// 残せるぶんだけ足す。列が一つのときは見出しも出さない — 押しても
     /// 並べ替えるものが一つしかない帯は場所の無駄。
     private func applyOthersColumns(width: Double) {
-        let modified = othersTable.tableColumns.first { $0.identifier == Self.modifiedColumn }
-        let size = othersTable.tableColumns.first { $0.identifier == Self.sizeColumn }
-        let showsModified = width >= 150 + 120 + 24
-        let showsSize = width >= 150 + 120 + 70 + 24
-        modified?.isHidden = !showsModified
-        size?.isHidden = !showsSize
-        let wantsHeader = showsModified
+        // 名前に150pt残したうえで、入るぶんだけ足す。
+        // 「グループ」を出すと言われているときは最優先で入れる — 出せと言った列が
+        // 幅の都合で消えると、切り替えを押しても何も起きないように見える。
+        var budget = width - 150 - 24
+        var wanted: [(NSUserInterfaceItemIdentifier, Double)] = []
+        if showsGroupColumn { wanted.append((Self.groupsColumn, 90)) }
+        wanted += [(Self.modifiedColumn, 120), (Self.sizeColumn, 70), (Self.kindColumn, 90)]
+        var visible: Set<NSUserInterfaceItemIdentifier> = []
+        for (identifier, need) in wanted where budget >= need {
+            budget -= need
+            visible.insert(identifier)
+        }
+        for column in othersTable.tableColumns where column.identifier != Self.nameColumn {
+            column.isHidden = !visible.contains(column.identifier)
+        }
+        let wantsHeader = !visible.isEmpty
         if wantsHeader, othersTable.headerView == nil {
             othersTable.headerView = NSTableHeaderView()
+            // 列の出し入れは一覧表示と同じ場所（見出しの右クリック）から。
+            othersTable.headerView?.menu = columnHeaderMenuProvider?()
         } else if !wantsHeader, othersTable.headerView != nil {
             othersTable.headerView = nil
         }
+    }
+
+    /// 列見出しの右クリックに出すもの。一覧表示と同じものを供給してもらう。
+    var columnHeaderMenuProvider: (() -> NSMenu?)?
+
+    /// 「グループ」の列を出すか。一覧表示と**同じ設定**を見る。
+    /// 別々に持つと、表示を替えただけで列が消える。
+    private var showsGroupColumn = false
+
+    func setShowsGroupColumn(_ shows: Bool) {
+        guard showsGroupColumn != shows else { return }
+        showsGroupColumn = shows
+        applyOthersColumns(width: othersTable.bounds.width)
+        othersTable.reloadData()
     }
 
     /// 設定から戻すとき用。知らせは返さない（往復して書き戻すのを避ける）。
@@ -649,6 +692,12 @@ final class WorkspaceMapView: NSView {
 
     /// 「ほか N を開く →」の的。描いたあとに埋まる。
     var overflowHitRectsForTesting: [String: NSRect] { overflowHitRects }
+    /// 右の一覧の列と、いま見えているか。幅で出し入れするので窓の大きさに依る。
+    func othersColumnsForTesting(width: Double) -> [(id: String, visible: Bool)] {
+        applyOthersColumns(width: width)
+        return othersTable.tableColumns.map { ($0.identifier.rawValue, !$0.isHidden) }
+    }
+
     /// 「見つからない N →」の的。島ごとに入る。
     var missingHitRectsForTesting: [String: NSRect] { missingHitRects }
     /// 「← すべての島に戻る」の的。広げているときだけ入る。
@@ -1632,9 +1681,20 @@ extension WorkspaceMapView: NSTableViewDataSource, NSTableViewDelegate {
             )
             let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView
                 ?? Self.makeTextCell(identifier: identifier)
-            cell.textField?.stringValue = tableColumn.identifier == Self.modifiedColumn
-                ? Self.dateText(item.modifiedAt)
-                : Self.sizeText(item)
+            switch tableColumn.identifier {
+            case Self.modifiedColumn:
+                cell.textField?.stringValue = Self.dateText(item.modifiedAt)
+            case Self.sizeColumn:
+                cell.textField?.stringValue = Self.sizeText(item)
+            case Self.kindColumn:
+                cell.textField?.stringValue = item.typeDescription ?? "—"
+            case Self.groupsColumn:
+                let names = itemGroups?.groupNames(for: item.name) ?? []
+                cell.textField?.stringValue = names.isEmpty ? "—" : names.joined(separator: ", ")
+                cell.toolTip = names.isEmpty ? nil : names.joined(separator: "、")
+            default:
+                cell.textField?.stringValue = ""
+            }
             return cell
         }
         let cell = tableView.makeView(
@@ -1675,6 +1735,8 @@ extension WorkspaceMapView: NSTableViewDataSource, NSTableViewDelegate {
         let identifier: NSUserInterfaceItemIdentifier = switch key {
         case "modified": NSUserInterfaceItemIdentifier("modified")
         case "size": NSUserInterfaceItemIdentifier("size")
+        case "kind": NSUserInterfaceItemIdentifier("kind")
+        case "groups": NSUserInterfaceItemIdentifier("groups")
         default: NSUserInterfaceItemIdentifier("name")
         }
         onSortChanged?(identifier, descriptor.ascending)

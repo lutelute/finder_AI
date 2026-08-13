@@ -1348,6 +1348,8 @@ final class WorkspaceBrowserViewController: NSViewController {
         }
         mapView.setShowsOthersOnly(preferences.mapShowsOthersOnly)
         mapView.onPruneMissing = { [weak self] group in self?.pruneMissingMembers(in: group) }
+        mapView.columnHeaderMenuProvider = { [weak self] in self?.makeColumnHeaderMenu() }
+        mapView.setShowsGroupColumn(preferences.showsGroupColumn)
         // 右の一覧から島へ引いてグループに入れる。ファイルは動かないので、
         // 一覧の見出しへのドロップと同じ扱い。
         mapView.onLinkToGroup = { [weak self] urls, group in
@@ -1404,6 +1406,16 @@ final class WorkspaceBrowserViewController: NSViewController {
     @objc func selectGalleryView() { select(viewMode: .gallery) }
     @objc func selectMapView() { select(viewMode: .map) }
 
+    /// 列見出しの右クリックに出すもの。一覧にも地図の右の一覧にも同じものを付ける。
+    /// メニューは一つの見出しにしか付けられないので、都度作る。
+    func makeColumnHeaderMenu() -> NSMenu {
+        let menu = NSMenu(title: "列")
+        let item = NSMenuItem(title: "グループ", action: #selector(toggleGroupColumn), keyEquivalent: "")
+        item.target = self
+        menu.addItem(item)
+        return menu
+    }
+
     /// 「グループ」の列を出す／隠す。列見出しの右クリックと「表示」メニューの両方から。
     @objc func toggleGroupColumn() {
         preferences.showsGroupColumn.toggle()
@@ -1411,9 +1423,11 @@ final class WorkspaceBrowserViewController: NSViewController {
     }
 
     private func applyGroupColumnVisibility() {
+        let shows = preferences.showsGroupColumn
+        // 地図の右の一覧も同じ設定を見る。別々に持つと、表示を替えただけで列が消える。
+        mapView.setShowsGroupColumn(shows)
         guard let column = fileTable.tableColumns.first(where: { $0.identifier == Column.groups })
         else { return }
-        let shows = preferences.showsGroupColumn
         guard column.isHidden == shows else { return }
         column.isHidden = !shows
         layoutFileColumns()
@@ -1992,15 +2006,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         fileTable.registerForDraggedTypes([.fileURL])
         WorkspaceDragDrop.configureDragSource(fileTable)
         // 列見出しの右クリックで列を出し入れする（Finderと同じ場所）。
-        let headerMenu = NSMenu(title: "列")
-        let groupColumnItem = NSMenuItem(
-            title: "グループ",
-            action: #selector(toggleGroupColumn),
-            keyEquivalent: ""
-        )
-        groupColumnItem.target = self
-        headerMenu.addItem(groupColumnItem)
-        fileTable.headerView?.menu = headerMenu
+        fileTable.headerView?.menu = makeColumnHeaderMenu()
 
         fileTable.onOpen = { [weak self] in self?.openSelection() }
         fileTable.onQuickLook = { [weak self] in self?.toggleQuickLook() }

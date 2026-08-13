@@ -299,6 +299,52 @@ struct WorkspaceMapRegroupTests {
 }
 
 
+/// 「地図にした時の右側は、普通のFinderのリスト表示として理解すればいい」。
+/// 一覧表示が持っている列は、こちらにも在るべき。
+@Suite("地図の右の一覧の列")
+@MainActor
+struct WorkspaceMapOthersColumnTests {
+    private static func view() -> WorkspaceMapView {
+        _ = NSApplication.shared
+        return WorkspaceMapView(frame: NSRect(x: 0, y: 0, width: 900, height: 400))
+    }
+
+    @Test("一覧表示と同じ五つの列を持っている")
+    func hasTheSameColumnsAsTheList() {
+        let mapColumns = Self.view().othersColumnsForTesting(width: 900).map(\.id)
+        // 一覧表示の列（"name" など）と、地図の右の列（"other.name" など）を突き合わせる。
+        let listColumns = WorkspaceBrowserViewController.makeFileColumns()
+            .map(\.identifier.rawValue)
+        #expect(mapColumns == listColumns.map { "other.\($0)" })
+    }
+
+    /// 狭いまま列を並べると、名前が読めなくなって本末転倒になる。
+    @Test("幅に応じて右の列から畳まれる。名前は最後まで残る")
+    func columnsFoldFromTheRight() {
+        let view = Self.view()
+        func visible(_ width: Double) -> [String] {
+            view.othersColumnsForTesting(width: width).filter(\.visible).map(\.id)
+        }
+        #expect(visible(200) == ["other.name"])
+        #expect(visible(300) == ["other.name", "other.modified"])
+        #expect(visible(370) == ["other.name", "other.modified", "other.size"])
+        #expect(visible(460).contains("other.kind"))
+        // 「グループ」は言われるまで出さない（名前の幅を削るため）。
+        #expect(!visible(900).contains("other.groups"))
+    }
+
+    /// 出せと言った列が幅の都合で消えると、切り替えを押しても何も起きないように見える。
+    @Test("「グループ」を出すと言われたら、ほかの列より先に入れる")
+    func theGroupColumnWinsWhenAsked() {
+        let view = Self.view()
+        view.setShowsGroupColumn(true)
+        let narrow = view.othersColumnsForTesting(width: 280).filter(\.visible).map(\.id)
+        #expect(narrow == ["other.name", "other.groups"])
+        let wide = view.othersColumnsForTesting(width: 900).filter(\.visible).map(\.id)
+        #expect(Set(wide) == ["other.name", "other.groups", "other.modified", "other.size", "other.kind"])
+    }
+}
+
 /// 「見つからない N →」は、押した島のことを聞いている。
 @Suite("見つからないの整理は、押した島だけに効く")
 @MainActor
