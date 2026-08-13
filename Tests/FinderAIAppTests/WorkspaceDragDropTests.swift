@@ -96,22 +96,30 @@ struct WorkspaceDragSourcePolicyTests {
             .deletingLastPathComponent()   // Tests
             .deletingLastPathComponent()   // リポジトリの根
             .appendingPathComponent("Sources/FinderAI")
-        let files = try FileManager.default.contentsOfDirectory(
-            at: sources,
-            includingPropertiesForKeys: nil
-        ).filter { $0.pathExtension == "swift" && $0.lastPathComponent != "WorkspaceDragDrop.swift" }
+        // 下の階層まで辿る。contentsOfDirectoryだと、あとでフォルダを切ったときに
+        // その中の違反を黙って見逃す（今はフォルダが無いので、見逃しても誰も気づけない）。
+        let walker = try #require(
+            FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil),
+            "探し場所が違う: \(sources.path)"
+        )
+        let files = walker.compactMap { $0 as? URL }
+            .filter { $0.pathExtension == "swift" && $0.lastPathComponent != "WorkspaceDragDrop.swift" }
         #expect(!files.isEmpty, "探し場所が違う: \(sources.path)")
 
         var offenders: [String] = []
+        var configured = 0
         for file in files {
             let text = try String(contentsOf: file, encoding: .utf8)
             if text.contains("setDraggingSourceOperationMask") {
                 offenders.append(file.lastPathComponent)
             }
+            configured += text.components(separatedBy: "WorkspaceDragDrop.configureDragSource(").count - 1
         }
         #expect(
             offenders.isEmpty,
             "WorkspaceDragDrop.configureDragSource(_:) を通すこと: \(offenders.joined(separator: ", "))"
         )
+        // 呼び出し口が消えていたら、違反が無いのではなく検査が空を撫でている。
+        #expect(configured > 0, "\(files.count)個のファイルに、ドラッグ元の名乗りが一つも無い")
     }
 }
