@@ -83,12 +83,17 @@ final class WorkspaceMapView: NSView {
     private var missingHitRects: [String: NSRect] = [:]
     /// 「ほか N」の文字が占める場所。押すとそのグループを全面に広げる。
     private var overflowHitRects: [String: NSRect] = [:]
-    /// 全面に広げているグループ。`nil`なら全部の島を並べた地図。
+    /// 降りてきた道。末尾がいま広げているグループで、空なら全部の島を並べた地図。
     ///
     /// 島は枡に割って並べるので、メンバーの多いグループは入りきらず「ほか N」に落ちる。
     /// 数を出すだけでは中身が見えない — 一つだけを地図いっぱいに置き直せば、
     /// 同じ並べ方のまま全部が入る。
-    private var focusedGroup: String?
+    ///
+    /// 一段しか持たないと、深い入れ子で降りていけない（子を広げると、いま広げている
+    /// 束との入れ替わりになる）。積んでおけば、降りた道をそのまま一段ずつ戻れる。
+    private var focusPath: [String] = []
+    /// 全面に広げているグループ。`nil`なら全部の島。
+    private var focusedGroup: String? { focusPath.last }
     /// 「すべての島に戻る」の文字が占める場所。広げているときだけ出る。
     private var focusBackHitRect: NSRect?
     private var trackingArea: NSTrackingArea?
@@ -397,7 +402,7 @@ final class WorkspaceMapView: NSView {
         self.items = items
         // フォルダが変わったら広げるのをやめる。同じ名前のグループが隣のフォルダにも
         // あると、開いた覚えのない島が広がったまま出る。
-        focusedGroup = nil
+        focusPath = []
         itemsByName = Dictionary(items.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
         selectedNames = selectedNames.filter { itemsByName[$0] != nil }
         assignColors(for: groups)
@@ -703,6 +708,8 @@ final class WorkspaceMapView: NSView {
     /// 「← すべての島に戻る」の的。広げているときだけ入る。
     var focusBackHitRectForTesting: NSRect? { focusBackHitRect }
     var focusedGroupForTesting: String? { focusedGroup }
+    /// 降りてきた道。戻り道が一段ずつであることを確かめるために見る。
+    var focusPathForTesting: [String] { focusPath }
     /// いま地図に出ているそのグループの点の数。広げると増える（それが広げる目的）。
     func visibleNodeCountForTesting(inGroup name: String) -> Int {
         (clusterLayout?.nodes ?? []).filter { $0.groups.contains(name) }.count
@@ -737,18 +744,40 @@ final class WorkspaceMapView: NSView {
         NSGraphicsContext.restoreGraphicsState()
     }
 
-    /// 広げているなら戻す。戻したかどうかを返す（escを他の用途と取り合わないため）。
+    /// 広げているなら**一段だけ**戻す。戻したかどうかを返す
+    /// （escを他の用途と取り合わないため）。
+    ///
+    /// 一気に最上位へ戻すと、深く降りたときに途中の階層へ寄れない。
     @discardableResult
     func closeFocusIfNeeded() -> Bool {
-        guard focusedGroup != nil else { return false }
-        focus(on: nil)
+        guard !focusPath.isEmpty else { return false }
+        focusPath.removeLast()
+        rebuildAfterFocusChange()
         return true
     }
 
     /// 一つのグループを地図いっぱいに広げる。`nil`で全部の島に戻る。
+    ///
+    /// いま広げている束の**中**のものを指されたら、入れ替えずに降りる（積む）。
+    /// 入れ替えにすると、深い入れ子で子へ降りていく手が無くなる。
+    /// 関係のない束を指されたら、そこから始め直す — 全体の地図から
+    /// 深い島を直に指したときに、通ってもいない道を戻り道として積まないため。
     func focus(on name: String?) {
+        guard let name else {
+            guard !focusPath.isEmpty else { return }
+            focusPath = []
+            rebuildAfterFocusChange()
+            return
+        }
         guard focusedGroup != name else { return }
-        focusedGroup = name
+        let isInsideCurrent = focusedGroup.map { current in
+            itemGroups?.ancestors(of: name).contains(current) ?? false
+        } ?? false
+        focusPath = isInsideCurrent ? focusPath + [name] : [name]
+        rebuildAfterFocusChange()
+    }
+
+    private func rebuildAfterFocusChange() {
         // 島の割り付けが変わるので、大きさが同じでも組み直す。
         clusterLayout = nil
         rebuildIfPossible()
@@ -1250,7 +1279,10 @@ final class WorkspaceMapView: NSView {
             focusBackHitRect = nil
             return
         }
-        let text = "← すべての島に戻る（\(focusedGroup) を広げています）"
+        // 一段ずつ戻る。降りてきた道が二段以上あるなら、戻る先はその親。
+        let parent = focusPath.count >= 2 ? focusPath[focusPath.count - 2] : nil
+        let text = parent.map { "← 「\($0)」に戻る（\(focusedGroup) を広げています）" }
+            ?? "← すべての島に戻る（\(focusedGroup) を広げています）"
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 11, weight: .medium),
             .foregroundColor: IntegratedPanelTheme.secondaryText
@@ -1277,9 +1309,9 @@ final class WorkspaceMapView: NSView {
             _ = onCreateGroup?([])
             return
         }
-        // 「← すべての島に戻る」を押したら広げるのをやめる。
+        // 戻り道を押したら**一段だけ**戻る。降りた道をそのまま辿れるように。
         if let focusBackHitRect, focusBackHitRect.contains(point) {
-            focus(on: nil)
+            closeFocusIfNeeded()
             return
         }
         // 「ほか N を開く →」を押したら、そのグループを地図いっぱいに広げる。
@@ -1299,7 +1331,12 @@ final class WorkspaceMapView: NSView {
             // 名前をダブルクリックしたら広げる／戻す。「ほか N」が出ていない島でも
             // 大きく見たいことはある。
             if event.clickCount == 2 {
-                focus(on: focusedGroup == island.name ? nil : island.name)
+                // いま広げている束そのものを叩いたら一段戻る。中の子なら降りる。
+                if focusedGroup == island.name {
+                    closeFocusIfNeeded()
+                } else {
+                    focus(on: island.name)
+                }
                 return
             }
             selectedNames = Set(

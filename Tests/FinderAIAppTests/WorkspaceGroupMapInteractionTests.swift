@@ -299,6 +299,139 @@ struct WorkspaceMapRegroupTests {
 }
 
 
+/// 深い入れ子では、降りていく手が要る。子を広げるのが「入れ替え」だと、
+/// 一段目から先へ進めない。
+@Suite("広げた島の中から、さらに子へ降りる")
+@MainActor
+struct WorkspaceMapNestedFocusTests {
+    /// 研究 ∋ 電力系統 ∋ 潮流計算。それぞれに中身がある。
+    private static func fixture() -> (items: [WorkspaceItem], groups: WorkspaceItemGroups) {
+        let root = URL(fileURLWithPath: "/tmp/finderai-nested-test", isDirectory: true)
+        func item(_ name: String) -> WorkspaceItem {
+            WorkspaceItem(
+                url: root.appendingPathComponent(name),
+                name: name,
+                isDirectory: true,
+                isHidden: false,
+                fileSize: nil,
+                modifiedAt: nil,
+                typeDescription: "フォルダ"
+            )
+        }
+        var groups = WorkspaceItemGroups()
+        var items: [WorkspaceItem] = []
+        for (group, count) in [("研究", 3), ("電力系統", 3), ("潮流計算", 3), ("別の束", 2)] {
+            for index in 1...count {
+                let name = "\(group)の\(index)"
+                items.append(item(name))
+                groups.add(name, to: group)
+            }
+        }
+        groups.nest("電力系統", inside: "研究")
+        groups.nest("潮流計算", inside: "電力系統")
+        return (items, groups)
+    }
+
+    private static func make() -> WorkspaceMapView {
+        _ = NSApplication.shared
+        let view = WorkspaceMapView(frame: NSRect(x: 0, y: 0, width: 800, height: 500))
+        let fixture = Self.fixture()
+        view.show(
+            items: fixture.items,
+            groups: fixture.groups,
+            presentNames: Set(fixture.items.map(\.name))
+        )
+        let window = NSWindow(
+            contentRect: view.frame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = view
+        view.layoutSubtreeIfNeeded()
+        view.renderForTesting()
+        return view
+    }
+
+    private static func doubleClickTitle(_ view: WorkspaceMapView, of name: String) throws {
+        let point = try #require(
+            view.islandTitlePointForTesting(named: name),
+            "「\(name)」の島が地図に出ていない"
+        )
+        let event = try #require(NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 2,
+            pressure: 1
+        ))
+        view.handleMapClick(at: point, event: event)
+        view.renderForTesting()
+    }
+
+    @Test("子の名前を叩くと、入れ替わらずに降りる")
+    func drillsDownIntoChildren() throws {
+        let view = Self.make()
+        try Self.doubleClickTitle(view, of: "研究")
+        #expect(view.focusPathForTesting == ["研究"])
+
+        // 広げているあいだも子の島は連れてきている。そこをさらに叩く。
+        try Self.doubleClickTitle(view, of: "電力系統")
+        #expect(view.focusPathForTesting == ["研究", "電力系統"], "入れ替えではなく積む")
+
+        try Self.doubleClickTitle(view, of: "潮流計算")
+        #expect(view.focusPathForTesting == ["研究", "電力系統", "潮流計算"])
+        #expect(view.focusedGroupForTesting == "潮流計算")
+    }
+
+    @Test("戻り道は一段ずつ。降りた道をそのまま辿れる")
+    func backGoesOneStep() throws {
+        let view = Self.make()
+        try Self.doubleClickTitle(view, of: "研究")
+        try Self.doubleClickTitle(view, of: "電力系統")
+        try Self.doubleClickTitle(view, of: "潮流計算")
+
+        let back = try #require(view.focusBackHitRectForTesting)
+        let event = try #require(NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1
+        ))
+        view.handleMapClick(at: CGPoint(x: back.midX, y: back.midY), event: event)
+        view.renderForTesting()
+        #expect(view.focusPathForTesting == ["研究", "電力系統"], "一気に最上位へ戻さない")
+
+        // escも同じ一段ずつ。
+        #expect(view.closeFocusIfNeeded())
+        #expect(view.focusPathForTesting == ["研究"])
+        #expect(view.closeFocusIfNeeded())
+        #expect(view.focusPathForTesting.isEmpty)
+        #expect(!view.closeFocusIfNeeded(), "広げていないときは何も起きない")
+    }
+
+    /// 全体の地図から深い島を直に指したときに、通ってもいない道を戻り道として
+    /// 積むと、押した覚えのない階層へ戻される。
+    @Test("関係のない束を指したら、そこから始め直す")
+    func focusingElsewhereRestartsThePath() throws {
+        let view = Self.make()
+        try Self.doubleClickTitle(view, of: "研究")
+        try Self.doubleClickTitle(view, of: "電力系統")
+
+        view.focus(on: "別の束")
+        #expect(view.focusPathForTesting == ["別の束"])
+    }
+}
+
 /// 「地図にした時の右側は、普通のFinderのリスト表示として理解すればいい」。
 /// 一覧表示が持っている列は、こちらにも在るべき。
 @Suite("地図の右の一覧の列")
