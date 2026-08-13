@@ -752,6 +752,8 @@ final class WorkspaceBrowserViewController: NSViewController {
     /// 見たいグループだけを目の前に置ける。フォルダを移っても覚えておく。
     /// 畳んだ束。地図の右の一覧と同じものを見る（表示を替えても畳み方が変わらない）。
     let collapsedGroups = WorkspaceCollapsedGroups()
+    /// 外での改名を追う見張り。フォルダごとに覚え直す。
+    private var renameTracker = WorkspaceRenameTracker()
     private var listingTask: Task<Void, Never>?
     private var cloudStatusTask: Task<Void, Never>?
     private var loadingIndicatorTask: Task<Void, Never>?
@@ -2507,6 +2509,7 @@ final class WorkspaceBrowserViewController: NSViewController {
             itemGroups = nil
             itemGroupsError = "\(WorkspaceItemGroups.fileName) を読めません: \(error.localizedDescription)"
         }
+        followExternalRenames(in: directory)
 
         allItems = items
         updateSearchResults()
@@ -3423,6 +3426,41 @@ final class WorkspaceBrowserViewController: NSViewController {
     ///
     /// いまのフォルダの直下のものだけ。定義は相対名で持つので、別の階層のものは
     /// 指せない（そこを触ると、名前が同じ別のものを巻き込む）。
+    /// 外（Finderやシェル）で名前を変えられたとき、束の定義を追わせる。
+    ///
+    /// 推測では結ばない。アプリがその一覧を一度見ていれば、消えた名前が持っていた
+    /// ファイルの同一性を覚えていられる。増えた名前がそれと**一致したときだけ**
+    /// 書き換える（`WorkspaceRenameTracker`）。追えないものは「見つからない」に残す。
+    private func followExternalRenames(in directory: URL) {
+        guard itemGroupsError == nil, var groups = itemGroups, !groups.groups.isEmpty else { return }
+        let renames = renameTracker.follow(
+            directory: directory.standardizedFileURL,
+            present: presentNames,
+            members: Set(groups.groups.flatMap(\.members)),
+            identity: { Self.fileIdentity(of: directory.appendingPathComponent($0)) }
+        )
+        guard !renames.isEmpty else { return }
+        for rename in renames { groups.renameMember(rename.from, to: rename.to) }
+        do {
+            try groups.save(to: directory)
+            itemGroups = groups
+        } catch {
+            itemGroupsError = "\(WorkspaceItemGroups.fileName) を保存できません: \(error.localizedDescription)"
+        }
+    }
+
+    /// ファイルの同一性。ボリューム・inode・作成時刻。
+    ///
+    /// inode だけでは足りない — 消したあとに作られたものが同じ番号を貰うことがある。
+    /// 作成時刻まで揃うことは偶然では起きないので、二つ合わせて「同じもの」と言える。
+    static func fileIdentity(of url: URL) -> String? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let inode = attributes[.systemFileNumber] as? UInt64,
+              let device = attributes[.systemNumber] as? Int else { return nil }
+        let created = (attributes[.creationDate] as? Date)?.timeIntervalSinceReferenceDate ?? 0
+        return "\(device):\(inode):\(created)"
+    }
+
     private func followRenameInGroups(from source: URL, to renamed: URL) {
         guard itemGroupsError == nil, var groups = itemGroups else { return }
         let parent = source.deletingLastPathComponent().standardizedFileURL
