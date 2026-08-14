@@ -855,6 +855,15 @@ final class WorkspaceBrowserViewController: NSViewController {
     var galleryIsVisibleForTesting: Bool { galleryScrollView?.isHidden == false }
     /// 一覧の表。落とす操作を、GUIを合成せずに同じ経路から叩くために出す。
     var fileTableForTesting: NSTableView { fileTable }
+    var galleryViewForTesting: NSCollectionView { galleryView }
+    var sidebarTableForTesting: NSTableView { sidebarTable }
+    /// サイドバーで、そのフォルダが何行目か。
+    func sidebarRowForTesting(named name: String) -> Int? {
+        sidebarRows.indices.first { row in
+            if case .item(let item) = sidebarRows[row] { return item.url.lastPathComponent == name }
+            return false
+        }
+    }
     /// いま一覧に出ているもの。読み込みは非同期なので、待つ側が見るため。
     var displayedItemsForTesting: [WorkspaceItem] { displayedItems }
     /// その名前が何行目か。見出しがあると行番号と並びがずれる。

@@ -244,3 +244,164 @@ struct WorkspaceMapListDropTests {
         #expect(asked.last?.0 == folder)
     }
 }
+
+/// 一覧以外の表示でも、引いて落として動かせること。
+/// 受け側は表示ごとに別々に書かれているので、一つ直しても他が同じとは限らない。
+@Suite("一覧以外の表示でも落とせる")
+@MainActor
+struct WorkspaceOtherViewDropTests {
+    private func temporaryFolder() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("finderai-drop2-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func controller(at folder: URL) -> WorkspaceBrowserViewController {
+        _ = NSApplication.shared
+        let preferences = WorkspacePreferences(
+            defaults: UserDefaults(suiteName: "finderai-drop2-\(UUID().uuidString)")!
+        )
+        let controller = WorkspaceBrowserViewController(
+            initialDirectory: folder,
+            preferences: preferences
+        )
+        controller.loadViewIfNeeded()
+        controller.viewDidAppear()
+        return controller
+    }
+
+    private func waitForListing(_ controller: WorkspaceBrowserViewController, count: Int) async {
+        for _ in 0..<200 {
+            if controller.displayedItemsForTesting.count >= count { return }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+    }
+
+    @Test("ギャラリー表示でも、フォルダに落とせばその中へ移る")
+    func galleryAcceptsDropOnAFolder() async throws {
+        let folder = try temporaryFolder()
+        let outside = try temporaryFolder()
+        defer {
+            try? FileManager.default.removeItem(at: folder)
+            try? FileManager.default.removeItem(at: outside)
+        }
+        let file = outside.appendingPathComponent("よそから.txt")
+        try "x".write(to: file, atomically: true, encoding: .utf8)
+        let destination = folder.appendingPathComponent("行き先", isDirectory: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+
+        let controller = self.controller(at: folder)
+        await waitForListing(controller, count: 1)
+        let gallery = controller.galleryViewForTesting
+        let index = try #require(
+            controller.displayedItemsForTesting.firstIndex { $0.name == "行き先" }
+        )
+
+        let info = StubDraggingInfo(urls: [file], mask: WorkspaceDragDrop.localSourceOperations)
+        var proposed = IndexPath(item: index, section: 0) as NSIndexPath
+        var operation = NSCollectionView.DropOperation.on
+        let allowed = withUnsafeMutablePointer(to: &proposed) { path in
+            withUnsafeMutablePointer(to: &operation) { op in
+                controller.collectionView(
+                    gallery,
+                    validateDrop: info,
+                    proposedIndexPath: AutoreleasingUnsafeMutablePointer(path),
+                    dropOperation: op
+                )
+            }
+        }
+        #expect(allowed == .move)
+        #expect(controller.collectionView(
+            gallery,
+            acceptDrop: info,
+            indexPath: IndexPath(item: index, section: 0),
+            dropOperation: .on
+        ))
+        #expect(
+            FileManager.default.fileExists(atPath: destination.appendingPathComponent("よそから.txt").path),
+            "行き先の中に入っていない"
+        )
+    }
+
+    @Test("サイドバーのフォルダに落とせば、その中へ移る")
+    func sidebarAcceptsDrop() async throws {
+        let folder = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("動かすもの.txt")
+        try "x".write(to: file, atomically: true, encoding: .utf8)
+
+        let controller = self.controller(at: folder)
+        await waitForListing(controller, count: 1)
+        let sidebar = controller.sidebarTableForTesting
+        // サイドバーには「よく使う項目」が並ぶ。どれか一つのフォルダを行き先にする。
+        let row = try #require(
+            (0..<sidebar.numberOfRows).first { controller.sidebarRowForTesting(named: "Downloads") == $0 }
+                ?? controller.sidebarRowForTesting(named: "Desktop"),
+            "サイドバーにフォルダの行が無い"
+        )
+
+        let info = StubDraggingInfo(urls: [file], mask: WorkspaceDragDrop.localSourceOperations)
+        let operation = controller.tableView(
+            sidebar,
+            validateDrop: info,
+            proposedRow: row,
+            proposedDropOperation: .on
+        )
+        // 実際に動かすところまではやらない（本物のDownloadsを汚さない）。
+        // 受け付けること（=移動として成立すること）だけを見る。
+        #expect(operation == .move, "サイドバーのフォルダが行き先にならない")
+    }
+}
+
+/// カラム表示の落とし込み。列ごとに表が別なので、一覧とは別の経路になっている。
+@Suite("カラム表示でも落とせる")
+@MainActor
+struct WorkspaceColumnDropTests {
+    @Test("フォルダの行に落とせばその中へ、地に落とせばその列のフォルダへ")
+    func columnAcceptsDrops() async throws {
+        _ = NSApplication.shared
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("finderai-col-\(UUID().uuidString)", isDirectory: true)
+        let outside = FileManager.default.temporaryDirectory
+            .appendingPathComponent("finderai-col2-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: folder)
+            try? FileManager.default.removeItem(at: outside)
+        }
+        let destination = folder.appendingPathComponent("行き先", isDirectory: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        let file = outside.appendingPathComponent("よそから.txt")
+        try "x".write(to: file, atomically: true, encoding: .utf8)
+
+        let view = WorkspaceColumnView(frame: NSRect(x: 0, y: 0, width: 900, height: 500))
+        var asked: [(URL, Bool)] = []
+        view.onTransfer = { _, destination, copy in asked.append((destination, copy)) }
+        view.show(directory: folder, showHiddenFiles: false)
+        for _ in 0..<200 where view.currentColumnForTesting?.items.isEmpty != false {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let column = try #require(view.currentColumnForTesting, "列ができていない")
+        let row = try #require(
+            column.items.firstIndex { $0.name == "行き先" },
+            "いま見ているフォルダの列に「行き先」が無い: \(column.items.map(\.name))"
+        )
+
+        let info = StubDraggingInfo(urls: [file], mask: WorkspaceDragDrop.localSourceOperations)
+        #expect(view.tableView(
+            column.table,
+            validateDrop: info,
+            proposedRow: row,
+            proposedDropOperation: .on
+        ) == .move)
+        #expect(view.tableView(column.table, acceptDrop: info, row: row, dropOperation: .on))
+        #expect(asked.last?.0 == destination)
+        #expect(asked.last?.1 == false, "移動であってコピーではない")
+
+        // 行の無いところへ落としたら、その列のフォルダへ。
+        #expect(view.tableView(column.table, acceptDrop: info, row: -1, dropOperation: .on))
+        #expect(asked.last?.0 == folder)
+    }
+}

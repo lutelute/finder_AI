@@ -255,6 +255,13 @@ final class WorkspaceColumnView: NSView {
         scrollToEnd()
     }
 
+    /// いちばん右の列（いま開いているフォルダ）の表と中身。
+    /// 落とす操作をGUIを合成せずに叩くため。列は根からの道すじで並ぶので、
+    /// 先頭ではなく末尾がいま見ているフォルダ。
+    var currentColumnForTesting: (table: NSTableView, items: [WorkspaceItem], url: URL)? {
+        columns.last.map { ($0.table, $0.items, $0.url) }
+    }
+
     func reloadCurrent() {
         guard let last = columns.last else { return }
         load(last)
