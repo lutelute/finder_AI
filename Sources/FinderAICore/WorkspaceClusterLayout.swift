@@ -68,6 +68,8 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         /// 細い線しかなく、件数が増えると島の外へ長くぶら下がり、橋が束になって
         /// 交差した。重なりは**面**として置く。行が増えるだけなので伸びていける。
         public let overlapOf: [String]?
+        /// 畳んでいるか。畳んだ島は名前を出さず、数だけを一行で出す。
+        public let isCollapsed: Bool
 
         public init(
             name: String,
@@ -76,7 +78,8 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
             depth: Int,
             overflow: Int,
             missing: Int,
-            overlapOf: [String]? = nil
+            overlapOf: [String]? = nil,
+            isCollapsed: Bool = false
         ) {
             self.name = name
             self.frame = frame
@@ -85,6 +88,7 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
             self.overflow = overflow
             self.missing = missing
             self.overlapOf = overlapOf
+            self.isCollapsed = isCollapsed
         }
 
         /// 交わりの枠か。
@@ -149,7 +153,8 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         groupedItems: [WorkspaceItem],
         groups: WorkspaceItemGroups?,
         size: CGSize,
-        presentNames: Set<String>? = nil
+        presentNames: Set<String>? = nil,
+        collapsedGroups: Set<String> = []
     ) {
         self.groupedItems = groupedItems
         self.groups = groups
@@ -159,7 +164,8 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
             items: groupedItems,
             groups: groups,
             size: size,
-            presentNames: presentNames
+            presentNames: presentNames,
+            collapsedGroups: collapsedGroups
         )
     }
 
@@ -169,7 +175,8 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         items: [WorkspaceItem],
         groups: WorkspaceItemGroups?,
         size: CGSize,
-        presentNames: Set<String>?
+        presentNames: Set<String>?,
+        collapsedGroups: Set<String> = []
     ) -> ([Island], [Node], [Int], CGRect?, Double) {
         let names = groups?.adjacencyOrderedNames() ?? []
         guard size.width > 1, size.height > 1 else { return ([], [], [], nil, size.height) }
@@ -245,7 +252,8 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
                 groups: layoutDefinition,
                 ownCounts: exclusive.mapValues(\.count),
                 missing: missingByGroup,
-                depth: 0
+                depth: 0,
+                collapsed: collapsedGroups
             ).map { island in
                 guard let belongs = overlapGroups[island.name] else { return island }
                 return Island(
@@ -269,6 +277,8 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         var rowsBottom: [String: Double] = [:]
 
         islands = islands.map { island in
+            // 畳んだ島には行を置かない。数だけを描画側が一行で出す。
+            guard !island.isCollapsed else { return island }
             let members = (exclusive[island.name] ?? [])
                 .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             let (placed, overflow) = place(
@@ -288,7 +298,8 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
                 depth: island.depth,
                 overflow: overflow,
                 missing: island.missing,
-                overlapOf: island.overlapOf
+                overlapOf: island.overlapOf,
+                isCollapsed: island.isCollapsed
             )
         }
 
@@ -441,8 +452,11 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         in groups: WorkspaceItemGroups,
         ownCounts: [String: Int],
         missing: [String: [String]],
-        width: Double
+        width: Double,
+        collapsed: Set<String> = []
     ) -> Double {
+        // 畳んだ島は、名前を出さずに数だけを一行。子も連れて畳む。
+        if collapsed.contains(name) { return minIslandHeight }
         let own = Double(ownCounts[name] ?? 0)
         // 「見つからない N →」も一行を占める。数えないと、その一行を空けるために
         // 中身が押し出される（実測: 4個入った島が2個しか出なくなった）。
@@ -459,7 +473,8 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
                     in: groups,
                     ownCounts: ownCounts,
                     missing: missing,
-                    width: childWidth
+                    width: childWidth,
+                    collapsed: collapsed
                 )
             } + Double(children.count - 1) * 8 + islandInset.height * 2
         return islandTitleHeight + islandInset.height * 2 + rowHeight * rows + inside
@@ -514,7 +529,8 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         ownCounts: [String: Int],
         missing: [String: [String]],
         depth: Int,
-        topGap: Double = 12
+        topGap: Double = 12,
+        collapsed: Set<String> = []
     ) -> [Island] {
         let names = depth == 0
             // 最上位は、共有でつながったものを隣に寄せた順で並べる（橋を短くする）
@@ -529,14 +545,23 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         let gap: Double = depth == 0 ? topGap : 8
         let cellWidth = columnWidth(for: names.count, in: area.width, gap: gap)
         let weights = names.map {
-            weight(of: $0, in: groups, ownCounts: ownCounts, missing: missing, width: cellWidth)
+            weight(
+                of: $0,
+                in: groups,
+                ownCounts: ownCounts,
+                missing: missing,
+                width: cellWidth,
+                collapsed: collapsed
+            )
         }
         let boxes = cells(weights: weights, in: area, gap: gap)
         guard boxes.count == names.count else { return [] }
 
         var result: [Island] = []
         for (name, box) in zip(names, boxes) {
-            let children = groups.children(of: name)
+            // 畳んだ島は子も連れて畳む。中身を出さないのに子だけ出ていたら、
+            // 何を畳んだのか分からない。
+            let children = collapsed.contains(name) ? [] : groups.children(of: name)
             let inset = box.insetBy(dx: islandInset.width, dy: islandInset.height)
             // 余白を引いて潰れる枠でも、島そのものは作る（同じ理由）。
             if children.isEmpty || inset.isNull || inset.height <= 0 {
@@ -546,7 +571,8 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
                     contentFrame: box,
                     depth: depth,
                     overflow: 0,
-                    missing: missing[name]?.count ?? 0
+                    missing: missing[name]?.count ?? 0,
+                    isCollapsed: collapsed.contains(name)
                 ))
                 // 子がいるのに場所が無いときは、子も同じ枠に重ねず諦める（描けない）。
                 continue

@@ -1362,6 +1362,7 @@ final class WorkspaceBrowserViewController: NSViewController {
             self?.preferences.mapShowsOthersOnly = value
         }
         mapView.setShowsOthersOnly(preferences.mapShowsOthersOnly)
+        mapView.onCollapsedGroupsChanged = { [weak self] in self?.applyFilterAndSort() }
         mapView.onPruneMissing = { [weak self] group in self?.pruneMissingMembers(in: group) }
         mapView.columnHeaderMenuProvider = { [weak self] in self?.makeColumnHeaderMenu() }
         // 右の一覧へ落としてファイルを動かす。島への落とし込み（グループに入れる）

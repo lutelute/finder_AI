@@ -604,3 +604,90 @@ struct WorkspaceClusterLayoutTests {
         #expect(map.island(at: CGPoint(x: island.minX - 6, y: island.midY))?.name != "A")
     }
 }
+
+/// 島は畳める。畳んだら名前を出さず、数だけを一行で出す。
+///
+/// 「地図は重なり専用と割り切って島は概要だけにする」案もあったが、そうすると
+/// 島へ引いて入れるときに何が入っているか見えない。既定は開いたままにして、
+/// 畳みたい人が畳む形にした。
+@Suite("島を畳む")
+struct WorkspaceCollapsedIslandTests {
+    private func item(_ name: String) -> WorkspaceItem {
+        WorkspaceItem(
+            url: URL(fileURLWithPath: "/tmp/GitHub").appendingPathComponent(name),
+            name: name,
+            isDirectory: true,
+            isHidden: false,
+            fileSize: nil,
+            modifiedAt: nil,
+            typeDescription: "フォルダ"
+        )
+    }
+
+    private func fixture() -> (names: [String], groups: WorkspaceItemGroups) {
+        var groups = WorkspaceItemGroups()
+        var names: [String] = []
+        for index in 1...20 {
+            let name = "a\(index)"
+            names.append(name)
+            groups.add(name, to: "A")
+        }
+        for index in 1...3 {
+            let name = "b\(index)"
+            names.append(name)
+            groups.add(name, to: "B")
+        }
+        for index in 1...4 {
+            let name = "c\(index)"
+            names.append(name)
+            groups.add(name, to: "子")
+        }
+        // 束を作ってから入れ子にする。順が逆だと`nest`は空振りして最上位のまま。
+        let nested = groups.nest("子", inside: "A")
+        #expect(nested)
+        return (names, groups)
+    }
+
+    private func layout(collapsed: Set<String>) -> WorkspaceClusterLayout {
+        let fixture = fixture()
+        return WorkspaceClusterLayout(
+            groupedItems: fixture.names.map(item),
+            groups: fixture.groups,
+            size: CGSize(width: 875, height: 624),
+            collapsedGroups: collapsed
+        )
+    }
+
+    @Test("畳むと、その島の行は消えて高さも縮む")
+    func collapsingHidesTheRows() throws {
+        let open = layout(collapsed: [])
+        let folded = layout(collapsed: ["A"])
+
+        let openA = try #require(open.island(named: "A"))
+        let foldedA = try #require(folded.island(named: "A"))
+        #expect(foldedA.isCollapsed)
+        #expect(!openA.isCollapsed)
+        #expect(foldedA.frame.height < openA.frame.height, "畳んでも高さが変わっていない")
+        #expect(foldedA.frame.height <= WorkspaceClusterLayout.minIslandHeight + 1)
+
+        #expect(open.nodes.contains { $0.groups == ["A"] })
+        #expect(!folded.nodes.contains { $0.groups == ["A"] }, "畳んだ島の行が残っている")
+        // 畳んでいない束はそのまま。
+        #expect(folded.nodes.filter { $0.groups == ["B"] }.count == 3)
+    }
+
+    /// 中身を出さないのに子だけ出ていたら、何を畳んだのか分からない。
+    @Test("親を畳むと、子の島も連れて畳まれる")
+    func collapsingTakesChildrenAlong() {
+        let folded = layout(collapsed: ["A"])
+        #expect(folded.island(named: "子") == nil, "子の島が残っている")
+        #expect(!folded.nodes.contains { $0.groups == ["子"] })
+    }
+
+    @Test("畳めば、ほかの島に場所が回る")
+    func foldingGivesRoomToTheRest() throws {
+        let open = try #require(layout(collapsed: []).island(named: "B"))
+        let folded = try #require(layout(collapsed: ["A"]).island(named: "B"))
+        #expect(folded.frame.height >= open.frame.height)
+    }
+}

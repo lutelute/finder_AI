@@ -14,6 +14,9 @@ import Foundation
 final class WorkspaceCollapsedGroups {
     private var names: Set<String> = []
 
+    /// いま畳んでいる束ぜんぶ。地図の割り付けに渡す。
+    var all: Set<String> { names }
+
     func contains(_ name: String) -> Bool { names.contains(name) }
 
     func insert(_ name: String) { names.insert(name) }

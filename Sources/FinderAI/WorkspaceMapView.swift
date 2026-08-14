@@ -33,6 +33,8 @@ final class WorkspaceMapView: NSView {
     /// 押した島の名前を渡す（`nil`なら全部の束）。押した島のことを聞かれたのに
     /// 他の束まで外れると、確かめていないものを巻き込む。
     var onPruneMissing: ((String?) -> Void)?
+    /// 島を畳んだ／開いたとき。一覧も同じものを見ているので、そちらも描き直す。
+    var onCollapsedGroupsChanged: (() -> Void)?
 
     private var items: [WorkspaceItem] = []
     private var itemsByName: [String: WorkspaceItem] = [:]
@@ -81,6 +83,8 @@ final class WorkspaceMapView: NSView {
     private var showsOthersOnly = false
     /// 「見つからない N」の文字が占める場所。押せるようにするため描画時に覚える。
     private var missingHitRects: [String: NSRect] = [:]
+    /// 畳む／開くの三角の的。島ごとに描画時に覚える。
+    private var disclosureHitRects: [String: NSRect] = [:]
     /// 「ほか N」の文字が占める場所。押すとそのグループを全面に広げる。
     private var overflowHitRects: [String: NSRect] = [:]
     /// 降りてきた道。末尾がいま広げているグループで、空なら全部の島を並べた地図。
@@ -687,7 +691,9 @@ final class WorkspaceMapView: NSView {
             groupedItems: focused.items,
             groups: focused.groups,
             size: viewport,
-            presentNames: presentNames.isEmpty ? nil : presentNames
+            presentNames: presentNames.isEmpty ? nil : presentNames,
+            // 畳んだ束は一覧と共有している。一覧で畳んだものは地図でも畳まれる。
+            collapsedGroups: collapsedGroups.all
         )
     }
 
@@ -1161,6 +1167,61 @@ final class WorkspaceMapView: NSView {
         }
         if title != full { title = String(title.dropLast()) + "…" }
         title.draw(at: NSPoint(x: textLeft, y: rect.minY), withAttributes: attributes)
+
+        // 畳む／開くの三角。交わりの枠には出さない（重なりこそ見たいもの）。
+        if island.overlapOf == nil {
+            drawDisclosure(for: island, in: rect)
+        }
+        if island.isCollapsed {
+            drawFoldedSummary(of: island)
+        }
+    }
+
+    /// 畳む／開くの三角。見出しの右端に置く。
+    private func drawDisclosure(for island: WorkspaceClusterLayout.Island, in rect: NSRect) {
+        let box = NSRect(x: rect.maxX - 13, y: rect.midY - 6, width: 12, height: 12)
+        let path = NSBezierPath()
+        if island.isCollapsed {
+            // 閉じているときは右向き（押すと開く）。
+            path.move(to: NSPoint(x: box.minX + 3, y: box.minY + 1))
+            path.line(to: NSPoint(x: box.maxX - 3, y: box.midY))
+            path.line(to: NSPoint(x: box.minX + 3, y: box.maxY - 1))
+        } else {
+            path.move(to: NSPoint(x: box.minX + 1, y: box.minY + 3.5))
+            path.line(to: NSPoint(x: box.maxX - 1, y: box.minY + 3.5))
+            path.line(to: NSPoint(x: box.midX, y: box.maxY - 3.5))
+        }
+        path.close()
+        IntegratedPanelTheme.secondaryText.withAlphaComponent(0.75).setFill()
+        path.fill()
+        disclosureHitRects[island.name] = box.insetBy(dx: -7, dy: -7)
+    }
+
+    /// 畳んだ島の一行。名前の代わりに数を出す。
+    private func drawFoldedSummary(of island: WorkspaceClusterLayout.Island) {
+        let own = groupedItems.filter { item in
+            let belongs = itemGroups?.groupNames(for: item.name) ?? []
+            return belongs == [island.name]
+        }.count
+        let all = groupedItems.filter {
+            (itemGroups?.groupNames(for: $0.name) ?? []).contains(island.name)
+        }.count
+        var parts = ["単独 \(own)"]
+        if all > own { parts.append("重なり \(all - own)") }
+        parts.append("合計 \(all)")
+        if island.missing > 0 { parts.append("見つからない \(island.missing)") }
+        let text = parts.joined(separator: "　") as NSString
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11.5),
+            .foregroundColor: IntegratedPanelTheme.secondaryText
+        ]
+        text.draw(
+            at: NSPoint(
+                x: island.contentFrame.minX + 14,
+                y: island.contentFrame.minY + WorkspaceClusterLayout.islandTitleHeight + 6
+            ),
+            withAttributes: attributes
+        )
     }
 
     /// 島の名前の左に置く印。一覧の見出しと同じ、色の丸。
@@ -1425,6 +1486,7 @@ final class WorkspaceMapView: NSView {
     /// 落ちる。黙っていると定義にゴミが残り続けても気づけないので、数を出す。
     private func drawOverflow(_ island: WorkspaceClusterLayout.Island) {
         missingHitRects[island.name] = nil
+        disclosureHitRects[island.name] = nil
         overflowHitRects[island.name] = nil
         enum Note { case overflow, missing }
         var notes: [(text: String, color: NSColor, kind: Note)] = []
