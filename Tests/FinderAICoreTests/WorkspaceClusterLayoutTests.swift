@@ -321,6 +321,52 @@ struct WorkspaceClusterLayoutTests {
         }
     }
 
+    /// 島が中身のぶんだけ縦に伸びるようになってから、中心どうしの中点が
+    /// **島の中**に落ちるようになった。属している島からは押し出さない作りだったので、
+    /// 点も名前も島の行と重なり、どちらも読めなかった。
+    /// この表示の主題は「重なりが場所として見える」ことなのに、重なると見えなかった。
+    @Test("境界に立つ点は、属している島の中にも入らない")
+    func sharedNodesStayOutOfEveryIsland() {
+        var groups = WorkspaceItemGroups()
+        var names: [String] = []
+        // 縦に長い島を三つ作る。中点はどれかの島の中に落ちる。
+        for index in 1...30 {
+            for group in ["A", "B", "C"] {
+                let name = "\(group.lowercased())\(index)"
+                names.append(name)
+                groups.add(name, to: group)
+            }
+        }
+        for shared in ["両方1", "両方2", "両方3", "両方4", "両方5"] {
+            names.append(shared)
+            groups.add(shared, to: "A")
+            groups.add(shared, to: "B")
+        }
+        // 三つに属するもの。AとCの「隙間」はあいだのBを**貫く**ので、
+        // そこを縫い目に選ぶとBの行と重なる。
+        for shared in ["三つとも1", "三つとも2"] {
+            names.append(shared)
+            for group in ["A", "B", "C"] { groups.add(shared, to: group) }
+        }
+        let map = layout(names, groups)
+
+        let paper = CGRect(x: 0, y: 0, width: size.width, height: map.contentHeight)
+        for node in map.nodes where node.isShared {
+            for island in map.islands {
+                #expect(
+                    !island.frame.contains(node.position),
+                    "「\(node.name)」が「\(island.name)」の中に立っている"
+                )
+            }
+            #expect(paper.contains(node.position), "「\(node.name)」が紙の外に出ている")
+        }
+        // 輪どうしが重なると、隣どうしで読めなくなる。
+        let sorted = map.nodes.filter(\.isShared).sorted { $0.position.y < $1.position.y }
+        for (a, b) in zip(sorted, sorted.dropFirst()) {
+            #expect(distance(a.position, b.position) > 40, "\(a.name) と \(b.name) が近すぎる")
+        }
+    }
+
     /// 三つ以上のグループに属することもある。重心は枡の並び次第で**属していない島**の
     /// 真ん中に落ちるので、そこに置くとその島のメンバーに見えてしまう。
     @Test("三つのグループに属するものが、属していない島の中に入らない")

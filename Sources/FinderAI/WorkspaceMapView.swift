@@ -774,7 +774,12 @@ final class WorkspaceMapView: NSView {
         NSGraphicsContext.current = context
         drawMap(in: mapArea.bounds)
         NSGraphicsContext.restoreGraphicsState()
+        lastRenderForTesting = rep
     }
+
+    /// 直前に描いた絵。画面に触らずに目で確かめるために取り出す
+    /// （合成クリックは使っている人のマウスを奪う）。
+    private(set) var lastRenderForTesting: NSBitmapImageRep?
 
     /// 広げているなら**一段だけ**戻す。戻したかどうかを返す
     /// （escを他の用途と取り合わないため）。
@@ -1257,16 +1262,17 @@ final class WorkspaceMapView: NSView {
                     && mapArea.bounds.contains(rect)
             }
             let origin = clear ?? candidates[0]
-            if clear == nil {
-                // どこも空いていない。島に重ねるしかないので、下敷きを敷いて
-                // 島の名前や中身と混ざらないようにする。
-                IntegratedPanelTheme.background.withAlphaComponent(0.92).setFill()
-                NSBezierPath(
-                    roundedRect: NSRect(origin: origin, size: size).insetBy(dx: -4, dy: -2),
-                    xRadius: 4,
-                    yRadius: 4
-                ).fill()
-            }
+            // 境界に立つ点の名前には、いつも下敷きを敷く。
+            //
+            // 島や他の名前を避けた場所でも、**島へ渡る橋の線が名前を横切る**。
+            // 線は名前より先に描かれるので、下敷きが無いと字の上に線が乗って読めない。
+            // どこも空いていないときは島の中身にも重なるので、少し濃くする。
+            IntegratedPanelTheme.background.withAlphaComponent(clear == nil ? 0.92 : 0.82).setFill()
+            NSBezierPath(
+                roundedRect: NSRect(origin: origin, size: size).insetBy(dx: -4, dy: -2),
+                xRadius: 4,
+                yRadius: 4
+            ).fill()
             taken.append(NSRect(origin: origin, size: size))
             shown.draw(at: origin, withAttributes: attributes)
         }

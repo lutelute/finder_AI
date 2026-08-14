@@ -622,3 +622,58 @@ struct WorkspaceCollapsedGroupsTests {
         #expect(!shared.contains("研究"))
     }
 }
+
+/// 地図は絵なので、位置が正しくても**何も描かれていない**ことがあり得る。
+/// 合成クリックで画面を確かめるのは使っている人のマウスを奪うので、
+/// 画面外の紙に描かせて、その絵を数える。
+@Suite("地図はちゃんと描かれる")
+@MainActor
+struct WorkspaceMapRenderTests {
+    @Test("島も点も名前も、地の色でない画素として出ている")
+    func theMapIsNotBlank() throws {
+        _ = NSApplication.shared
+        let root = URL(fileURLWithPath: "/tmp/finderai-render-test", isDirectory: true)
+        var groups = WorkspaceItemGroups()
+        var items: [WorkspaceItem] = []
+        for name in ["研究_1", "研究_2", "ツール_1", "ツール_2", "両方_1", "両方_2"] {
+            items.append(WorkspaceItem(
+                url: root.appendingPathComponent(name),
+                name: name,
+                isDirectory: true,
+                isHidden: false,
+                fileSize: nil,
+                modifiedAt: nil,
+                typeDescription: "フォルダ"
+            ))
+        }
+        for name in ["研究_1", "研究_2", "両方_1", "両方_2"] { groups.add(name, to: "研究") }
+        for name in ["ツール_1", "ツール_2", "両方_1", "両方_2"] { groups.add(name, to: "ツール開発") }
+
+        let view = WorkspaceMapView(frame: NSRect(x: 0, y: 0, width: 800, height: 500))
+        view.show(items: items, groups: groups, presentNames: Set(items.map(\.name)))
+        let window = NSWindow(
+            contentRect: view.frame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = view
+        view.layoutSubtreeIfNeeded()
+        view.renderForTesting()
+
+        let rep = try #require(view.lastRenderForTesting, "描いた絵が取れない")
+        #expect(rep.pixelsWide > 100 && rep.pixelsHigh > 100)
+        // 地の色と違う画素を数える。真っ白／真っ黒な地図は、位置の検査では捕まらない。
+        var painted = 0
+        var y = 0
+        while y < rep.pixelsHigh {
+            var x = 0
+            while x < rep.pixelsWide {
+                if let colour = rep.colorAt(x: x, y: y), colour.alphaComponent > 0.02 { painted += 1 }
+                x += 4
+            }
+            y += 4
+        }
+        #expect(painted > 500, "地の色でない画素が\(painted)個しかない — 何も描けていない")
+    }
+}

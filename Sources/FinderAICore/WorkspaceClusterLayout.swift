@@ -95,6 +95,13 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
     /// 2つが「ほか」に落ちた。18ptなら7行入る。11ptの文字には詰まった値だが、
     /// 名前が読めないのと見えないのとでは、見えないほうが困る。
     public static let rowHeight: Double = 18
+    /// 境界に立つ点の輪が要る場所。島の隙間はこれより狭くできない。
+    public static let sharedNodeGap: Double = 17
+    /// 境界に立つ点どうしの、いちばん広い間隔。縫い目が短ければ詰める。
+    static let sharedSpacing: Double = 62
+    /// これより詰めない。輪（直径25pt）と名前が重なると、隣どうしで読めなくなる。
+    /// 縫い目に収まらないなら、詰めるのではなく縫い目の外へ伸ばす。
+    static let minSharedSpacing: Double = 44
 
     /// - Parameter presentNames: このフォルダに実在する名前。**隠しファイルも含める**。
     ///   省略すると`groupedItems`の名前を使うが、それだと隠し表示をオフにしただけで
@@ -178,7 +185,10 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
                 groups: groups,
                 ownCounts: exclusive.mapValues(\.count),
                 missing: missingByGroup,
-                depth: 0
+                depth: 0,
+                // 境界に立つものが居るときだけ広げる。居ないのに空けると、
+                // 島がその場所ぶんだけ痩せる。
+                topGap: shared.isEmpty ? 12 : sharedNodeGap * 2 + 6
             )
         }
         let byName = Dictionary(
@@ -212,8 +222,24 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
             )
         }
 
-        // 複数所属は、属する島の中心を結んだ中点に置く。同じ組み合わせが複数あれば、
-        // その線に垂直な向きへ等間隔にずらす — 重なると一つにしか見えない。
+        // 複数所属は、属する島と島の**隙間**（縫い目）に置く。
+        //
+        // 中心どうしの中点に置いていたころは、島が中身のぶんだけ縦に伸びるように
+        // なってから、その中点が隣の島の**中**に落ちるようになった。しかも
+        // 自分の属する島からは押し出していなかったので、島の行と点と名前が
+        // 重なって、どれも読めなかった（実機でそうなった。この表示の主題が
+        // 「重なりが場所として見える」ことなのに、重なると見えなくなっていた）。
+        //
+        // 縫い目に置けば、どちらの島にも属さない場所に立つ。それが「境界に立つ」。
+        // 紙は島の高さぶんだけ伸びる。画面の大きさで押さえると、島が画面より
+        // 縦に長いときに、境界の点だけ画面の中へ引き戻されて島に食い込む。
+        let paper = CGRect(
+            x: area.minX,
+            y: area.minY,
+            width: area.width,
+            height: max(area.height, (islands.map(\.frame.maxY).max() ?? area.maxY) - area.minY)
+        )
+        var sharedPositions: [CGPoint] = []
         let sharedByGroups = Dictionary(grouping: shared) { item in
             (groups?.groupNames(for: item.name) ?? []).sorted().joined(separator: "\u{1F}")
         }
@@ -222,26 +248,70 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
                 .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             guard let first = members.first else { continue }
             let belongs = groups?.groupNames(for: first.name) ?? []
-            let centres = belongs.compactMap { byName[$0] }
-                .map { CGPoint(x: $0.midX, y: $0.midY) }
-            guard var anchor = centroid(of: centres) else { continue }
+            let frames = belongs.compactMap { byName[$0] }
+            let centres = frames.map { CGPoint(x: $0.midX, y: $0.midY) }
+            guard let centre = centroid(of: centres) else { continue }
 
-            // 島の中の行より下に置く。中点そのままだと島の中身の上に乗って、
-            // 点も名前もどちらも読めなくなった（実機でそうなった）。
-            // 「境界に立つ」という意味は横位置が担うので、縦にずらしても崩れない。
-            let below = belongs.compactMap { rowsBottom[$0] }.max()
-            let ceiling = belongs.compactMap { byName[$0]?.maxY }.min()
-            if let below, let ceiling, below + 22 < ceiling - 8 {
-                anchor.y = max(anchor.y, below + 22)
+            let seam = self.seam(
+                near: centre,
+                between: frames,
+                avoiding: islands.map(\.frame).filter { frame in !frames.contains(frame) }
+            )
+                ?? Seam(
+                    origin: centre,
+                    axis: spreadDirection(across: centres),
+                    span: -sharedSpacing * Double(members.count)...sharedSpacing * Double(members.count)
+                )
+
+            // 縫い目に収まるなら詰めて収める。収まらないなら**詰めずに外へ伸ばす** —
+            // 詰めて輪どうしが重なると、隣どうしで読めなくなる（それがこの表示で
+            // いちばん避けたいこと）。紙からはみ出すぶんは最後に押し戻す。
+            let room = seam.span.upperBound - seam.span.lowerBound
+            let steps = Double(max(members.count - 1, 1))
+            let spacing = max(min(sharedSpacing, room / steps), minSharedSpacing)
+            let start = -(Double(members.count) - 1) / 2
+
+            // 紙からはみ出すなら**並びごと**ずらす。一つずつ押し戻すと、押された点
+            // だけが隣に寄って重なる（実際にそうなった。11.5ptの点が31ptへ押され、
+            // 隣との間隔が44ptから24.5ptに潰れて輪が重なった）。
+            var origin = seam.origin
+            let low = start * spacing
+            let high = (start + Double(members.count - 1)) * spacing
+            if seam.axis.dy != 0 {
+                let top = origin.y + min(low, high)
+                let bottom = origin.y + max(low, high)
+                if top < paper.minY + sharedNodeGap {
+                    origin.y += paper.minY + sharedNodeGap - top
+                } else if bottom > paper.maxY - sharedNodeGap {
+                    origin.y -= bottom - (paper.maxY - sharedNodeGap)
+                }
+            } else {
+                let leading = origin.x + min(low, high)
+                let trailing = origin.x + max(low, high)
+                if leading < paper.minX + sharedNodeGap {
+                    origin.x += paper.minX + sharedNodeGap - leading
+                } else if trailing > paper.maxX - sharedNodeGap {
+                    origin.x -= trailing - (paper.maxX - sharedNodeGap)
+                }
             }
 
-            let axis = spreadDirection(across: centres)
-            let spacing = 78.0
-            let start = -(Double(members.count) - 1) / 2
             for (index, item) in members.enumerated() {
                 let offset = (start + Double(index)) * spacing
-                let raw = CGPoint(x: anchor.x + axis.dx * offset, y: anchor.y + axis.dy * offset)
-                let placed = pushedOutOfForeignIslands(raw, belongingTo: Set(belongs), islands: byName)
+                var placed = CGPoint(
+                    x: origin.x + seam.axis.dx * offset,
+                    y: origin.y + seam.axis.dy * offset
+                )
+                // どの島の中にも立たせない。自分の島も含めて押し出す。
+                placed = pushedOutOfIslands(placed, islands: byName, area: paper)
+                placed = clamped(placed, into: paper)
+                placed = freeSpot(
+                    placed,
+                    axis: seam.axis,
+                    taken: sharedPositions,
+                    islands: byName,
+                    area: paper
+                )
+                sharedPositions.append(placed)
                 built.append(Node(
                     name: item.name,
                     isDirectory: item.isDirectory,
@@ -473,7 +543,8 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         groups: WorkspaceItemGroups,
         ownCounts: [String: Int],
         missing: [String: [String]],
-        depth: Int
+        depth: Int,
+        topGap: Double = 12
     ) -> [Island] {
         let names = depth == 0
             // 最上位は、共有でつながったものを隣に寄せた順で並べる（橋を短くする）
@@ -482,7 +553,10 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         guard !names.isEmpty else { return [] }
 
         // 中身の多い島ほど場所を取る。幅は先に決める — 何列に割れるかで要る高さが変わる。
-        let gap: Double = depth == 0 ? 12 : 8
+        //
+        // 最上位の隙間は、境界に立つ点が入るぶんだけ空ける。12ptのままだと
+        // 直径25ptの輪が両側の島に食い込み、行の名前と重なって両方読めない。
+        let gap: Double = depth == 0 ? topGap : 8
         let cellWidth = columnWidth(for: names.count, in: area.width, gap: gap)
         let weights = names.map {
             weight(of: $0, in: groups, ownCounts: ownCounts, missing: missing, width: cellWidth)
@@ -747,33 +821,162 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
     /// 見えてしまう。いちばん近い縁の外へ逃がす。
     ///
     /// 二周するのは、逃がした先がまた別の島だったときのため。
-    private static func pushedOutOfForeignIslands(
+    /// 島の隙間。境界に立つ点はここへ置く。
+    struct Seam {
+        let origin: CGPoint
+        let axis: CGVector
+        /// `origin`から`axis`向きに動かせる範囲。
+        let span: ClosedRange<Double>
+    }
+
+    /// 島と島のあいだの隙間を探し、`anchor`にいちばん近いものを返す。
+    ///
+    /// 横に並ぶ島の組なら縦の縫い目、縦に積まれた組なら横の縫い目。
+    /// どの組も接している（隙間が無い）なら`nil`。
+    /// - Parameter obstacles: 突き抜けてはいけない島。離れた島どうしの「隙間」は、
+    ///   あいだに挟まる島の**真ん中**を通ることがある（研究↔Swiftの縫い目が
+    ///   ツール開発を貫いていた）。そこに置くと、その島のメンバーに見えるうえ
+    ///   行と重なって読めない。
+    static func seam(
+        near anchor: CGPoint,
+        between frames: [CGRect],
+        avoiding obstacles: [CGRect] = []
+    ) -> Seam? {
+        var best: (seam: Seam, distance: Double)?
+        for (i, a) in frames.enumerated() {
+            for b in frames[(i + 1)...] {
+                var candidate: Seam?
+                // 縦の縫い目（左右に並んでいる）
+                if a.maxX < b.minX || b.maxX < a.minX {
+                    let left = a.maxX < b.minX ? a : b
+                    let right = a.maxX < b.minX ? b : a
+                    let top = max(left.minY, right.minY)
+                    let bottom = min(left.maxY, right.maxY)
+                    guard bottom - top > sharedNodeGap else { continue }
+                    let origin = CGPoint(x: (left.maxX + right.minX) / 2, y: (top + bottom) / 2)
+                    let half = (bottom - top) / 2 - sharedNodeGap / 2
+                    candidate = Seam(
+                        origin: origin,
+                        axis: CGVector(dx: 0, dy: 1),
+                        span: -half...half
+                    )
+                // 横の縫い目（上下に積まれている）
+                } else if a.maxY < b.minY || b.maxY < a.minY {
+                    let upper = a.maxY < b.minY ? a : b
+                    let lower = a.maxY < b.minY ? b : a
+                    let leading = max(upper.minX, lower.minX)
+                    let trailing = min(upper.maxX, lower.maxX)
+                    guard trailing - leading > sharedNodeGap else { continue }
+                    let origin = CGPoint(
+                        x: (leading + trailing) / 2,
+                        y: (upper.maxY + lower.minY) / 2
+                    )
+                    let half = (trailing - leading) / 2 - sharedNodeGap / 2
+                    candidate = Seam(
+                        origin: origin,
+                        axis: CGVector(dx: 1, dy: 0),
+                        span: -half...half
+                    )
+                }
+                guard let candidate else { continue }
+                // 縫い目が通る帯。ここに島がかかっていたら、その縫い目は使えない。
+                let corridor = candidate.axis.dy != 0
+                    ? CGRect(
+                        x: candidate.origin.x - sharedNodeGap,
+                        y: candidate.origin.y + candidate.span.lowerBound,
+                        width: sharedNodeGap * 2,
+                        height: candidate.span.upperBound - candidate.span.lowerBound
+                    )
+                    : CGRect(
+                        x: candidate.origin.x + candidate.span.lowerBound,
+                        y: candidate.origin.y - sharedNodeGap,
+                        width: candidate.span.upperBound - candidate.span.lowerBound,
+                        height: sharedNodeGap * 2
+                    )
+                guard !obstacles.contains(where: { $0.intersects(corridor) }) else { continue }
+                let dx = Double(candidate.origin.x - anchor.x)
+                let dy = Double(candidate.origin.y - anchor.y)
+                let distance = (dx * dx + dy * dy).squareRoot()
+                if best == nil || distance < best!.distance { best = (seam: candidate, distance: distance) }
+            }
+        }
+        return best?.seam
+    }
+
+    /// 紙からはみ出させない。はみ出した点は描かれず、その項目だけ跡形もなく消える。
+    private static func clamped(_ point: CGPoint, into area: CGRect) -> CGPoint {
+        CGPoint(
+            x: min(max(point.x, area.minX + sharedNodeGap), area.maxX - sharedNodeGap),
+            y: min(max(point.y, area.minY + sharedNodeGap), area.maxY - sharedNodeGap)
+        )
+    }
+
+    /// 島の中に立っている点を、いちばん近い外へ出す。
+    ///
+    /// - Parameter area: 紙。**紙の外へ出す逃げ方は選ばない** — 外へ出したものを
+    ///   あとから紙に押し戻すと、島の中へ戻ってきてしまう（実際にそうなった）。
+    private static func pushedOutOfIslands(
         _ point: CGPoint,
-        belongingTo mine: Set<String>,
-        islands: [String: CGRect]
+        islands: [String: CGRect],
+        area: CGRect
     ) -> CGPoint {
-        let margin: Double = 10
+        let margin: Double = sharedNodeGap
         var result = point
-        for _ in 0..<2 {
+        for _ in 0..<3 {
             var moved = false
             // 順序を固定して、同じ入力なら必ず同じ結果になるようにする。
-            for name in islands.keys.sorted() where !mine.contains(name) {
+            for name in islands.keys.sorted() {
                 guard let frame = islands[name], frame.contains(result) else { continue }
-                let left = result.x - frame.minX
-                let right = frame.maxX - result.x
-                let above = result.y - frame.minY
-                let below = frame.maxY - result.y
-                switch min(left, right, above, below) {
-                case left: result.x = frame.minX - margin
-                case right: result.x = frame.maxX + margin
-                case above: result.y = frame.minY - margin
-                default: result.y = frame.maxY + margin
-                }
+                let exits: [(distance: Double, point: CGPoint)] = [
+                    (result.x - frame.minX, CGPoint(x: frame.minX - margin, y: result.y)),
+                    (frame.maxX - result.x, CGPoint(x: frame.maxX + margin, y: result.y)),
+                    (result.y - frame.minY, CGPoint(x: result.x, y: frame.minY - margin)),
+                    (frame.maxY - result.y, CGPoint(x: result.x, y: frame.maxY + margin))
+                ].sorted { $0.distance < $1.distance }
+                let inside = exits.first { area.insetBy(dx: sharedNodeGap, dy: sharedNodeGap).contains($0.point) }
+                result = (inside ?? exits[0]).point
                 moved = true
             }
             if !moved { break }
         }
         return result
+    }
+
+    /// すでに置いた点と重ならない場所へずらす。
+    ///
+    /// 別の組み合わせが同じ縫い目に落ちることがある（研究∩ツール開発 と
+    /// 研究∩ツール開発∩Swift は、どちらも研究とツール開発のあいだに来る）。
+    /// 重ねると、そこだけ一つの点にしか見えない。
+    private static func freeSpot(
+        _ point: CGPoint,
+        axis: CGVector,
+        taken: [CGPoint],
+        islands: [String: CGRect],
+        area: CGRect
+    ) -> CGPoint {
+        func collides(_ candidate: CGPoint) -> Bool {
+            taken.contains {
+                let dx = Double($0.x - candidate.x)
+                let dy = Double($0.y - candidate.y)
+                return (dx * dx + dy * dy).squareRoot() < minSharedSpacing
+            }
+        }
+        guard collides(point) else { return point }
+        // 近いところから、順に前後へ探す。
+        for step in 1...24 {
+            let magnitude = Double((step + 1) / 2) * minSharedSpacing
+            let sign: Double = step.isMultiple(of: 2) ? -1 : 1
+            let moved = CGPoint(
+                x: point.x + axis.dx * magnitude * sign,
+                y: point.y + axis.dy * magnitude * sign
+            )
+            let settled = clamped(
+                pushedOutOfIslands(moved, islands: islands, area: area),
+                into: area
+            )
+            if !collides(settled) { return settled }
+        }
+        return point
     }
 
     // MARK: - 変化
