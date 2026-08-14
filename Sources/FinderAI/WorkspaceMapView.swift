@@ -1132,7 +1132,26 @@ final class WorkspaceMapView: NSView {
             .font: NSFont.systemFont(ofSize: 12.5, weight: .semibold),
             .foregroundColor: IntegratedPanelTheme.text
         ]
-        let available = max(rect.maxX - textLeft, 1)
+        // 交わりの枠には「N束だけ」の札を右端に出す。
+        //
+        // 「研究 × ツール開発」とだけ書くと、数学の∩と読まれて「三つとも」の
+        // ものまで入っていると思われる。この枠に居るのは**ちょうどこの組み合わせ**の
+        // ものだけなので、そう言い切る。色の丸の数を数えなくても分かる。
+        var badgeWidth: Double = 0
+        if let belongs = island.overlapOf {
+            let badge = "\(belongs.count)束だけ" as NSString
+            let badgeAttributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 10, weight: .semibold),
+                .foregroundColor: IntegratedPanelTheme.secondaryText
+            ]
+            let size = badge.size(withAttributes: badgeAttributes)
+            badgeWidth = size.width + 10
+            badge.draw(
+                at: NSPoint(x: rect.maxX - size.width, y: rect.minY + 1),
+                withAttributes: badgeAttributes
+            )
+        }
+        let available = max(rect.maxX - textLeft - badgeWidth, 1)
         // 交わりの枠の名前は「研究 × ツール開発」。どの束とどの束かを言い切る。
         let full = island.overlapOf.map { $0.joined(separator: " × ") } ?? island.name
         var title = full
@@ -1632,8 +1651,15 @@ final class WorkspaceMapView: NSView {
         let names = selectedNames.contains(node.name) ? selectedNames : [node.name]
         let dragged = items.filter { names.contains($0.name) }
         guard !dragged.isEmpty else { return nil }
-        // どの島から出たか。複数の島に属する点は、掴んだ場所の島から出たものとする。
-        return (dragged, clusterLayout?.island(at: point)?.name ?? node.groups.first)
+        // どの島から出たか。
+        //
+        // 交わりの枠から引いたときは**どこからでもない**（`nil`）。AとBの両方に
+        // 属するものをCへ引いたとき、AをCに替えるのかBを替えるのかは決めようがない。
+        // 決められないことを黙って決めると、消したつもりのない所属が消える。
+        // 枠から引いたら「Cにも入れる」。外したいなら右クリックから外す。
+        let island = clusterLayout?.island(at: point)
+        if island?.isOverlap == true { return (dragged, nil) }
+        return (dragged, island?.name ?? (node.groups.count == 1 ? node.groups.first : nil))
     }
 
     /// 引き始めずに「掴んだ島」だけ決める。テストから張り替えの判定を通すための入口。
