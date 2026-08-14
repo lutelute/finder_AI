@@ -853,6 +853,19 @@ final class WorkspaceBrowserViewController: NSViewController {
     var currentDirectory: URL { navigator.currentDirectory }
     var viewModeForTesting: WorkspaceViewMode { effectiveViewMode }
     var galleryIsVisibleForTesting: Bool { galleryScrollView?.isHidden == false }
+    /// 一覧の表。落とす操作を、GUIを合成せずに同じ経路から叩くために出す。
+    var fileTableForTesting: NSTableView { fileTable }
+    /// いま一覧に出ているもの。読み込みは非同期なので、待つ側が見るため。
+    var displayedItemsForTesting: [WorkspaceItem] { displayedItems }
+    /// その名前が何行目か。見出しがあると行番号と並びがずれる。
+    func rowForTesting(named name: String) -> Int? {
+        fileRows.indices.first { row in
+            if case .item(let index, _) = fileRows[row] {
+                return displayedItems.indices.contains(index) && displayedItems[index].name == name
+            }
+            return false
+        }
+    }
 
     private func configureAppearanceButton() {
         configureNavigationButton(
@@ -1351,7 +1364,14 @@ final class WorkspaceBrowserViewController: NSViewController {
         mapView.setShowsOthersOnly(preferences.mapShowsOthersOnly)
         mapView.onPruneMissing = { [weak self] group in self?.pruneMissingMembers(in: group) }
         mapView.columnHeaderMenuProvider = { [weak self] in self?.makeColumnHeaderMenu() }
+        // 右の一覧へ落としてファイルを動かす。島への落とし込み（グループに入れる）
+        // とは別のことで、こちらは実体が動く。
+        mapView.onTransfer = { [weak self] sources, destination, copy in
+            guard let self else { return false }
+            return self.transferItems(sources, to: destination, copy: copy) != nil
+        }
         mapView.setShowsGroupColumn(preferences.showsGroupColumn)
+        mapView.currentDirectory = navigator.currentDirectory
         // 右の一覧から島へ引いてグループに入れる。ファイルは動かないので、
         // 一覧の見出しへのドロップと同じ扱い。
         mapView.onLinkToGroup = { [weak self] urls, group in
@@ -1731,6 +1751,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         }
         // 開いたときに組み直す。地図は決定的なので、組めばそれで完成している。
         if mode == .map {
+            mapView.currentDirectory = navigator.currentDirectory
             mapView.show(items: displayedItems, groups: itemGroups, presentNames: presentNames)
         }
         galleryView.reloadData()
@@ -3228,6 +3249,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         // `updateSearchResults`は`applyViewMode`を先に呼び、`displayedItems`が
         // 入るのはそのあと — 開いた直後の地図が空だったのはそれが理由だった。
         if effectiveViewMode == .map {
+            mapView.currentDirectory = navigator.currentDirectory
             mapView.show(items: displayedItems, groups: itemGroups, presentNames: presentNames)
         }
     }

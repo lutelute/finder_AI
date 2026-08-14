@@ -7,7 +7,10 @@ struct WorkspaceDragDropTests {
     @Test("Option chooses copy and a plain drag prefers move")
     func operationFollowsFinderModifiers() {
         #expect(WorkspaceDragDrop.localSourceOperations == [.copy, .move, .link])
-        #expect(WorkspaceDragDrop.externalSourceOperations == .copy)
+        // 外向きも移動を許す。`.copy`だけだと、Finderの窓へ引いたときに必ず
+        // コピーになり、Finder同士の振る舞いと食い違う。何になるかは落とす側が決める。
+        #expect(WorkspaceDragDrop.externalSourceOperations.contains(.move))
+        #expect(WorkspaceDragDrop.externalSourceOperations.contains(.copy))
         // .linkが要る。グループの見出しや地図の島は、ファイルを動かさないので.linkを
         // 返して受ける。引く側が許していない操作はOSが弾くので、ここに.linkが無いと
         // 「一覧の行をグループへ引いても入らない」になる。

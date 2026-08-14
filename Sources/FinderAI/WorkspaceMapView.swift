@@ -182,6 +182,12 @@ final class WorkspaceMapView: NSView {
     /// 並べ直した配列が`show`で戻ってくる。
     var onSortChanged: ((NSUserInterfaceItemIdentifier, Bool) -> Void)?
 
+    /// ファイルを実際に動かす。右の一覧へ落としたときの行き先を渡す。
+    /// 島への落とし込み（グループに入れる）とは別のこと — こちらは実体が動く。
+    var onTransfer: (([URL], URL, Bool) -> Bool)?
+    /// いま開いているフォルダ。右の一覧の地に落としたときの行き先。
+    var currentDirectory: URL?
+
     private static func makeColumns() -> [NSTableColumn] {
         let name = NSTableColumn(identifier: nameColumn)
         name.title = "名前"
@@ -367,6 +373,10 @@ final class WorkspaceMapView: NSView {
         // 操作は、受け側が何を返してもOSが弾く。ここを設定していなかったので、
         // この一覧から島へ引いても何も起きなかった。
         WorkspaceDragDrop.configureDragSource(othersTable)
+        // 落とし先としても名乗る。ここは「普通のFinderのリスト表示」なので、
+        // 引いてきたファイルをこのフォルダへ入れられないとおかしい
+        // （名乗っていなかったので、引いても何も起きなかった）。
+        othersTable.registerForDraggedTypes([.fileURL])
         // 一覧でもSpaceでプレビューできるように。地図側と同じ手が通る。
         othersTable.onQuickLook = { [weak self] in self?.onQuickLook?() }
         othersTable.isHeaderRow = { [weak self] row in self?.isListHeaderRow(row) ?? false }
@@ -718,6 +728,13 @@ final class WorkspaceMapView: NSView {
     func othersColumnsForTesting(width: Double) -> [(id: String, visible: Bool)] {
         applyOthersColumns(width: width)
         return othersTable.tableColumns.map { ($0.identifier.rawValue, !$0.isHidden) }
+    }
+
+    /// 右の一覧の表。落とす操作を、GUIを合成せずに同じ経路から叩くために出す。
+    var othersTableForTesting: NSTableView? { othersTable }
+    /// 右の一覧で、その名前が何行目か。見出しがあると行番号と並びがずれる。
+    func listRowForTesting(named name: String) -> Int? {
+        listRows.indices.first { item(atListRow: $0)?.name == name }
     }
 
     /// 「見つからない N →」の的。島ごとに入る。
@@ -1925,6 +1942,59 @@ extension WorkspaceMapView: NSTableViewDataSource, NSTableViewDelegate {
     ) -> (any NSPasteboardWriting)? {
         guard let item = item(atListRow: row) else { return nil }
         return WorkspaceDragDrop.pasteboardWriter(for: item.url)
+    }
+
+    /// 右の一覧の行き先。フォルダの行に落とせばその中へ、地に落とせばこのフォルダへ。
+    private func dropDestination(atRow row: Int) -> URL? {
+        if let item = item(atListRow: row), item.isDirectory { return item.url }
+        return currentDirectory
+    }
+
+    func tableView(
+        _ tableView: NSTableView,
+        validateDrop info: any NSDraggingInfo,
+        proposedRow row: Int,
+        proposedDropOperation dropOperation: NSTableView.DropOperation
+    ) -> NSDragOperation {
+        guard tableView === othersTable else { return [] }
+        let sources = WorkspaceDragDrop.fileURLs(from: info.draggingPasteboard)
+        guard let destination = dropDestination(atRow: row) else { return [] }
+        if item(atListRow: row)?.isDirectory == true {
+            tableView.setDropRow(row, dropOperation: .on)
+        } else {
+            tableView.setDropRow(-1, dropOperation: .on)
+        }
+        return Self.dragOperation(for: info, sources: sources, destination: destination)
+    }
+
+    func tableView(
+        _ tableView: NSTableView,
+        acceptDrop info: any NSDraggingInfo,
+        row: Int,
+        dropOperation: NSTableView.DropOperation
+    ) -> Bool {
+        guard tableView === othersTable else { return false }
+        let sources = WorkspaceDragDrop.fileURLs(from: info.draggingPasteboard)
+        guard let destination = dropDestination(atRow: row) else { return false }
+        let operation = Self.dragOperation(for: info, sources: sources, destination: destination)
+        guard !operation.isEmpty else { return false }
+        return onTransfer?(sources, destination, operation == .copy) ?? false
+    }
+
+    static func dragOperation(
+        for info: any NSDraggingInfo,
+        sources: [URL],
+        destination: URL
+    ) -> NSDragOperation {
+        let operation = WorkspaceDragDrop.operation(
+            allowedOperations: info.draggingSourceOperationMask,
+            optionKeyPressed: NSEvent.modifierFlags.contains(.option)
+        )
+        return WorkspaceDragDrop.allows(
+            sources: sources,
+            destination: destination,
+            operation: operation
+        ) ? operation : []
     }
 
     /// 見出しを押されたら、並べ替えは呼び出し側（一覧表示）へ渡す。

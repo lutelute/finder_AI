@@ -3,16 +3,20 @@ import Foundation
 
 /// Shared Finder-style drag/drop policy for list, column, gallery, and sidebar.
 enum WorkspaceDragDrop {
-    /// FinderAI folders can negotiate move or copy with each other. External
-    /// shelves such as Dropover should only ever receive a copy operation; they
-    /// are collecting a reference, not authorizing FinderAI to move the source.
+    /// FinderAI folders can negotiate move or copy with each other.
+    ///
+    /// 外向きも移動を許す。`.copy`だけにしていたので、**FinderAIからFinderの窓へ
+    /// 引くと必ずコピーになっていた** — Finder同士なら（同じディスクなら）移動に
+    /// なるので、そこだけ振る舞いが違って「移動ができない」と映る。
+    /// 何になるかを決めるのは落とす側で、ここは「許す」だけ。Dropoverのような
+    /// 置き場は自分から`.copy`を返すので、こちらが移動を許しても持っていかれない。
     ///
     /// `.link`が要る。グループの見出しや地図の島に落とす操作は、ファイルを動かさない
     /// ので`.link`を返しているが、**引く側**が許していない操作は、落とす側が何を返しても
     /// OSが弾く。ここに`.link`が無かったせいで、一覧の行をグループの見出しへ引いても
     /// 何も起きなかった（Finderから引いたときだけ入る、という分かりにくい状態だった）。
     static let localSourceOperations: NSDragOperation = [.copy, .move, .link]
-    static let externalSourceOperations: NSDragOperation = [.copy]
+    static let externalSourceOperations: NSDragOperation = [.copy, .move]
 
     /// ドラッグ元として名乗る。**マスクを直に設定せず、必ずここを通す。**
     ///
