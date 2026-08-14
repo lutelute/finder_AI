@@ -61,6 +61,45 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
         public let overflow: Int
         /// 定義にあるのに実物が無い数。フォルダを消したり別の場所へ動かすと増える。
         public let missing: Int
+        /// 「何と何の交わりか」。ふつうの島は`nil`。
+        ///
+        /// 複数の束に属するものを**点**として島のあいだに置いていたが、
+        /// 島が中身のぶんだけ縦に伸びるようになってから破綻した — 置き場所が
+        /// 細い線しかなく、件数が増えると島の外へ長くぶら下がり、橋が束になって
+        /// 交差した。重なりは**面**として置く。行が増えるだけなので伸びていける。
+        public let overlapOf: [String]?
+
+        public init(
+            name: String,
+            frame: CGRect,
+            contentFrame: CGRect,
+            depth: Int,
+            overflow: Int,
+            missing: Int,
+            overlapOf: [String]? = nil
+        ) {
+            self.name = name
+            self.frame = frame
+            self.contentFrame = contentFrame
+            self.depth = depth
+            self.overflow = overflow
+            self.missing = missing
+            self.overlapOf = overlapOf
+        }
+
+        /// 交わりの枠か。
+        public var isOverlap: Bool { overlapOf != nil }
+    }
+
+    /// 交わりの枠の名前。ふつうの束の名前と混ざらないよう、見えない字で綴じる。
+    public static func overlapKey(_ groups: [String]) -> String {
+        "\u{1F}∩\u{1F}" + groups.joined(separator: "\u{1F}")
+    }
+
+    /// 交わりの枠の名前から、元の束の名前を戻す。
+    public static func overlapGroups(from key: String) -> [String]? {
+        guard key.hasPrefix("\u{1F}∩\u{1F}") else { return nil }
+        return String(key.dropFirst(3)).components(separatedBy: "\u{1F}")
     }
 
     public private(set) var nodes: [Node]
@@ -155,9 +194,11 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
             amongNames: presentNames ?? Set(items.map(\.name))
         ) ?? [:]
 
-        // 島に並べるのは、その島だけに属するもの。複数所属は境界へ回す。
+        // 島に並べるのは、その島だけに属するもの。
+        // 複数所属は「交わりの枠」へ回す — 同じ組み合わせのものが一つの枠に集まる。
         var exclusive: [String: [WorkspaceItem]] = [:]
         var shared: [WorkspaceItem] = []
+        var overlapGroups: [String: [String]] = [:]
         for item in items {
             let belongs = groups?.groupNames(for: item.name) ?? []
             guard !belongs.isEmpty else { continue }
@@ -165,7 +206,26 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
                 exclusive[belongs[0], default: []].append(item)
             } else {
                 shared.append(item)
+                let key = overlapKey(belongs)
+                overlapGroups[key] = belongs
+                exclusive[key, default: []].append(item)
             }
+        }
+
+        // 交わりの枠も、島と同じ流れに並べる。別の仕組みで置こうとすると
+        // 「島の外の細い線」になって、件数が増えたときに置き場所が尽きる。
+        //
+        // 束の定義に**仮の束**として足してから割り付ける。仮の束はメンバーを
+        // 両方の親と共有しているので、`adjacencyOrderedNames()`が自然と親の隣へ置く。
+        var layoutDefinition = groups
+        if let groups {
+            var augmented = groups
+            for key in overlapGroups.keys.sorted() {
+                augmented.groups.append(
+                    WorkspaceItemGroups.Group(name: key, members: exclusive[key]?.map(\.name) ?? [])
+                )
+            }
+            layoutDefinition = augmented
         }
 
         // 入れ子のまま枠を割る。最上位だけが領域を取り合い、子は親の枠の内側を分ける。
@@ -178,18 +238,26 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
             height: max(size.height - margin * 2, 1)
         )
         var islands: [Island] = []
-        if let groups {
+        if let layoutDefinition {
             islands = nestedIslands(
                 of: nil,
                 in: area,
-                groups: groups,
+                groups: layoutDefinition,
                 ownCounts: exclusive.mapValues(\.count),
                 missing: missingByGroup,
-                depth: 0,
-                // 境界に立つものが居るときだけ広げる。居ないのに空けると、
-                // 島がその場所ぶんだけ痩せる。
-                topGap: shared.isEmpty ? 12 : sharedNodeGap * 2 + 6
-            )
+                depth: 0
+            ).map { island in
+                guard let belongs = overlapGroups[island.name] else { return island }
+                return Island(
+                    name: island.name,
+                    frame: island.frame,
+                    contentFrame: island.contentFrame,
+                    depth: island.depth,
+                    overflow: island.overflow,
+                    missing: island.missing,
+                    overlapOf: belongs
+                )
+            }
         }
         let byName = Dictionary(
             islands.map { ($0.name, $0.frame) },
@@ -206,7 +274,8 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
             let (placed, overflow) = place(
                 members,
                 in: island.contentFrame,
-                groups: [island.name],
+                // 交わりの枠に並ぶものは、元の束すべてに属している。
+                groups: island.overlapOf ?? [island.name],
                 reservedRows: island.missing > 0 ? 1 : 0
             )
             rowsBottom[island.name] =
@@ -218,113 +287,14 @@ public struct WorkspaceClusterLayout: Equatable, Sendable {
                 contentFrame: island.contentFrame,
                 depth: island.depth,
                 overflow: overflow,
-                missing: island.missing
+                missing: island.missing,
+                overlapOf: island.overlapOf
             )
         }
 
-        // 複数所属は、属する島と島の**隙間**（縫い目）に置く。
-        //
-        // 中心どうしの中点に置いていたころは、島が中身のぶんだけ縦に伸びるように
-        // なってから、その中点が隣の島の**中**に落ちるようになった。しかも
-        // 自分の属する島からは押し出していなかったので、島の行と点と名前が
-        // 重なって、どれも読めなかった（実機でそうなった。この表示の主題が
-        // 「重なりが場所として見える」ことなのに、重なると見えなくなっていた）。
-        //
-        // 縫い目に置けば、どちらの島にも属さない場所に立つ。それが「境界に立つ」。
-        // 紙は島の高さぶんだけ伸びる。画面の大きさで押さえると、島が画面より
-        // 縦に長いときに、境界の点だけ画面の中へ引き戻されて島に食い込む。
-        let paper = CGRect(
-            x: area.minX,
-            y: area.minY,
-            width: area.width,
-            height: max(area.height, (islands.map(\.frame.maxY).max() ?? area.maxY) - area.minY)
-        )
-        var sharedPositions: [CGPoint] = []
-        let sharedByGroups = Dictionary(grouping: shared) { item in
-            (groups?.groupNames(for: item.name) ?? []).sorted().joined(separator: "\u{1F}")
-        }
-        for key in sharedByGroups.keys.sorted() {
-            let members = (sharedByGroups[key] ?? [])
-                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-            guard let first = members.first else { continue }
-            let belongs = groups?.groupNames(for: first.name) ?? []
-            let frames = belongs.compactMap { byName[$0] }
-            let centres = frames.map { CGPoint(x: $0.midX, y: $0.midY) }
-            guard let centre = centroid(of: centres) else { continue }
-
-            let seam = self.seam(
-                near: centre,
-                between: frames,
-                avoiding: islands.map(\.frame).filter { frame in !frames.contains(frame) }
-            )
-                ?? Seam(
-                    origin: centre,
-                    axis: spreadDirection(across: centres),
-                    span: -sharedSpacing * Double(members.count)...sharedSpacing * Double(members.count)
-                )
-
-            // 縫い目に収まるなら詰めて収める。収まらないなら**詰めずに外へ伸ばす** —
-            // 詰めて輪どうしが重なると、隣どうしで読めなくなる（それがこの表示で
-            // いちばん避けたいこと）。紙からはみ出すぶんは最後に押し戻す。
-            let room = seam.span.upperBound - seam.span.lowerBound
-            let steps = Double(max(members.count - 1, 1))
-            let spacing = max(min(sharedSpacing, room / steps), minSharedSpacing)
-            let start = -(Double(members.count) - 1) / 2
-
-            // 紙からはみ出すなら**並びごと**ずらす。一つずつ押し戻すと、押された点
-            // だけが隣に寄って重なる（実際にそうなった。11.5ptの点が31ptへ押され、
-            // 隣との間隔が44ptから24.5ptに潰れて輪が重なった）。
-            var origin = seam.origin
-            let low = start * spacing
-            let high = (start + Double(members.count - 1)) * spacing
-            if seam.axis.dy != 0 {
-                let top = origin.y + min(low, high)
-                let bottom = origin.y + max(low, high)
-                if top < paper.minY + sharedNodeGap {
-                    origin.y += paper.minY + sharedNodeGap - top
-                } else if bottom > paper.maxY - sharedNodeGap {
-                    origin.y -= bottom - (paper.maxY - sharedNodeGap)
-                }
-            } else {
-                let leading = origin.x + min(low, high)
-                let trailing = origin.x + max(low, high)
-                if leading < paper.minX + sharedNodeGap {
-                    origin.x += paper.minX + sharedNodeGap - leading
-                } else if trailing > paper.maxX - sharedNodeGap {
-                    origin.x -= trailing - (paper.maxX - sharedNodeGap)
-                }
-            }
-
-            for (index, item) in members.enumerated() {
-                let offset = (start + Double(index)) * spacing
-                var placed = CGPoint(
-                    x: origin.x + seam.axis.dx * offset,
-                    y: origin.y + seam.axis.dy * offset
-                )
-                // どの島の中にも立たせない。自分の島も含めて押し出す。
-                placed = pushedOutOfIslands(placed, islands: byName, area: paper)
-                placed = clamped(placed, into: paper)
-                placed = freeSpot(
-                    placed,
-                    axis: seam.axis,
-                    taken: sharedPositions,
-                    islands: byName,
-                    area: paper
-                )
-                sharedPositions.append(placed)
-                built.append(Node(
-                    name: item.name,
-                    isDirectory: item.isDirectory,
-                    groups: groups?.groupNames(for: item.name) ?? [],
-                    position: placed,
-                    labelPlacement: .below,
-                    // 境界に立つものは行に属さないので、点のまわりを的にする。
-                    hitRect: CGRect(x: placed.x - 17, y: placed.y - 17, width: 34, height: 34)
-                ))
-            }
-        }
-
-        let bridges = built.indices.filter { built[$0].isShared }
+        // 橋は点ごとには引かない。交わりの枠から元の束へ、枠ごとに一本ずつ引く
+        // （描画側）。点ごとに引くと、件数のぶんだけ線が束になって交差する。
+        let bridges: [Int] = []
         // 「新しいグループ」の帯は、中身の下に置く。島の高さを中身ぴったりにした以上、
         // 下端は画面ではなく中身が決める。
         let bottom = islands.map(\.frame.maxY).max() ?? area.minY

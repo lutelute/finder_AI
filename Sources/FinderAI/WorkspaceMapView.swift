@@ -134,7 +134,8 @@ final class WorkspaceMapView: NSView {
     /// 印なので、小さく薄くする。
     private static let nodeRadius: Double = 5
     /// 複数の島に属する点だけは満額で、輪も付く。ここにしか無い情報なので。
-    private static let sharedNodeRadius: Double = 12.5
+    /// 交わりの行の点。色を二つ以上入れるので、ふつうの行より少しだけ大きい。
+    private static let sharedNodeRadius: Double = 6.5
     private static let othersHeaderHeight: Double = 34
     private static let othersRowHeight: Double = 22
 
@@ -781,6 +782,17 @@ final class WorkspaceMapView: NSView {
     /// （合成クリックは使っている人のマウスを奪う）。
     private(set) var lastRenderForTesting: NSBitmapImageRep?
 
+    var mapAreaBoundsForTesting: NSRect { mapArea.bounds }
+
+    /// 画面と同じ向きの絵を取る。`cacheDisplay`は面の上下反転を織り込む。
+    func cacheMapForTesting() -> NSBitmapImageRep? {
+        layoutSubtreeIfNeeded()
+        layoutSubtreeIfNeeded()
+        guard let rep = mapArea.bitmapImageRepForCachingDisplay(in: mapArea.bounds) else { return nil }
+        mapArea.cacheDisplay(in: mapArea.bounds, to: rep)
+        return rep
+    }
+
     /// 広げているなら**一段だけ**戻す。戻したかどうかを返す
     /// （escを他の用途と取り合わないため）。
     ///
@@ -966,8 +978,18 @@ final class WorkspaceMapView: NSView {
     ///
     /// グループ名を島の外に出していた時期があったが、場所を食うしグループが増えると衝突する。
     /// 内側に固定すれば、島がどこまでかと何のグループかが一度に読める。
+    /// その島が背負う色。交わりの枠は、元の束ぜんぶの色を持つ。
+    private func colors(of island: WorkspaceClusterLayout.Island) -> [NSColor] {
+        if let belongs = island.overlapOf {
+            let found = belongs.compactMap { groupColors[$0] }
+            return found.isEmpty ? [.systemGray] : found
+        }
+        return [groupColors[island.name] ?? .systemGray]
+    }
+
     private func draw(_ island: WorkspaceClusterLayout.Island) {
-        let color = groupColors[island.name] ?? .systemGray
+        let palette = colors(of: island)
+        let color = palette[0]
         let isTarget = dropTargetIsland == island.name
         let radius: CGFloat = island.depth == 0 ? 12 : 9
         let path = NSBezierPath(roundedRect: island.frame, xRadius: radius, yRadius: radius)
@@ -976,8 +998,19 @@ final class WorkspaceMapView: NSView {
         // 塗りは薄いままでいい。境界を背負うのは枠のほうで、塗りを濃くすると
         // 島の中の点と名前が色被りして読めなくなる。
         let fill = island.depth == 0 ? 0.07 : 0.13
-        color.withAlphaComponent(isTarget ? 0.26 : fill).setFill()
-        path.fill()
+        if palette.count > 1 {
+            // 交わりの枠。**第三の島に見えたら失敗**なので、色を継いで塗る。
+            // 左が片方、右がもう片方。あいだで混ざるので「またいでいる」ことが
+            // 名前を読まなくても分かる。
+            NSGraphicsContext.saveGraphicsState()
+            path.addClip()
+            let stops = palette.map { $0.withAlphaComponent(isTarget ? 0.30 : 0.16) }
+            NSGradient(colors: stops)?.draw(in: island.frame, angle: 0)
+            NSGraphicsContext.restoreGraphicsState()
+        } else {
+            color.withAlphaComponent(isTarget ? 0.26 : fill).setFill()
+            path.fill()
+        }
 
         // まず中立の灰で1本。色が読めなくても境界が必ず出る、が要点。
         IntegratedPanelTheme.border.withAlphaComponent(0.9).setStroke()
@@ -991,8 +1024,36 @@ final class WorkspaceMapView: NSView {
             yRadius: radius - 1
         )
         inner.lineWidth = isTarget ? 2.5 : 1.5
-        color.withAlphaComponent(isTarget ? 0.95 : (island.depth == 0 ? 0.60 : 0.80)).setStroke()
-        inner.stroke()
+        if palette.count > 1 {
+            // 枠線は薄い灰にして、**両端に色の柱**を立てる。
+            //
+            // 全周を色で塗り分けると、ふつうの島と同じ「箱」に見えてしまう。
+            // 端に柱が立っていれば、左の束から右の束へ**渡している**形になり、
+            // 名前を読む前に「これは重なりだ」と分かる。
+            IntegratedPanelTheme.border.withAlphaComponent(0.8).setStroke()
+            inner.stroke()
+            NSGraphicsContext.saveGraphicsState()
+            path.addClip()
+            // 柱は**両端だけ**。三つ以上のときに真ん中へも立てると、中身を縦に
+            // 切ってしまい、行が二つに割れて見えた。真ん中の束は見出しの丸が言う。
+            let width: Double = 5
+            for (colour, x) in [
+                (palette[0], island.frame.minX),
+                (palette[palette.count - 1], island.frame.maxX - width)
+            ] {
+                colour.withAlphaComponent(isTarget ? 0.95 : 0.85).setFill()
+                NSBezierPath(rect: NSRect(
+                    x: x,
+                    y: island.frame.minY,
+                    width: width,
+                    height: island.frame.height
+                )).fill()
+            }
+            NSGraphicsContext.restoreGraphicsState()
+        } else {
+            color.withAlphaComponent(isTarget ? 0.95 : (island.depth == 0 ? 0.60 : 0.80)).setStroke()
+            inner.stroke()
+        }
 
         // 上端が画面の外へ出ている島の名前は、点や行より**後**に描く。
         // ここで描くと下に潜って読めない。
@@ -1028,26 +1089,42 @@ final class WorkspaceMapView: NSView {
             IntegratedPanelTheme.background.setFill()
             band.fill()
         }
-        color.withAlphaComponent(isTarget ? 0.45 : 0.20).setFill()
-        band.fill()
+        let palette = colors(of: island)
+        if palette.count > 1 {
+            let stops = palette.map { $0.withAlphaComponent(isTarget ? 0.55 : 0.34) }
+            NSGradient(colors: stops)?.draw(in: band, angle: 0)
+        } else {
+            color.withAlphaComponent(isTarget ? 0.45 : 0.20).setFill()
+            band.fill()
+        }
         NSGraphicsContext.restoreGraphicsState()
 
         let rect = titleRect(of: island)
-        drawGroupChip(named: island.name, color: color, atLeft: rect)
+        // 交わりの枠は、色の丸を持っているぶんだけ並べる。名前を読まなくても
+        // 「二つにまたがっている」ことが数で分かる。
+        var chipX = rect.minX
+        for colour in palette {
+            colour.setFill()
+            NSBezierPath(ovalIn: NSRect(x: chipX, y: rect.minY + 4, width: 8, height: 8)).fill()
+            chipX += 11
+        }
+        let textLeft = chipX + 3
         // 名前をグループの色で描くのをやめた。黄土色や空色の島では地とのコントラストが
         // 1.4:1しかなく、その島だけ名前が読めなかった。色は左の印が背負う。
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12.5, weight: .semibold),
             .foregroundColor: IntegratedPanelTheme.text
         ]
-        let available = max(rect.width - 14, 1)
-        var title = island.name
+        let available = max(rect.maxX - textLeft, 1)
+        // 交わりの枠の名前は「研究 × ツール開発」。どの束とどの束かを言い切る。
+        let full = island.overlapOf.map { $0.joined(separator: " × ") } ?? island.name
+        var title = full
         // 島が狭ければグループ名を詰める。名前が枠を越えると隣の島に食い込む。
         while title.size(withAttributes: attributes).width > available, title.count > 2 {
             title = String(title.dropLast())
         }
-        if title != island.name { title = String(title.dropLast()) + "…" }
-        title.draw(at: NSPoint(x: rect.minX + 14, y: rect.minY), withAttributes: attributes)
+        if title != full { title = String(title.dropLast()) + "…" }
+        title.draw(at: NSPoint(x: textLeft, y: rect.minY), withAttributes: attributes)
     }
 
     /// 島の名前の左に置く印。一覧の見出しと同じ、色の丸。
@@ -1088,7 +1165,8 @@ final class WorkspaceMapView: NSView {
     }
 
     private func radius(of node: WorkspaceClusterLayout.Node) -> Double {
-        // 重なりだけ大きく描く。それがこの表示の主題なので。
+        // 重なりは行として並ぶようになったので、点は行の大きさでいい。
+        // 少しだけ大きくして、色が二つ入る場所を作る。
         node.isShared ? Self.sharedNodeRadius : Self.nodeRadius
     }
 
@@ -1136,51 +1214,40 @@ final class WorkspaceMapView: NSView {
         }
     }
 
-    /// 複数のグループに属する点。**割れた輪**で描く。
+    /// 複数のグループに属する行の点。**色を分けた丸**で描く。
     ///
-    /// 左右に色を塗り分けていたが、隣り合う色が近いと一色に見え、三つ以上では
-    /// 細片になって何色あるのか数えられなかった。輪を所属の数で等分すれば、
-    /// 「輪が割れている」「いくつに割れている」が色を読まずに形で分かる。
-    /// 中央に数も出す — 割れ目が細いときの最後の手掛かりになる。
+    /// 島のあいだに大きく置いていたころは、輪を所属の数で割って中央に数を描いていた。
+    /// 重なりが行として並ぶようになったので、行の点の大きさで足りる — 二色に
+    /// 分かれた丸なら、13ptでも「またいでいる」ことが形で分かる。
+    /// 三つ以上でも扇に割れるだけで、数えられる。
     private func drawSharedNode(at centre: CGPoint, radius: Double, colors: [NSColor]) {
-        let ringWidth: Double = 4
-        let inner = radius - ringWidth
-        // 中は地色。塗り潰さないことで、単独所属の点と一目で違う。
-        IntegratedPanelTheme.background.setFill()
-        NSBezierPath(ovalIn: NSRect(
-            x: centre.x - inner,
-            y: centre.y - inner,
-            width: inner * 2,
-            height: inner * 2
-        )).fill()
-
         let sweep = 360.0 / Double(colors.count)
         for (index, color) in colors.enumerated() {
             let path = NSBezierPath()
-            path.lineWidth = ringWidth
+            path.move(to: centre)
             // 12時から時計回りに。並びは所属の順（定義順）と同じ。
             let start = 90.0 - Double(index) * sweep
             path.appendArc(
                 withCenter: centre,
-                radius: radius - ringWidth / 2,
-                startAngle: start - sweep + 1.5,
-                endAngle: start - 1.5,
-                clockwise: false
+                radius: radius,
+                startAngle: start,
+                endAngle: start - sweep,
+                clockwise: true
             )
-            color.setStroke()
-            path.stroke()
+            path.close()
+            color.withAlphaComponent(0.95).setFill()
+            path.fill()
         }
-
-        let text = "\(colors.count)" as NSString
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 9, weight: .bold),
-            .foregroundColor: IntegratedPanelTheme.text
-        ]
-        let size = text.size(withAttributes: attributes)
-        text.draw(
-            at: NSPoint(x: centre.x - size.width / 2, y: centre.y - size.height / 2),
-            withAttributes: attributes
-        )
+        // 地色の細い縁。隣り合う色が近くても、割れ目が線として残る。
+        IntegratedPanelTheme.background.withAlphaComponent(0.9).setStroke()
+        let edge = NSBezierPath(ovalIn: NSRect(
+            x: centre.x - radius,
+            y: centre.y - radius,
+            width: radius * 2,
+            height: radius * 2
+        ))
+        edge.lineWidth = 1
+        edge.stroke()
     }
 
     private func labelPriority(of node: WorkspaceClusterLayout.Node) -> Int {
@@ -1289,9 +1356,13 @@ final class WorkspaceMapView: NSView {
         // 「入りきらなくて出せていない」island と「本当に空」を混同しない。
         // overflow があるのに「ここに引いて入れる」と出すと、入っているものを
         // 無かったことにする。
-        let hasMembers = clusterLayout.nodes.contains { $0.groups.contains(island.name) }
+        // 交わりの枠に並ぶ行は、元の束の名前を持っている（枠の名前ではない）。
+        // 枠の名前で数えると、中身が在っても空に見えて「ここに引いて入れる」が
+        // 行の上に重なる。
+        let wanted = Set(island.overlapOf ?? [island.name])
+        let hasMembers = clusterLayout.nodes.contains { wanted.isSubset(of: Set($0.groups)) }
         guard !hasMembers, island.overflow == 0, island.missing == 0 else { return }
-        let color = groupColors[island.name] ?? .systemGray
+        let color = colors(of: island)[0]
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 11),
             .foregroundColor: color.withAlphaComponent(0.55)
@@ -1506,6 +1577,13 @@ final class WorkspaceMapView: NSView {
             // 島から島へ引いたら**張り替え**。掴んだ島から外して、落とした島に入れる。
             // optionを押していれば外さない — 両方に属したままにできる（複数所属は
             // 分類の失敗ではないので、消さずに増やす道を残す）。
+            // 交わりの枠に落としたら、元の束**すべて**に入れる。
+            // それがこの枠の意味（「どちらにも属する」）。
+            if let belongs = island.overlapOf {
+                var linked = false
+                for name in belongs { linked = (onLinkToGroup?(urls, name) ?? false) || linked }
+                return linked
+            }
             if let from, from != island.name, !NSEvent.modifierFlags.contains(.option) {
                 return onMoveBetweenGroups?(urls, from, island.name) ?? false
             }

@@ -282,139 +282,97 @@ struct WorkspaceClusterLayoutTests {
 
     // MARK: - 重なり
 
-    /// 重なりの本題。両方の島に属する項目は、その間に立つ。
-    @Test("両方のグループに属するものは、二つの島の間に来る")
-    func sharedNodeSitsBetweenIslands() {
+    /// 重なりの本題。
+    ///
+    /// 島のあいだに**点**として置いていたが、島が中身のぶんだけ縦に伸びるように
+    /// なってから破綻した — 置き場所が細い線しかなく、件数が増えると島の外へ
+    /// 長くぶら下がり、橋が束になって交差した。重なりは**面**として置く。
+    /// 「AとBの両方」という枠を作り、その中に行として並べる。行が増えるだけなので
+    /// 何件でも伸びていける。
+    @Test("両方に属するものは「A × B」の枠に集まる")
+    func sharedItemsGetTheirOwnBox() throws {
         var groups = twoGroups()
         groups.add("both", to: "A")
         groups.add("both", to: "B")
         let map = layout(["a1", "a2", "a3", "b1", "b2", "b3", "both"], groups)
 
-        let a = try! #require(map.island(named: "A")).frame
-        let b = try! #require(map.island(named: "B")).frame
-        let both = try! #require(map.node(named: "both"))
-        let centreA = CGPoint(x: a.midX, y: a.midY)
-        let centreB = CGPoint(x: b.midX, y: b.midY)
+        let box = try #require(
+            map.islands.first { $0.overlapOf != nil },
+            "交わりの枠が無い"
+        )
+        #expect(box.overlapOf == ["A", "B"])
 
+        let both = try #require(map.node(named: "both"))
         #expect(both.isShared)
-        #expect(both.labelPlacement == .below)
-        let separation = distance(centreA, centreB)
-        #expect(distance(both.position, centreA) < separation)
-        #expect(distance(both.position, centreB) < separation)
+        // 行として並ぶので、名前は点の右（島の中と同じ読み方）。
+        #expect(both.labelPlacement == .trailing)
+        #expect(box.frame.contains(both.position), "自分の枠の中に居る")
+        // 元の束の島には入らない。入ると、その束だけのものに見える。
+        for island in map.islands where island.overlapOf == nil {
+            #expect(!island.frame.contains(both.position), "「\(island.name)」の中に入った")
+        }
     }
 
-    /// 同じ組み合わせの重なりが複数あると、同じ点に積もって一つにしか見えない。
-    /// 境界に沿ってずらす。
-    @Test("同じ組み合わせの重なりは、境界に沿って並ぶ")
-    func severalSharedItemsSpreadAlongTheBorder() {
+    /// 件数が増えても崩れないこと。**これが点で置けなくなった理由**。
+    @Test("重なりが何件あっても、枠の中に行として収まる")
+    func manySharedItemsStayInTheBox() throws {
         var groups = twoGroups()
-        for name in ["both1", "both2", "both3"] {
+        var names = ["a1", "a2", "a3", "b1", "b2", "b3"]
+        for index in 1...12 {
+            let name = "both\(index)"
+            names.append(name)
             groups.add(name, to: "A")
             groups.add(name, to: "B")
         }
-        let map = layout(["a1", "b1", "both1", "both2", "both3"], groups)
-
-        let shared = ["both1", "both2", "both3"].compactMap { map.node(named: $0) }
-        #expect(shared.count == 3)
-        for (a, b) in zip(shared, shared.dropFirst()) {
-            #expect(distance(a.position, b.position) > 40)
-        }
-    }
-
-    /// 島が中身のぶんだけ縦に伸びるようになってから、中心どうしの中点が
-    /// **島の中**に落ちるようになった。属している島からは押し出さない作りだったので、
-    /// 点も名前も島の行と重なり、どちらも読めなかった。
-    /// この表示の主題は「重なりが場所として見える」ことなのに、重なると見えなかった。
-    @Test("境界に立つ点は、属している島の中にも入らない")
-    func sharedNodesStayOutOfEveryIsland() {
-        var groups = WorkspaceItemGroups()
-        var names: [String] = []
-        // 縦に長い島を三つ作る。中点はどれかの島の中に落ちる。
-        for index in 1...30 {
-            for group in ["A", "B", "C"] {
-                let name = "\(group.lowercased())\(index)"
-                names.append(name)
-                groups.add(name, to: group)
-            }
-        }
-        for shared in ["両方1", "両方2", "両方3", "両方4", "両方5"] {
-            names.append(shared)
-            groups.add(shared, to: "A")
-            groups.add(shared, to: "B")
-        }
-        // 三つに属するもの。AとCの「隙間」はあいだのBを**貫く**ので、
-        // そこを縫い目に選ぶとBの行と重なる。
-        for shared in ["三つとも1", "三つとも2"] {
-            names.append(shared)
-            for group in ["A", "B", "C"] { groups.add(shared, to: group) }
-        }
         let map = layout(names, groups)
 
-        let paper = CGRect(x: 0, y: 0, width: size.width, height: map.contentHeight)
-        for node in map.nodes where node.isShared {
-            for island in map.islands {
-                #expect(
-                    !island.frame.contains(node.position),
-                    "「\(node.name)」が「\(island.name)」の中に立っている"
-                )
-            }
-            #expect(paper.contains(node.position), "「\(node.name)」が紙の外に出ている")
+        let box = try #require(map.islands.first { $0.overlapOf == ["A", "B"] })
+        for index in 1...12 {
+            let node = try #require(map.node(named: "both\(index)"))
+            #expect(box.frame.contains(node.position), "both\(index) が枠から出ている")
         }
-        // 輪どうしが重なると、隣どうしで読めなくなる。
-        let sorted = map.nodes.filter(\.isShared).sorted { $0.position.y < $1.position.y }
-        for (a, b) in zip(sorted, sorted.dropFirst()) {
-            #expect(distance(a.position, b.position) > 40, "\(a.name) と \(b.name) が近すぎる")
-        }
+        #expect(box.overflow == 0, "「ほか N」に落ちたものがある")
     }
 
-    /// 三つ以上のグループに属することもある。重心は枡の並び次第で**属していない島**の
-    /// 真ん中に落ちるので、そこに置くとその島のメンバーに見えてしまう。
-    @Test("三つのグループに属するものが、属していない島の中に入らない")
-    func tripleSharedStaysOutOfForeignIslands() {
-        var groups = WorkspaceItemGroups()
-        for (index, name) in ["A", "B", "C", "D", "E", "F"].enumerated() {
-            groups.add("member\(index)", to: name)
-        }
-        // A・C・E の三つに属する。この三つは枡の上で離れている。
-        for name in ["A", "C", "E"] { groups.add("triple", to: name) }
-
-        let map = layout((0..<6).map { "member\($0)" } + ["triple"], groups)
-        let triple = try! #require(map.node(named: "triple"))
-
-        #expect(triple.groups.count == 3)
-        for island in map.islands where !triple.groups.contains(island.name) {
-            #expect(
-                !island.frame.contains(triple.position),
-                "属していない島「\(island.name)」の中に入った"
-            )
-        }
-    }
-
-    @Test("三つのグループに属するものは、その三つ全部が橋になる")
-    func tripleSharedBridgesToAll() {
+    /// 三つ以上の交わりも同じ。二つの交わりとは別の枠になる。
+    @Test("三つに属するものは「A × B × C」の枠に入る。二つの交わりとは別の枠")
+    func tripleSharedGetsItsOwnBox() throws {
         var groups = WorkspaceItemGroups()
         for name in ["A", "B", "C"] {
             groups.add("only-\(name)", to: name)
             groups.add("triple", to: name)
         }
+        groups.add("pair", to: "A")
+        groups.add("pair", to: "B")
 
-        let map = layout(["only-A", "only-B", "only-C", "triple"], groups)
+        let map = layout(["only-A", "only-B", "only-C", "triple", "pair"], groups)
 
-        #expect(map.bridges.count == 1)
-        #expect(Set(map.nodes[map.bridges[0]].groups) == ["A", "B", "C"])
+        let boxes = map.islands.compactMap(\.overlapOf)
+        #expect(boxes.contains(["A", "B", "C"]))
+        #expect(boxes.contains(["A", "B"]))
+        #expect(boxes.count == 2, "組み合わせごとに一つの枠: \(boxes)")
+
+        let triple = try #require(map.node(named: "triple"))
+        #expect(Set(triple.groups) == ["A", "B", "C"])
+        let tripleBox = try #require(map.islands.first { $0.overlapOf == ["A", "B", "C"] })
+        #expect(tripleBox.frame.contains(triple.position))
     }
 
-    @Test("複数所属のものだけが橋として挙がる")
-    func onlySharedNodesBecomeBridges() {
+    /// 重なりを枠にしたので、点から島へ橋を引く必要がなくなった。
+    /// 点ごとに引いていたころは、件数のぶんだけ線が束になって交差した。
+    @Test("橋は引かない。重なりは枠として在る")
+    func noBridgesAnyMore() {
         var groups = twoGroups()
-        groups.add("both", to: "A")
-        groups.add("both", to: "B")
-        let map = layout(["a1", "a2", "a3", "b1", "b2", "b3", "both"], groups)
-
-        #expect(map.bridges.count == 1)
-        let bridged = map.nodes[map.bridges[0]]
-        #expect(bridged.name == "both")
-        #expect(Set(bridged.groups) == ["A", "B"])
+        for index in 1...5 {
+            groups.add("both\(index)", to: "A")
+            groups.add("both\(index)", to: "B")
+        }
+        let map = layout(
+            ["a1", "b1"] + (1...5).map { "both\($0)" },
+            groups
+        )
+        #expect(map.bridges.isEmpty)
+        #expect(map.islands.contains { $0.overlapOf == ["A", "B"] })
     }
 
     /// 一つのグループにしか属さないものは、その島から出ない。出ていたら、島という
