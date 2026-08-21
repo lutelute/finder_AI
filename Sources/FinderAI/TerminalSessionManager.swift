@@ -17,6 +17,8 @@ final class TerminalSessionManager: TerminalSessionManaging {
     /// 表示と実行を分離する。ここにあるセッションはタブから消えるだけで、managerの
     /// 強参照、PTY、出力バッファはそのまま生きる。
     private var hiddenSessionIDs: Set<UUID> = []
+    /// アプリ終了処理の最中か。落ちたセッションの自動片付けを止めるためだけの旗。
+    private var isShuttingDown = false
 
     /// tmuxサーバーが保持しているFinderAI名義のセッション（最新refresh結果）。
     /// 「再接続」表示と管理パネルの根拠で、起動時・アクティブ化・作成/削除後に
@@ -308,7 +310,7 @@ final class TerminalSessionManager: TerminalSessionManaging {
     func create(
         kind: TerminalSessionKind,
         directoryURL: URL,
-        resumingConversation: Bool
+        resumingConversation: ConversationResume?
     ) throws -> any ManagedTerminalSession {
         let key = TerminalSessionKey(directoryURL: directoryURL, kind: kind)
         if let existing = sessionsByKey[key] {
@@ -497,7 +499,12 @@ final class TerminalSessionManager: TerminalSessionManaging {
 
     /// アプリ終了時。永続セッションのクライアントもここで終了するが、それは
     /// デタッチであって、tmuxサーバー側のセッションは生き続ける。
+    ///
+    /// 落ちたセッションの片付けはここでは止める。こちらから止めているだけで
+    /// ユーザーが閉じたのでも落ちたのでもなく、片付けに先を越されると
+    /// `appShutdown`として書き残す先（索引）が消えてしまう。
     func shutdownOwnedProcesses() {
+        isShuttingDown = true
         for session in sessionsByKey.values {
             if session.isRunning {
                 session.terminate()
@@ -520,10 +527,41 @@ final class TerminalSessionManager: TerminalSessionManaging {
             $0.lastActivityAt = now
             if !session.isRunning {
                 $0.isPresented = false
-                $0.endedAt = now
-                $0.endReason = .processExited
+                // tmuxに持たせたセッションは、こちらのPTYが閉じても向こうで
+                // 生きている——デタッチであって終了ではない。終わったかどうかは
+                // tmuxのスナップショットが決める（`.missing`）。ここで終了にすると
+                // 生きているセッションの記録が履歴に混ざり、本数で古いものを
+                // 落とすときに巻き添えで消える。
+                if session.persistence == nil {
+                    $0.endedAt = now
+                    $0.endReason = .processExited
+                }
             }
         }
+        // 落ちたセッションはタブからも外す。ここまでは台帳を「終了」にするだけ
+        // だったので、帯には押しても何も起きないタブが残り続けていた——台帳と
+        // 画面が食い違い、閉じたはずのものが消えるのはアプリを開き直したとき、
+        // という状態になっていた。
+        if !session.isRunning, !isShuttingDown {
+            discardExited(session)
+            return
+        }
+        notifyChange()
+    }
+
+    /// 落ちたセッションを索引から外す。
+    ///
+    /// `remove(_:)`と違い、終了理由は`processExited`のまま置く——ユーザーが
+    /// 閉じたのではないので`userEnded`にはしない。tmuxも殺さない：PTYが閉じた
+    /// だけでtmux側のセッションは生きていることがあり、それは「未接続」として
+    /// 一覧から繋ぎ直せる。生き死には`refreshDetachedSessions`が確かめる。
+    private func discardExited(_ session: any ManagedTerminalSession) {
+        session.onChange = nil
+        sessionsByKey.removeValue(forKey: session.key)
+        insertionOrder.removeAll { $0 == session.key }
+        hiddenSessionIDs.remove(session.id)
+        recordIDsBySessionID.removeValue(forKey: session.id)
+        refreshDetachedSessions()
         notifyChange()
     }
 
