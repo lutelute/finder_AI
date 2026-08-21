@@ -14,6 +14,8 @@ final class SettingsWindowController: NSWindowController {
 
     private let sessionManager: any TerminalSessionManaging
     private let preferences: WorkspacePreferences
+    /// 高さを測るために持っておく。窓の大きさは中身から決める。
+    private var contentStack: NSStackView?
 
     private let terminalEdgeControl = NSSegmentedControl(
         labels: ["下辺", "右辺"],
@@ -41,12 +43,18 @@ final class SettingsWindowController: NSWindowController {
     private let edgeTabsHoverCaption = NSTextField(wrappingLabelWithString: "")
     private let edgeTabsFollowCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let edgeTabsFollowCaption = NSTextField(wrappingLabelWithString: "")
+    /// 帯がどこに出るかの図。4つの設定の掛け算で決まるので、文章より図が早い。
+    private let edgeTabsMap = EdgeTabsMapView()
+    private let edgeTabsMapCaption = NSTextField(wrappingLabelWithString: "")
     private let edgeTabsPreviewCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let edgeTabsFinderCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let edgeTabsFinderCaption = NSTextField(wrappingLabelWithString: "")
     /// 登録済みのフォルダ。ここから外せないと、タブを右クリックする方法しか
     /// 無いことになる——隠す設定にしていると、その右クリックの的が画面に無い。
     private let edgeTabsList = NSStackView()
+    /// 縁に置くフォルダを、ここからも足せるように。⌃⌘Eしか道が無いと、
+    /// 何も登録していない人には設定画面から始められる操作が1つも無い。
+    private let edgeTabsAddButton = NSButton(title: "", target: nil, action: nil)
     /// 新しいウインドウで開くフォルダの現在値。指定なしのときはその旨を出す。
     private let newWindowPathLabel = NSTextField(labelWithString: "")
     private let newWindowCaption = NSTextField(wrappingLabelWithString: "")
@@ -62,7 +70,7 @@ final class SettingsWindowController: NSWindowController {
         self.preferences = preferences
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 460, height: 0),
-            styleMask: [.titled, .closable],
+            styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
@@ -78,6 +86,7 @@ final class SettingsWindowController: NSWindowController {
 
     func show() {
         refresh()
+        fitToScreen()
         window?.center()
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
@@ -94,15 +103,25 @@ final class SettingsWindowController: NSWindowController {
         // タブが1つも無ければ、左右も自動的に隠すも効きようがない。
         edgeTabsHoverCheckbox.state = preferences.edgeTabsOpensOnHover ? .on : .off
         edgeTabsFollowCheckbox.state = preferences.edgeTabsFollowsPointer ? .on : .off
+        edgeTabsMap.edge = preferences.edgeTabsEdge
+        edgeTabsMap.followsPointer = preferences.edgeTabsFollowsPointer
+        edgeTabsMap.autoHides = preferences.edgeTabsAutoHide
         edgeTabsPreviewCheckbox.state = preferences.edgeTabsShowsPreview ? .on : .off
         edgeTabsFinderCheckbox.state = preferences.edgeTabsUsesFinderWindows ? .on : .off
-        let hasTabs = !preferences.edgeTabs.isEmpty
-        edgeTabsSideControl.isEnabled = hasTabs
-        edgeTabsAutoHideCheckbox.isEnabled = hasTabs
-        edgeTabsHoverCheckbox.isEnabled = hasTabs
-        edgeTabsPreviewCheckbox.isEnabled = hasTabs
-        edgeTabsFollowCheckbox.isEnabled = hasTabs
-        edgeTabsFinderCheckbox.isEnabled = hasTabs
+        // フォルダが1つも無くても、置き方は先に決められる。登録するまで全部を
+        // 触れなくしていたので、設定を開いても押せるものが1つも無かった——
+        // 決めた設定は、最初の1つを入れた瞬間から効く。
+        let enabled = preferences.edgeTabsEnabled
+        edgeTabsSideControl.isEnabled = enabled
+        edgeTabsAutoHideCheckbox.isEnabled = enabled
+        edgeTabsHoverCheckbox.isEnabled = enabled
+        edgeTabsPreviewCheckbox.isEnabled = enabled
+        edgeTabsFollowCheckbox.isEnabled = enabled
+        edgeTabsFinderCheckbox.isEnabled = enabled
+        edgeTabsMap.isActive = enabled
+        // 上限まで入っていれば、足す先が無い。
+        edgeTabsAddButton.isEnabled = enabled
+            && preferences.edgeTabs.urls.count < WorkspaceEdgeTabs.capacity
         rebuildEdgeTabsList()
 
         let tmuxAvailable = sessionManager.persistenceAvailable
@@ -164,6 +183,19 @@ final class SettingsWindowController: NSWindowController {
         edgeTabsFollowCheckbox.action = #selector(toggleEdgeTabsFollow)
         edgeTabsFollowCaption.stringValue = "その画面でカーソルが右半分にいるときは右端、左半分なら左端へ帯を移します。手のある側に出ているほうが近いためです。オフにすると上で選んだ縁に固定します。"
 
+        edgeTabsMapCaption.stringValue = "モニタの左右の縁を押すと、タブを置く縁が変わります。"
+        edgeTabsMap.onSelectEdge = { [weak self] edge in
+            guard let self else { return }
+            self.preferences.edgeTabsEdge = edge
+            self.refresh()
+            self.onEdgeTabsChanged?()
+        }
+        edgeTabsMap.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            edgeTabsMap.widthAnchor.constraint(equalToConstant: 296),
+            edgeTabsMap.heightAnchor.constraint(equalToConstant: 124)
+        ])
+
         edgeTabsPreviewCheckbox.title = "選んだものを一覧の下でプレビュー"
         edgeTabsPreviewCheckbox.target = self
         edgeTabsPreviewCheckbox.action = #selector(toggleEdgeTabsPreview)
@@ -176,6 +208,11 @@ final class SettingsWindowController: NSWindowController {
         edgeTabsList.orientation = .vertical
         edgeTabsList.alignment = .leading
         edgeTabsList.spacing = 2
+
+        edgeTabsAddButton.title = "フォルダを追加..."
+        edgeTabsAddButton.bezelStyle = .rounded
+        edgeTabsAddButton.target = self
+        edgeTabsAddButton.action = #selector(addEdgeTabFolders)
 
         persistCheckbox.title = "セッションを永続化（tmux）"
         persistCheckbox.target = self
@@ -199,6 +236,7 @@ final class SettingsWindowController: NSWindowController {
             edgeTabsCaption,
             edgeTabsHoverCaption,
             edgeTabsFollowCaption,
+            edgeTabsMapCaption,
             edgeTabsAutoHideCaption,
             edgeTabsFinderCaption,
             newWindowCaption,
@@ -272,6 +310,7 @@ final class SettingsWindowController: NSWindowController {
             edgeTabsSeparator,
             edgeTabsTitle,
             edgeTabsCheckbox, indented(edgeTabsCaption),
+            indented(edgeTabsMap), indented(edgeTabsMapCaption),
             indented(sideRow),
             indented(edgeTabsFollowCheckbox), indented(edgeTabsFollowCaption),
             indented(edgeTabsHoverCheckbox), indented(edgeTabsHoverCaption),
@@ -279,6 +318,7 @@ final class SettingsWindowController: NSWindowController {
             indented(edgeTabsAutoHideCheckbox), indented(edgeTabsAutoHideCaption),
             indented(edgeTabsFinderCheckbox), indented(edgeTabsFinderCaption),
             indented(edgeTabsList),
+            indented(edgeTabsAddButton),
             separator,
             appTitle, versionLabel, commitLabel, installationLabel
         ])
@@ -291,18 +331,53 @@ final class SettingsWindowController: NSWindowController {
         stack.setCustomSpacing(16, after: indentedViews[openLogs] ?? openLogs)
         stack.setCustomSpacing(14, after: edgeTabsTitle)
         stack.setCustomSpacing(16, after: indentedViews[edgeTabsCaption] ?? edgeTabsCaption)
+        stack.setCustomSpacing(14, after: indentedViews[edgeTabsMapCaption] ?? edgeTabsMapCaption)
         stack.setCustomSpacing(
             16,
             after: indentedViews[edgeTabsAutoHideCaption] ?? edgeTabsAutoHideCaption
         )
+        // 設定は縦に長い。画面に収まらない高さのまま出していたので、下のほうは
+        // 見ることも押すこともできなかった（実測で1324pt——1080ptのモニタには
+        // 最初から入らない）。中身はスクロールに預け、窓の高さは画面に合わせる。
         stack.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(stack)
+        let document = NSView()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        document.addSubview(stack)
+
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.drawsBackground = false
+        scroll.documentView = document
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(scroll)
+
+        contentStack = stack
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
-            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20)
+            stack.topAnchor.constraint(equalTo: document.topAnchor, constant: 20),
+            stack.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -20),
+            stack.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -20),
+            // 横はスクロールさせない。文章が折り返す幅は窓が決める。
+            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            scroll.topAnchor.constraint(equalTo: content.topAnchor),
+            scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: content.bottomAnchor)
         ])
+    }
+
+    /// 開くたびに、その画面に収まる高さへ合わせる。
+    ///
+    /// 中身が伸びても窓が伸び続けないよう、上限は画面の見える範囲。足りないぶんは
+    /// スクロールが引き受ける。
+    private func fitToScreen() {
+        guard let window, let stack = contentStack else { return }
+        stack.layoutSubtreeIfNeeded()
+        let needed = stack.fittingSize.height + 40
+        let screen = window.screen ?? NSScreen.main
+        let available = (screen?.visibleFrame.height ?? 900) - 60
+        window.setContentSize(NSSize(width: 460, height: min(needed, available)))
     }
 
     /// captionをcheckboxの文字位置に揃えるためのぶら下げインデント。
@@ -385,11 +460,13 @@ final class SettingsWindowController: NSWindowController {
 
     @objc private func changeEdgeTabsSide() {
         preferences.edgeTabsEdge = edgeTabsSideControl.selectedSegment == 0 ? .left : .right
+        refresh()
         onEdgeTabsChanged?()
     }
 
     @objc private func toggleEdgeTabsAutoHide() {
         preferences.edgeTabsAutoHide = edgeTabsAutoHideCheckbox.state == .on
+        refresh()
         onEdgeTabsChanged?()
     }
 
@@ -400,6 +477,7 @@ final class SettingsWindowController: NSWindowController {
 
     @objc private func toggleEdgeTabsFollow() {
         preferences.edgeTabsFollowsPointer = edgeTabsFollowCheckbox.state == .on
+        refresh()
         onEdgeTabsChanged?()
     }
 
@@ -450,6 +528,25 @@ final class SettingsWindowController: NSWindowController {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         preferences.newWindowDirectory = url
         refresh()
+    }
+
+    @objc private func addEdgeTabFolders() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.prompt = "縁に置く"
+        panel.message = "画面の縁に置くフォルダを選んでください（\(WorkspaceEdgeTabs.capacity)個まで）"
+        guard panel.runModal() == .OK else { return }
+        var tabs = preferences.edgeTabs
+        // 上限に当たったぶんは黙って落ちる。選び直させるより、入ったものを
+        // そのまま見せて、足りなければもう一度押してもらうほうが早い。
+        for url in panel.urls {
+            _ = tabs.add(url)
+        }
+        preferences.edgeTabs = tabs
+        refresh()
+        onEdgeTabsChanged?()
     }
 
     @objc private func clearNewWindowDirectory() {
