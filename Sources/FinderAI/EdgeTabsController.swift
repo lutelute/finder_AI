@@ -254,15 +254,11 @@ final class EdgeTabsController {
         }
 
         // どのモニタにも置く。作業している画面に無いのでは「常に手の届く場所」に
-        // ならない。ただし両側とも隣と接している画面（並びの真ん中）は飛ばす——
-        // そこに置くと、隣の画面の帯と同じ場所に重なる。
-        var hosts = NSScreen.screens.filter {
-            Self.isOuterEdge($0, edge: .right) || Self.isOuterEdge($0, edge: .left)
-        }
-        if hosts.isEmpty {
-            hosts = [NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
-                ?? NSScreen.main].compactMap { $0 }
-        }
+        // ならない。画面と画面の継ぎ目に当たる縁にも置く——そこはカーソルが
+        // 通り抜ける場所でもあるが、避けると広い画面の内側の縁が丸ごと使えなくなる。
+        // 3440ptの画面で左に手があっても、右端まで往復することになっていた。
+        // 継ぎ目に2本が重なる件は、置いたあとに`resolveSeamConflicts`が解く。
+        let hosts = NSScreen.screens
 
         var live: Set<CGDirectDisplayID> = []
         for screen in hosts {
@@ -275,8 +271,7 @@ final class EdgeTabsController {
                 strips[id] = created
                 return created
             }()
-            // 設定した縁が通路（隣と接する側）なら、その画面では外を向いた縁へ置く。
-            strip.edge = Self.placement(preferred: edge, on: screen)
+            strip.edge = edge
             buildTabs(in: strip, on: screen)
             layout(strip, on: screen)
         }
@@ -284,6 +279,12 @@ final class EdgeTabsController {
             strip.panel.orderOut(nil)
             strips.removeValue(forKey: id)
         }
+        // 全画面が同じ縁を向くので、継ぎ目では必ずぶつかる。ここで片方を退ける。
+        // カーソルのいる画面に先に選ばせる——手元の画面が優先されるべき。
+        let pointerScreen = NSScreen.screens
+            .first { $0.frame.contains(NSEvent.mouseLocation) }?
+            .displayID
+        resolveSeamConflicts(preferring: pointerScreen)
         refreshSessionBadges()
     }
 
@@ -313,65 +314,80 @@ final class EdgeTabsController {
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }),
               let id = screen.displayID,
               let strip = strips[id] else { return }
-        // 隣のモニタと接している縁へは移さない。
+        // 帯が付くのは画面の縁だけ。FinderAIの窓の縁へ寄せる案もあったが、
+        // 入れなかった——窓の一部に見えるものが窓とは別の層に浮くことになり、
+        // 窓を背面に回しても帯だけが他アプリの上に残る。子ウインドウにして
+        // 前後を揃える手も試したが、隠れ方が読みにくくなるだけだった。
         //
-        // そこは画面の端ではなく通路で、両側の画面から寄せると同じ場所に2本が
-        // 重なる。実際、3画面で使うと境界に2本並び、設定した縁も無視された形に
-        // なった。カーソルに寄せるのは、その画面が外を向いている縁だけ。
-        let canGoRight = Self.isOuterEdge(screen, edge: .right)
-        let canGoLeft = Self.isOuterEdge(screen, edge: .left)
-        guard canGoRight || canGoLeft else { return }
-        let wanted: WorkspaceScreenEdge
-        if canGoRight, canGoLeft {
-            // 両側が外を向いている画面でだけ、カーソルの側を選ぶ。
-            //
-            // カーソルのいる側へ素直に移る。ただし中央をまたぐ瞬間に往復しない
-            // よう、移った先から戻るには中央より少し先まで行く必要がある
-            // （行きと帰りで境目をずらす）。
-            let hysteresis = screen.frame.width * 0.06
-            let boundary = strip.edge == .right
-                ? screen.frame.midX - hysteresis
-                : screen.frame.midX + hysteresis
-            wanted = mouse.x >= boundary ? .right : .left
-        } else {
-            // 片側しか外を向いていないなら、選ぶ余地はない。
-            wanted = canGoRight ? .right : .left
-        }
+        // 隣と接している縁へも寄せる。継ぎ目は通り道でもあるが、避けると
+        // 画面の内側半分から帯が遠のく——3440ptの画面ではそれが致命的で、
+        // 左に手があるのに右端まで往復することになっていた。継ぎ目で2本が
+        // 重なる件は、動かしたあとに`resolveSeamConflicts`が解く。
+        //
+        // カーソルのいる側へ素直に移る。ただし中央をまたぐ瞬間に往復しない
+        // よう、移った先から戻るには中央より少し先まで行く必要がある
+        // （行きと帰りで境目をずらす）。
+        let hysteresis = screen.frame.width * 0.06
+        let boundary = strip.edge == .right
+            ? screen.frame.midX - hysteresis
+            : screen.frame.midX + hysteresis
+        let wanted: WorkspaceScreenEdge = mouse.x >= boundary ? .right : .left
+
         guard strip.edge != wanted else { return }
         strip.edge = wanted
-        // 角の落とし方が左右で変わるので、タブごと作り直す。
+        // 角の落とし方が左右で変わるので、移ったらタブごと作り直す。
         buildTabs(in: strip, on: screen)
         layout(strip, on: screen)
+        // 移った先が継ぎ目なら、向かいの画面の帯を退ける。カーソルのいる画面が優先。
+        resolveSeamConflicts(preferring: id)
         refreshSessionBadges()
         refreshWindowsOverview()
     }
 
-    /// その画面で帯を置ける縁。設定した側が通路なら、反対の外向きの縁へ回す。
-    static func placement(
-        preferred: WorkspaceScreenEdge,
-        on screen: NSScreen
-    ) -> WorkspaceScreenEdge {
-        if isOuterEdge(screen, edge: preferred) { return preferred }
-        if isOuterEdge(screen, edge: preferred.opposite) { return preferred.opposite }
-        return preferred
-    }
-
-    /// その縁が外を向いているか（隣に別のモニタが接していないか）。
+    /// 継ぎ目に2本が重ならないよう、あとから来たほうを反対の縁へ退ける。
     ///
-    /// 縁に沿って何点か当たりを取る。境界が縦にずれて重なっている置き方——
-    /// 大きいモニタの右に小さいモニタを高さ違いで並べる、など——では、中央だけを
-    /// 見ると「接していない」と読み違える。
-    static func isOuterEdge(_ screen: NSScreen, edge: WorkspaceScreenEdge) -> Bool {
-        let frame = screen.frame
-        let others = NSScreen.screens.filter { $0.frame != frame }
-        guard !others.isEmpty else { return true }
-        let x = edge == .right ? frame.maxX + 1 : frame.minX - 1
-        let samples = [0.15, 0.35, 0.5, 0.65, 0.85].map { ratio in
-            CGPoint(x: x, y: frame.minY + frame.height * ratio)
+    /// 縁が継ぎ目でも帯は置く。置かないほうが行儀はいいが、隣を並べた側の縁が
+    /// 丸ごと使えなくなるほうが実害が大きい。代わりに、両側の画面が同じ継ぎ目へ
+    /// 寄ったときだけ片方を退ける。`preferring`——ふつうはカーソルのいる画面——が
+    /// 先に縁を取り、残りは空いている縁があればそちらへ移る。
+    ///
+    /// どちらの縁も塞がっているなら動かさない。3画面を横一列に並べた真ん中では
+    /// 逃げ場が無く、動かしても別の継ぎ目でぶつかるだけになる。
+    ///
+    /// - Returns: `preferring`以外の画面の帯を動かしたか。
+    @discardableResult
+    private func resolveSeamConflicts(preferring activeID: CGDirectDisplayID?) -> Bool {
+        var screens = NSScreen.screens
+        if let activeID, let index = screens.firstIndex(where: { $0.displayID == activeID }) {
+            screens.insert(screens.remove(at: index), at: 0)
         }
-        return !samples.contains { point in
-            others.contains { $0.frame.contains(point) }
+        var settled: [(frame: CGRect, edge: WorkspaceScreenEdge)] = []
+        var movedOthers = false
+        for screen in screens {
+            guard let id = screen.displayID, let strip = strips[id] else { continue }
+            func collides(_ candidate: WorkspaceScreenEdge) -> Bool {
+                settled.contains {
+                    EdgeTabPlacement.sharesSeam(
+                        screen.frame,
+                        edge: candidate,
+                        with: $0.frame,
+                        edge: $0.edge
+                    )
+                }
+            }
+            var wanted = strip.edge
+            if collides(wanted), !collides(wanted.opposite) {
+                wanted = wanted.opposite
+            }
+            settled.append((screen.frame, wanted))
+            guard wanted != strip.edge else { continue }
+            strip.edge = wanted
+            // 角の落とし方が左右で変わるので、タブごと作り直す。
+            buildTabs(in: strip, on: screen)
+            layout(strip, on: screen)
+            if id != activeID { movedOthers = true }
         }
+        return movedOthers
     }
 
     private func buildTabs(in strip: Strip, on screen: NSScreen) {

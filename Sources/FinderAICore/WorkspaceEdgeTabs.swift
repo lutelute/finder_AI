@@ -245,6 +245,29 @@ public enum EdgeTabPlacement {
         return CGRect(x: x, y: y, width: size.width, height: size.height).integral
     }
 
+    /// 縁がどれだけ離れていれば別の場所とみなすか。画面の枠は整数で並ぶので、
+    /// 1pt未満のずれは同じ縁として扱う。
+    private static let seamTolerance: CGFloat = 1
+
+    /// 2枚の画面の帯が、同じ継ぎ目を取り合っているか。
+    ///
+    /// 画面と画面が接する縁——継ぎ目——にも帯は置く。置かないと、隣を並べた側の
+    /// 縁が丸ごと使えなくなり、3440ptの画面で左に手があっても右端まで往復する
+    /// ことになる。ただし両側の画面が同じ継ぎ目に置くと、2本が同じ場所に重なる。
+    /// 重なるのは「縁のxが揃っていて、縦にも重なっている」ときだけなので、
+    /// 高さ違いで並べていて縦が離れていれば、両方置いても構わない。
+    public static func sharesSeam(
+        _ a: CGRect,
+        edge aEdge: WorkspaceScreenEdge,
+        with b: CGRect,
+        edge bEdge: WorkspaceScreenEdge
+    ) -> Bool {
+        let ax = aEdge == .right ? a.maxX : a.minX
+        let bx = bEdge == .right ? b.maxX : b.minX
+        guard abs(ax - bx) < seamTolerance else { return false }
+        return max(a.minY, b.minY) < min(a.maxY, b.maxY) - seamTolerance
+    }
+
     /// 展開したポップアップは、押したタブの高さに頭を合わせて画面の内側へ開く。
     ///
     /// 画面からはみ出す場合は上下にずらして収める。ずらしてなお入らないときは

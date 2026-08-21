@@ -287,3 +287,61 @@ struct EdgeTabPlacementTests {
         ))
     }
 }
+
+@Suite("画面と画面の継ぎ目")
+struct EdgeTabSeamTests {
+    /// 実際に使っている3画面の並び。ウルトラワイドの左に、高さをずらして小さい
+    /// モニタが付いている——この形で「左端に帯が出ない」が出た。
+    private let plx = CGRect(x: -2896, y: 1342, width: 1920, height: 1080)
+    private let ultrawide = CGRect(x: -976, y: 982, width: 3440, height: 1440)
+    private let builtIn = CGRect(x: 0, y: 0, width: 1512, height: 982)
+
+    @Test("向かい合う縁は同じ継ぎ目を取り合う")
+    func facingEdgesCollide() {
+        #expect(
+            EdgeTabPlacement.sharesSeam(plx, edge: .right, with: ultrawide, edge: .left)
+        )
+        // 順番を入れ替えても同じ答えになる。
+        #expect(
+            EdgeTabPlacement.sharesSeam(ultrawide, edge: .left, with: plx, edge: .right)
+        )
+    }
+
+    @Test("反対を向いていれば重ならない")
+    func oppositeEdgesAreFree() {
+        #expect(
+            !EdgeTabPlacement.sharesSeam(plx, edge: .left, with: ultrawide, edge: .left)
+        )
+        #expect(
+            !EdgeTabPlacement.sharesSeam(ultrawide, edge: .right, with: plx, edge: .right)
+        )
+    }
+
+    @Test("上下に積んだ画面は、左右の縁を取り合わない")
+    func stackedScreensDoNotCollide() {
+        // ノートの画面はウルトラワイドの真下にあるが、縁のxが揃っていない。
+        for edge in WorkspaceScreenEdge.allCases {
+            #expect(
+                !EdgeTabPlacement.sharesSeam(builtIn, edge: edge, with: ultrawide, edge: .left)
+            )
+        }
+    }
+
+    @Test("縁が揃っていても、縦が離れていれば両方に置ける")
+    func verticallyApartEdgesAreFree() {
+        let upper = CGRect(x: 0, y: 600, width: 1000, height: 500)
+        let lower = CGRect(x: 1000, y: 0, width: 1000, height: 500)
+        #expect(
+            !EdgeTabPlacement.sharesSeam(upper, edge: .right, with: lower, edge: .left)
+        )
+    }
+
+    @Test("角で接するだけの並びは、取り合いにならない")
+    func touchingCornersAreFree() {
+        let above = CGRect(x: 0, y: 500, width: 1000, height: 500)
+        let beside = CGRect(x: 1000, y: 0, width: 1000, height: 500)
+        #expect(
+            !EdgeTabPlacement.sharesSeam(above, edge: .right, with: beside, edge: .left)
+        )
+    }
+}
