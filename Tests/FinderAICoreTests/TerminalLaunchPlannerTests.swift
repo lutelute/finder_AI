@@ -68,7 +68,7 @@ struct TerminalLaunchPlannerTests {
             commandURL: claude,
             persistence: nil,
             directoryPath: "/tmp/x",
-            resumesConversation: true
+            resumesConversation: .latest
         )
         #expect(resumed?.executable == "/bin/sh")
         let script = resumed?.arguments.last ?? ""
@@ -84,7 +84,7 @@ struct TerminalLaunchPlannerTests {
             commandURL: codex,
             persistence: nil,
             directoryPath: "/tmp/x",
-            resumesConversation: true
+            resumesConversation: .latest
         )
         #expect(codexResumed?.arguments.last?.hasPrefix(
             "'/mock/bin/codex' 'resume' '--last' || {"
@@ -96,9 +96,54 @@ struct TerminalLaunchPlannerTests {
             commandURL: nil,
             persistence: nil,
             directoryPath: "/tmp/x",
-            resumesConversation: true
+            resumesConversation: .latest
         )
         #expect(shell == .init(executable: "/bin/zsh", arguments: ["-l"]))
+    }
+
+    @Test("履歴から名指しで選んだ回へは、IDを渡して戻る")
+    func namedSessionsResumeByID() {
+        // 「前回の続き」は直近1本に固定されるが、履歴の行は3日前の回も指せる。
+        let claude = TerminalLaunchPlanner.plan(
+            kind: .claude,
+            commandURL: URL(fileURLWithPath: "/mock/bin/claude"),
+            persistence: nil,
+            directoryPath: "/tmp/x",
+            resumesConversation: .session(id: "9a572b73-c94a-479b-908e-bd077445cf1c")
+        )
+        let claudeScript = claude?.arguments.last ?? ""
+        #expect(claudeScript.hasPrefix(
+            "'/mock/bin/claude' '--resume' '9a572b73-c94a-479b-908e-bd077445cf1c' || {"
+        ))
+        // 指した会話が消えていても、断ってから新しい会話へ落ちる。
+        #expect(claudeScript.contains("exec '/mock/bin/claude'"))
+
+        let codex = TerminalLaunchPlanner.plan(
+            kind: .codex,
+            commandURL: URL(fileURLWithPath: "/mock/bin/codex"),
+            persistence: nil,
+            directoryPath: "/tmp/x",
+            resumesConversation: .session(id: "019fc650-edb4-7de3-83ba-b1d81f8203da")
+        )
+        #expect(codex?.arguments.last?.hasPrefix(
+            "'/mock/bin/codex' 'resume' '019fc650-edb4-7de3-83ba-b1d81f8203da' || {"
+        ) == true)
+    }
+
+    @Test("名指しの回でも、役割はそのまま付いて回る")
+    func namedSessionsKeepTheirRole() {
+        let plan = TerminalLaunchPlanner.plan(
+            kind: .claude,
+            commandURL: URL(fileURLWithPath: "/mock/bin/claude"),
+            persistence: nil,
+            directoryPath: "/tmp/x",
+            resumesConversation: .session(id: "abc"),
+            role: "厳しく見て"
+        )
+        let script = plan?.arguments.last ?? ""
+        #expect(script.contains("'--resume' 'abc' '--append-system-prompt' '厳しく見て'"))
+        // 落ちた先にも付く。役割が続きの有無で変わってはいけない。
+        #expect(script.contains("exec '/mock/bin/claude' '--append-system-prompt' '厳しく見て'"))
     }
 
     @Test("役割は続きの側にも落ちた先にも付く")
@@ -109,7 +154,7 @@ struct TerminalLaunchPlannerTests {
             commandURL: claude,
             persistence: nil,
             directoryPath: "/tmp/x",
-            resumesConversation: true,
+            resumesConversation: .latest,
             role: "査読者"
         )?.arguments.last ?? ""
         #expect(script.hasPrefix(
@@ -126,7 +171,7 @@ struct TerminalLaunchPlannerTests {
             commandURL: claude,
             persistence: nil,
             directoryPath: "/tmp/x",
-            resumesConversation: true,
+            resumesConversation: .latest,
             role: "it's a role"
         )?.arguments.last ?? ""
         #expect(script.contains("'it'\\''s a role'"))
@@ -180,7 +225,7 @@ struct TerminalLaunchPlannerTests {
             commandURL: claude,
             persistence: persistence,
             directoryPath: "/tmp/x",
-            resumesConversation: true
+            resumesConversation: .latest
         )
         #expect(plan?.executable == "/opt/homebrew/bin/tmux")
         let head = Array(plan?.arguments.prefix(8) ?? [])

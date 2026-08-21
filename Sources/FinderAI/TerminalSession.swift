@@ -113,7 +113,7 @@ final class TerminalSession: NSObject, @preconcurrency LocalProcessTerminalViewD
         executableURL: URL?,
         persistence: TerminalSessionPersistence?,
         logsOutput: Bool,
-        resumesConversation: Bool = false,
+        resumesConversation: ConversationResume? = nil,
         role: String? = nil
     ) throws {
         self.directoryURL = directoryURL.standardizedFileURL

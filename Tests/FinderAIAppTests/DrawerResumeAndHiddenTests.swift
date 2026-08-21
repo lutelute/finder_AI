@@ -31,7 +31,7 @@ private final class ResumeMockSession: ManagedTerminalSession {
 
 @MainActor
 private final class ResumeRecordingBuilder: TerminalSessionBuilding {
-    private(set) var resumeFlags: [Bool] = []
+    private(set) var resumeFlags: [ConversationResume?] = []
     private(set) var roles: [String?] = []
 
     func makeSession(
@@ -39,7 +39,7 @@ private final class ResumeRecordingBuilder: TerminalSessionBuilding {
         kind: TerminalSessionKind,
         executableURL: URL?,
         persistence: TerminalSessionPersistence?,
-        resumesConversation: Bool,
+        resumesConversation: ConversationResume?,
         role: String?
     ) throws -> any ManagedTerminalSession {
         resumeFlags.append(resumesConversation)
@@ -148,7 +148,7 @@ struct DrawerResumeAndHiddenTests {
             starters.first { $0.title == "Claudeで前回の続き" }
         )
         claudeButton.performClick(nil)
-        #expect(builder.resumeFlags == [true])
+        #expect(builder.resumeFlags == [.latest])
     }
 
     @Test("記録の無いフォルダのボタンはただの新規で、resumeを求めない")
@@ -160,7 +160,39 @@ struct DrawerResumeAndHiddenTests {
         let starters = buttons(in: drawer.view, action: "startSessionFromButton:")
         let claudeButton = try #require(starters.first { $0.title == "Claude" })
         claudeButton.performClick(nil)
-        #expect(builder.resumeFlags == [false])
+        #expect(builder.resumeFlags == [nil])
+    }
+
+    @Test("履歴の行を押すと、直近ではなくその回を名指しで再開する")
+    func historyRowResumesTheNamedConversation() async throws {
+        let builder = ResumeRecordingBuilder()
+        let drawer = makeDrawer(manager: makeManager(builder: builder), name: #function)
+        // 実物のログではなく、こちらが用意した1本を読ませる。
+        drawer.conversationHistoryReader = { _ in
+            [
+                ConversationDigest(
+                    sessionID: "9a572b73-c94a-479b-908e-bd077445cf1c",
+                    kind: .claude,
+                    headline: "読み込みが遅い理由ある？",
+                    modifiedAt: Date(timeIntervalSince1970: 1_770_000_000)
+                )
+            ]
+        }
+        // 別のフォルダへ動かして読み直させる（同じ場所に留まる間は読まない作り）。
+        let elsewhere = folder.deletingLastPathComponent()
+        drawer.setDirectory(elsewhere)
+
+        var rows: [NSButton] = []
+        for _ in 0..<300 where rows.isEmpty {
+            rows = buttons(in: drawer.view, action: "resumeConversationFromHistory:")
+            if rows.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        }
+        let row = try #require(rows.first, "履歴の行が出ていない")
+        #expect(row.attributedTitle.string.hasSuffix("読み込みが遅い理由ある？"))
+
+        row.performClick(nil)
+        // 「前回の続き」（.latest）ではなく、指した回そのもの。
+        #expect(builder.resumeFlags == [.session(id: "9a572b73-c94a-479b-908e-bd077445cf1c")])
     }
 
     @Test("走っているセッションを名指しで改名でき、その名前が引ける")
