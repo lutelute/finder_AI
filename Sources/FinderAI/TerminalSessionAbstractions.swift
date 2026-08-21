@@ -55,7 +55,7 @@ protocol TerminalSessionBuilding {
         kind: TerminalSessionKind,
         executableURL: URL?,
         persistence: TerminalSessionPersistence?,
-        resumesConversation: Bool,
+        resumesConversation: ConversationResume?,
         role: String?
     ) throws -> any ManagedTerminalSession
 }
@@ -115,7 +115,7 @@ protocol TerminalSessionManaging: AnyObject {
     func create(
         kind: TerminalSessionKind,
         directoryURL: URL,
-        resumingConversation: Bool
+        resumingConversation: ConversationResume?
     ) throws -> any ManagedTerminalSession
     /// このフォルダで以前そのAIを動かした記録が台帳にあるか。あるなら
     /// 「前回の続き」（claudeの`--continue`）で戻れる見込みがある。
@@ -155,7 +155,7 @@ extension TerminalSessionManaging {
         kind: TerminalSessionKind,
         directoryURL: URL
     ) throws -> any ManagedTerminalSession {
-        try create(kind: kind, directoryURL: directoryURL, resumingConversation: false)
+        try create(kind: kind, directoryURL: directoryURL, resumingConversation: nil)
     }
 }
 
@@ -168,7 +168,7 @@ struct SwiftTermSessionBuilder: TerminalSessionBuilding {
         kind: TerminalSessionKind,
         executableURL: URL?,
         persistence: TerminalSessionPersistence?,
-        resumesConversation: Bool,
+        resumesConversation: ConversationResume?,
         role: String?
     ) throws -> any ManagedTerminalSession {
         try TerminalSession(

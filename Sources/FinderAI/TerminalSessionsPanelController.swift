@@ -615,7 +615,7 @@ final class TerminalSessionsPanelController: NSWindowController {
                     resumingConversation: sessionManager.hasResumableConversation(
                         kind: kind,
                         directoryURL: url
-                    )
+                    ) ? .latest : nil
                 )
             case .record:
                 return

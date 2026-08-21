@@ -129,6 +129,17 @@ final class DrawerContentViewController: NSViewController {
     private let shellButton = NSButton()
     private let codexButton = NSButton()
     private let claudeButton = NSButton()
+    /// このフォルダで過去にAIと何を話したか。溜めているのはclaudeとcodex自身で、
+    /// ここに出るのはその読み取り。
+    private let historyStack = NSStackView()
+    /// 押された行から会話を引くための控え。セッションIDで引く。
+    private var historyDigests: [String: ConversationDigest] = [:]
+    /// 履歴の取り出し口。差し替えられるのは試験のためで、既定は実物のログを読む。
+    var conversationHistoryReader: @Sendable (URL) -> [ConversationDigest] = {
+        ConversationHistory.recentDigests(forDirectory: $0)
+    }
+    private var historyDirectory: URL?
+    private var historyTask: Task<Void, Never>?
 
     // deinitでしか触らないため、managerのactivationObserverと同じ扱い。
     private nonisolated(unsafe) var sessionsObserver: (any NSObjectProtocol)?
@@ -615,7 +626,13 @@ final class DrawerContentViewController: NSViewController {
         emptyState.orientation = .vertical
         emptyState.alignment = .centerX
         emptyState.spacing = 8
-        [emptyIcon, emptyTitle, emptyDetail, actions].forEach(emptyState.addArrangedSubview)
+        historyStack.orientation = .vertical
+        historyStack.alignment = .leading
+        historyStack.spacing = 3
+        historyStack.isHidden = true
+
+        [emptyIcon, emptyTitle, emptyDetail, actions, historyStack]
+            .forEach(emptyState.addArrangedSubview)
 
         terminalContainer.translatesAutoresizingMaskIntoConstraints = false
         emptyState.translatesAutoresizingMaskIntoConstraints = false
@@ -629,7 +646,9 @@ final class DrawerContentViewController: NSViewController {
             emptyState.centerXAnchor.constraint(equalTo: terminalContainer.centerXAnchor),
             emptyState.centerYAnchor.constraint(equalTo: terminalContainer.centerYAnchor),
             emptyState.leadingAnchor.constraint(greaterThanOrEqualTo: terminalContainer.leadingAnchor, constant: 20),
-            emptyState.trailingAnchor.constraint(lessThanOrEqualTo: terminalContainer.trailingAnchor, constant: -20)
+            emptyState.trailingAnchor.constraint(lessThanOrEqualTo: terminalContainer.trailingAnchor, constant: -20),
+            // 見出しが長くてもここで頭打ち。溢れる前に行の側が後ろを落とす。
+            historyStack.widthAnchor.constraint(lessThanOrEqualToConstant: 320)
         ]
     }
 
@@ -782,6 +801,7 @@ final class DrawerContentViewController: NSViewController {
         claudeButton.isEnabled = sessionManager.canStart(.claude)
         claudeButton.toolTip = claudeButton.isEnabled ? nil : "claudeコマンドが見つかりません"
         updateStartButtonTitles()
+        refreshConversationHistory()
         showActiveTerminal()
     }
 
@@ -809,6 +829,115 @@ final class DrawerContentViewController: NSViewController {
                     : kind.displayName
         }
     }
+
+    // MARK: - このフォルダで何をしたか
+
+    /// 押す前に、何の続きなのかを読めるようにする。
+    ///
+    /// 出どころはclaudeとcodexが自分で書いたログで、FinderAIは何も溜めていない。
+    /// 読み直すのはフォルダが変わったときだけ——同じ場所に留まっている間は
+    /// ディスクを触らない。codexはフォルダ単位の索引を持たず新しい順に舐めるので、
+    /// 読むのは必ず裏でやる。
+    private func refreshConversationHistory() {
+        guard isViewLoaded else { return }
+        guard let directoryURL else {
+            historyDirectory = nil
+            historyTask?.cancel()
+            applyConversationHistory([])
+            return
+        }
+        guard historyDirectory != directoryURL else { return }
+        historyDirectory = directoryURL
+        historyTask?.cancel()
+        // 前のフォルダの履歴を出したまま待たせない。空にしてから取りに行く。
+        applyConversationHistory([])
+        let target = directoryURL
+        let read = conversationHistoryReader
+        historyTask = Task { [weak self] in
+            let digests = await Task.detached(priority: .utility) {
+                read(target)
+            }.value
+            guard !Task.isCancelled, let self, self.historyDirectory == target else { return }
+            self.applyConversationHistory(digests)
+        }
+    }
+
+    private func applyConversationHistory(_ digests: [ConversationDigest]) {
+        historyDigests = Dictionary(digests.map { ($0.sessionID, $0) }, uniquingKeysWith: { first, _ in first })
+        for view in historyStack.arrangedSubviews {
+            historyStack.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        guard !digests.isEmpty else {
+            historyStack.isHidden = true
+            return
+        }
+        historyStack.isHidden = false
+        let title = NSTextField(labelWithString: "このフォルダの履歴")
+        title.font = .systemFont(ofSize: 10, weight: .semibold)
+        title.textColor = IntegratedPanelTheme.secondaryText
+        historyStack.addArrangedSubview(title)
+        digests.forEach { historyStack.addArrangedSubview(makeHistoryRow($0)) }
+    }
+
+    /// 1行は、種類の印・日付・本人が最初に打った一言。押せばその回へ戻る。
+    ///
+    /// 印を残すのは、claudeとcodexを混ぜて並べているから。どちらで話した回かが
+    /// 消えると、続きに戻る相手を間違える。
+    private func makeHistoryRow(_ digest: ConversationDigest) -> NSView {
+        let button = NSButton()
+        button.isBordered = false
+        button.alignment = .left
+        button.image = NSImage(
+            systemSymbolName: digest.kind.symbolName,
+            accessibilityDescription: digest.kind.displayName
+        )
+        button.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 9, weight: .regular)
+        button.imagePosition = .imageLeading
+        button.imageHugsTitle = true
+        button.contentTintColor = digest.kind.tint
+
+        // 日付と見出しで濃さを変える。日付は目印で、読ませたいのは言葉のほう。
+        let title = NSMutableAttributedString(
+            string: Self.historyDateFormatter.string(from: digest.modifiedAt) + "  ",
+            attributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular),
+                .foregroundColor: IntegratedPanelTheme.secondaryText
+            ]
+        )
+        title.append(NSAttributedString(
+            string: digest.headline,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .regular),
+                .foregroundColor: IntegratedPanelTheme.text
+            ]
+        ))
+        button.attributedTitle = title
+        // 長い見出しは後ろを落とす。全文はカーソルを置けば読める。
+        (button.cell as? NSButtonCell)?.lineBreakMode = .byTruncatingTail
+        button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        button.identifier = NSUserInterfaceItemIdentifier(digest.sessionID)
+        button.toolTip = "\(digest.kind.displayName)：\(digest.headline)"
+        button.target = self
+        button.action = #selector(resumeConversationFromHistory(_:))
+        return button
+    }
+
+    /// 履歴の行から、その回へ戻る。
+    ///
+    /// claudeは`--resume <id>`、codexは`resume <id>`。指した会話がもう無ければ、
+    /// 断りを1行出して新しい会話へ落ちる——ボタンの「前回の続き」と同じ作り。
+    @objc private func resumeConversationFromHistory(_ sender: NSButton) {
+        guard let id = sender.identifier?.rawValue, let digest = historyDigests[id] else { return }
+        startSession(kind: digest.kind, resumingConversation: .session(id: digest.sessionID))
+    }
+
+    private static let historyDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("Md")
+        return formatter
+    }()
 
     /// 幅が変われば詰め方も変わる。パネルの大きさを引きずって変えている
     /// 最中も追いつくよう、レイアウトのたびに見直す（変化が無ければ
@@ -1020,7 +1149,7 @@ final class DrawerContentViewController: NSViewController {
         mountedSessionID = session.id
     }
 
-    private func startSession(kind: TerminalSessionKind, resumingConversation: Bool = false) {
+    private func startSession(kind: TerminalSessionKind, resumingConversation: ConversationResume? = nil) {
         guard let directoryURL else { return }
         do {
             let session = try sessionManager.create(
@@ -1101,7 +1230,7 @@ final class DrawerContentViewController: NSViewController {
         let resumes = directoryURL.map {
             sessionManager.hasResumableConversation(kind: kind, directoryURL: $0)
         } ?? false
-        startSession(kind: kind, resumingConversation: resumes)
+        startSession(kind: kind, resumingConversation: resumes ? .latest : nil)
     }
 
     @objc private func selectSession(_ sender: NSButton) {
