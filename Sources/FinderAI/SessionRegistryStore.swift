@@ -27,6 +27,7 @@ final class InMemorySessionRegistryStore: SessionRegistryStoring {
         } else {
             records.append(record)
         }
+        records = SessionHistoryLimit.pruned(records)
     }
 
     func remove(id: UUID) {
@@ -67,6 +68,7 @@ final class SessionRegistryStore: SessionRegistryStoring {
         } else {
             records.append(record)
         }
+        records = SessionHistoryLimit.pruned(records)
         persist()
     }
 
@@ -78,10 +80,14 @@ final class SessionRegistryStore: SessionRegistryStoring {
     private func load() {
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
         do {
-            records = try JSONDecoder().decode(
+            let stored = try JSONDecoder().decode(
                 [TerminalSessionRecord].self,
                 from: Data(contentsOf: fileURL)
             )
+            records = SessionHistoryLimit.pruned(stored)
+            // 溢れていたぶんは、次の更新を待たずにその場で落とす。開き直すたびに
+            // 同じ古い記録を読み込み直すのでは、上限を切った意味が薄い。
+            if records.count != stored.count { persist() }
         } catch {
             let quarantine = fileURL.deletingLastPathComponent().appendingPathComponent(
                 "session-registry.corrupt-\(UUID().uuidString).json"

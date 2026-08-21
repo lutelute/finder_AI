@@ -39,7 +39,7 @@ private final class MockSessionBuilder: TerminalSessionBuilding {
         let kind: TerminalSessionKind
         let executableURL: URL?
         let persistence: TerminalSessionPersistence?
-        let resumesConversation: Bool
+        let resumesConversation: ConversationResume?
     }
 
     private(set) var requests: [Request] = []
@@ -50,7 +50,7 @@ private final class MockSessionBuilder: TerminalSessionBuilding {
         kind: TerminalSessionKind,
         executableURL: URL?,
         persistence: TerminalSessionPersistence?,
-        resumesConversation: Bool,
+        resumesConversation: ConversationResume?,
         role: String?
     ) throws -> any ManagedTerminalSession {
         requests.append(Request(
@@ -243,7 +243,7 @@ struct TerminalSessionManagerTests {
         _ = try manager.create(
             kind: TerminalSessionKind.claude,
             directoryURL: folder,
-            resumingConversation: false
+            resumingConversation: nil
         )
         #expect(manager.detachedRunningCount == 1)
     }
@@ -259,12 +259,12 @@ struct TerminalSessionManagerTests {
         )
         let folder = URL(fileURLWithPath: "/tmp/resume-thread", isDirectory: true)
 
-        _ = try manager.create(kind: .claude, directoryURL: folder, resumingConversation: true)
-        #expect(builder.requests.last?.resumesConversation == true)
+        _ = try manager.create(kind: .claude, directoryURL: folder, resumingConversation: .latest)
+        #expect(builder.requests.last?.resumesConversation == .latest)
 
         let another = URL(fileURLWithPath: "/tmp/resume-thread-b", isDirectory: true)
         _ = try manager.create(kind: .claude, directoryURL: another)
-        #expect(builder.requests.last?.resumesConversation == false)
+        #expect(builder.requests.last?.resumesConversation == nil)
     }
 
     @Test("an unavailable tmux query never converts a registry entry to missing")
@@ -583,5 +583,81 @@ struct TerminalSessionManagerTests {
             named: [mineA.name, mineB.name, "users-own-session"]
         )
         #expect(await controller.killed() == [mineA.name, mineB.name])
+    }
+
+    @Test("落ちたセッションはタブから外れる")
+    func exitedSessionLeavesTheStrip() throws {
+        let builder = MockSessionBuilder()
+        let manager = TerminalSessionManager(
+            builder: builder,
+            commandLocator: MockCommandLocator(commands: [:])
+        )
+        let session = try manager.create(
+            kind: .shell,
+            directoryURL: URL(fileURLWithPath: "/tmp/exited", isDirectory: true)
+        )
+        #expect(manager.isPresented(session))
+        let key = session.key
+
+        // プロセスが落ちる。実物と同じ順で、状態が変わってから通知が飛ぶ。
+        builder.sessions.last?.isRunning = false
+        session.onChange?()
+
+        #expect(!manager.allSessions.contains { $0.id == session.id })
+        #expect(!manager.isPresented(session))
+        // 台帳には残る。ユーザーが閉じたのではないので`userEnded`にはしない。
+        let record = manager.sessionRecords.first { $0.key == key }
+        #expect(record?.endReason == .processExited)
+        #expect(record?.isPresented == false)
+    }
+
+    @Test("アプリ終了の最中は、落ちたセッションを片付けない")
+    func shutdownKeepsSessionsIndexed() throws {
+        let builder = MockSessionBuilder()
+        let manager = TerminalSessionManager(
+            builder: builder,
+            commandLocator: MockCommandLocator(commands: [:])
+        )
+        let session = try manager.create(
+            kind: .shell,
+            directoryURL: URL(fileURLWithPath: "/tmp/shutdown", isDirectory: true)
+        )
+
+        manager.shutdownOwnedProcesses()
+        // 終了に伴う通知が遅れて届いても、索引ごと消してはいけない。
+        session.onChange?()
+
+        #expect(manager.allSessions.contains { $0.id == session.id })
+    }
+
+    @Test("tmuxに預けたセッションは、PTYが閉じても終了扱いにしない")
+    func detachingAPersistentSessionIsNotAnEnding() throws {
+        let builder = MockSessionBuilder()
+        let preferences = isolatedPreferences("detach-not-end")
+        preferences.persistentSessions = true
+        let manager = TerminalSessionManager(
+            builder: builder,
+            commandLocator: MockCommandLocator(commands: ["tmux": URL(fileURLWithPath: "/mock/bin/tmux")]),
+            preferences: preferences,
+            // 渡さないと本物のTmuxControllerが`/mock/bin/tmux`を起動しにいく。
+            tmuxController: RecordingTmuxController()
+        )
+        let session = try manager.create(
+            kind: .shell,
+            directoryURL: URL(fileURLWithPath: "/tmp/detached", isDirectory: true)
+        )
+        let key = session.key
+        #expect(session.persistence != nil)
+
+        // tmuxのクライアントだけが終わる。向こうのセッションは生きている。
+        builder.sessions.last?.isRunning = false
+        session.onChange?()
+
+        // タブからは外れる——押しても何も起きないタブを残さない。
+        #expect(!manager.allSessions.contains { $0.id == session.id })
+        // ただし記録は終わっていない。終了かどうかはtmuxの見え方が決める。
+        let record = manager.sessionRecords.first { $0.key == key }
+        #expect(record?.endedAt == nil)
+        #expect(record?.endReason == nil)
     }
 }
