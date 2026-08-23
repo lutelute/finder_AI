@@ -1042,37 +1042,32 @@ final class WorkspaceBrowserViewController: NSViewController {
         didSetInitialSidebarPosition = true
     }
 
-    /// ナビゲーションを一段にするか二段にするかを、幅を見て決める。
+    /// ボタンと検索を一段にするか二段にするかを、幅を見て決める。
     ///
-    /// 常に二段だと、広いときに二段目の八割が空いたまま残る。空いた帯が上に一本
-    /// 乗っているのは、中身を見る前に「作りかけ」と読まれる。かといって常に一段だと、
-    /// 分割表示（ペインが窓の半分）で住所欄が潰れる。入るときだけ一段にする。
+    /// 常に二段だと、広いときに二段目の八割が空いたまま残る。空いた帯が乗って
+    /// いるのは、中身を見る前に「作りかけ」と読まれる。入るときだけ一段にする。
+    ///
+    /// 住所欄はこの判断に関わらない。自分の行を持っていて、どちらでも窓の幅を
+    /// まるごと使うため。
     private func updateNavigationRows() {
         guard let navigationStack, let searchStack, let navigationBarHeight else { return }
         let width = navigationStack.superview?.bounds.width ?? 0
         guard width > 1 else { return }
-        // 住所欄は縮む側なので、いま入っているパスの長さではなく「最低これだけ残す」で
-        // 測る。自然幅のまま足すと、深いフォルダに居るというだけで二段のままになる。
-        let needed = navigationStack.fittingSize.width
-            - pathField.fittingSize.width
-            + Self.pathRoomOnOneRow
-            + searchStack.fittingSize.width
-            + 30
+        let needed = navigationStack.fittingSize.width + searchStack.fittingSize.width + 30
         let wantsOneRow = width >= needed
         guard wantsOneRow != usesOneRowNavigation else { return }
         usesOneRowNavigation = wantsOneRow
         NSLayoutConstraint.deactivate(wantsOneRow ? twoRowConstraints : oneRowConstraints)
         NSLayoutConstraint.activate(wantsOneRow ? oneRowConstraints : twoRowConstraints)
-        navigationBarHeight.constant = wantsOneRow ? 39 : 76
+        // 住所欄の行（間隔5 + 高さ24）を足した高さ。
+        navigationBarHeight.constant = wantsOneRow ? Self.oneRowBarHeight : Self.twoRowBarHeight
     }
 
-    /// 一段にするなら、住所欄にこれだけは残す。長いパスの末尾（いま居る場所）が
-    /// 読めなくなるくらいなら、二段のままのほうがいい。
-    ///
-    /// 220ptにしていたら、実測1180ptの窓（サイドバー360を引いて本文760）で
-    /// わずかに届かず、いつまでも二段のままだった。170ptあれば等幅11.5ptで
-    /// 26文字ほど——末尾のフォルダ名は読める。
-    private static let pathRoomOnOneRow: CGFloat = 170
+    /// ボタンと検索が一段のときのバーの高さ。上余白6 + ボタン27 + 間隔5 +
+    /// 住所欄24 + 下余白6。
+    private static let oneRowBarHeight: CGFloat = 68
+    /// 二段のとき。検索の行（間隔5 + 27）があいだに入る。
+    private static let twoRowBarHeight: CGFloat = 105
 
     /// サイドバーを置いたあと、本文に最低これだけは残す。下回るならサイドバーを削る。
     private static let minimumFileAreaWidth: CGFloat = 320
@@ -1140,7 +1135,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         galleryScrollView = galleryScroll
         configureListingErrorState()
 
-        navigationBarHeight = navigationBar.heightAnchor.constraint(equalToConstant: 76)
+        navigationBarHeight = navigationBar.heightAnchor.constraint(equalToConstant: Self.twoRowBarHeight)
         let ribbon = makeRibbon()
         [navigationBar, fileArea, ribbon].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
@@ -1864,14 +1859,13 @@ final class WorkspaceBrowserViewController: NSViewController {
         // **入るときだけ一段**にする（`updateNavigationRows()`が幅を見て決める）。
         configureAppearanceButton()
         let navigationStack = NSStackView(views: [
-            backButton, forwardButton, upButton, pathSlot, copyCDButton,
+            backButton, forwardButton, upButton, copyCDButton,
             refreshButton, newFolderButton, newGroupButton, appearanceButton, viewModeControl
         ])
         navigationStack.orientation = .horizontal
         navigationStack.alignment = .centerY
         navigationStack.spacing = 7
         navigationStack.distribution = .fill
-        pathSlot.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
 
         let searchSpacer = NSView()
         searchSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
@@ -1883,8 +1877,10 @@ final class WorkspaceBrowserViewController: NSViewController {
 
         navigationStack.translatesAutoresizingMaskIntoConstraints = false
         searchStack.translatesAutoresizingMaskIntoConstraints = false
+        pathSlot.translatesAutoresizingMaskIntoConstraints = false
         bar.addSubview(navigationStack)
         bar.addSubview(searchStack)
+        bar.addSubview(pathSlot)
         self.navigationStack = navigationStack
         self.searchStack = searchStack
         NSLayoutConstraint.activate([
@@ -1892,9 +1888,15 @@ final class WorkspaceBrowserViewController: NSViewController {
             navigationStack.topAnchor.constraint(equalTo: bar.topAnchor, constant: 6),
             navigationStack.heightAnchor.constraint(equalToConstant: 27),
             searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: 140),
-            searchField.widthAnchor.constraint(lessThanOrEqualToConstant: 240)
+            searchField.widthAnchor.constraint(lessThanOrEqualToConstant: 240),
+            // 住所欄は自分の行を持ち、窓の幅をそのまま使う。ボタンに挟ませていた
+            // ときは、いちばん縮んでよい要素として扱われて末尾の数文字まで潰れた
+            // ——実測で「...t」だけが残り、どこに居るのか読めなかった。
+            pathSlot.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
+            pathSlot.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
+            pathSlot.bottomAnchor.constraint(equalTo: bar.bottomAnchor, constant: -6)
         ])
-        // 一段のとき: 検索は同じ行の右端。
+        // 一段のとき: 検索はボタンと同じ行の右端。
         oneRowConstraints = [
             navigationStack.trailingAnchor.constraint(
                 equalTo: searchStack.leadingAnchor,
@@ -1902,15 +1904,15 @@ final class WorkspaceBrowserViewController: NSViewController {
             ),
             searchStack.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
             searchStack.centerYAnchor.constraint(equalTo: navigationStack.centerYAnchor),
-            navigationStack.bottomAnchor.constraint(equalTo: bar.bottomAnchor, constant: -6)
+            pathSlot.topAnchor.constraint(equalTo: navigationStack.bottomAnchor, constant: 5)
         ]
-        // 二段のとき: 検索は下の行いっぱい。
+        // 二段のとき: 検索はボタンの下の行いっぱい。住所欄はさらにその下。
         twoRowConstraints = [
             navigationStack.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
             searchStack.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
             searchStack.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
             searchStack.topAnchor.constraint(equalTo: navigationStack.bottomAnchor, constant: 5),
-            searchStack.bottomAnchor.constraint(equalTo: bar.bottomAnchor, constant: -6)
+            pathSlot.topAnchor.constraint(equalTo: searchStack.bottomAnchor, constant: 5)
         ]
         NSLayoutConstraint.activate(twoRowConstraints)
         return bar
