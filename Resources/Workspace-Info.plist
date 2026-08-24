@@ -6,33 +6,6 @@
 	<string>ja</string>
 	<key>CFBundleDisplayName</key>
 	<string>FinderAI</string>
-	<key>CFBundleDocumentTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleTypeName</key>
-			<string>Folder</string>
-			<key>CFBundleTypeRole</key>
-			<string>Viewer</string>
-			<key>LSHandlerRank</key>
-			<string>Alternate</string>
-			<key>LSItemContentTypes</key>
-			<array>
-				<string>public.folder</string>
-			</array>
-		</dict>
-		<dict>
-			<key>CFBundleTypeName</key>
-			<string>Any file</string>
-			<key>CFBundleTypeRole</key>
-			<string>Viewer</string>
-			<key>LSHandlerRank</key>
-			<string>Alternate</string>
-			<key>LSItemContentTypes</key>
-			<array>
-				<string>public.item</string>
-			</array>
-		</dict>
-	</array>
 	<key>CFBundleExecutable</key>
 	<string>FinderAI</string>
 	<key>CFBundleIconFile</key>
@@ -53,6 +26,49 @@
 	<string>101</string>
 	<key>FinderAIGitCommit</key>
 	<string>source</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<!-- Finderの「このアプリケーションで開く」、ドックへのドロップ、
+			     open -a の受け口。Viewerに留め、既定の扱い手にはならない
+			     (LSHandlerRank=Alternate)。フォルダをダブルクリックしたときに
+			     Finderの代わりにこちらが開いてしまうのは行き過ぎで、
+			     選んだときだけ来てほしい。 -->
+			<key>CFBundleTypeName</key>
+			<string>Folder</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.folder</string>
+			</array>
+		</dict>
+		<dict>
+			<!-- ファイルを渡されたら、その隣（入れ物のフォルダ）を開いて選ぶ。
+			     何も起きないより期待に近い。
+
+			     ただし、これで増えるのは`open -a`とドックへのドロップの受け口
+			     だけ。ファイルを右クリックした「このアプリケーションで開く」に
+			     FinderAIは出ない——LaunchServicesは`public.item`のように
+			     抽象的すぎる主張を一覧から外す（.txt／拡張子なし／未知の拡張子の
+			     いずれでも0件。`scripts/check-launch-services.sh`で測れる）。
+			     `public.data`のように具体的な型へ落とせば載る余地はある（未検証）
+			     が、中身を開けもしないアプリが全ファイルの右クリックに並ぶのは
+			     邪魔なので、載せにいかない。 -->
+			<key>CFBundleTypeName</key>
+			<string>Any file</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.item</string>
+			</array>
+		</dict>
+	</array>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.developer-tools</string>
 	<key>LSMinimumSystemVersion</key>
