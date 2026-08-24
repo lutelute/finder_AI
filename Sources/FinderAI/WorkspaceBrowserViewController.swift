@@ -806,13 +806,6 @@ final class WorkspaceBrowserViewController: NSViewController {
     private let newFolderButton = NSButton()
     private let newGroupButton = NSButton()
     private let statusLabel = NSTextField(labelWithString: "")
-    /// ナビゲーションバーの二つの並べ方。幅を見てどちらかを効かせる。
-    private weak var navigationStack: NSStackView?
-    private weak var searchStack: NSStackView?
-    private var oneRowConstraints: [NSLayoutConstraint] = []
-    private var twoRowConstraints: [NSLayoutConstraint] = []
-    private var navigationBarHeight: NSLayoutConstraint?
-    private var usesOneRowNavigation = false
     /// サイドバーの幅を押し戻している最中か。再入を止めるための印。
     private var isClampingSidebar = false
     private let progress = NSProgressIndicator()
@@ -1028,7 +1021,6 @@ final class WorkspaceBrowserViewController: NSViewController {
     override func viewDidLayout() {
         super.viewDidLayout()
         layoutFileColumns()
-        updateNavigationRows()
         guard showsSidebar, !didSetInitialSidebarPosition else { return }
         // 761pt無いと初回配置をしていなかった。Terminalを右に開くと分割ビューは
         // それを下回り、**サイドバーが幅0のまま据え置かれて消える**。
@@ -1042,32 +1034,13 @@ final class WorkspaceBrowserViewController: NSViewController {
         didSetInitialSidebarPosition = true
     }
 
-    /// ボタンと検索を一段にするか二段にするかを、幅を見て決める。
-    ///
-    /// 常に二段だと、広いときに二段目の八割が空いたまま残る。空いた帯が乗って
-    /// いるのは、中身を見る前に「作りかけ」と読まれる。入るときだけ一段にする。
-    ///
-    /// 住所欄はこの判断に関わらない。自分の行を持っていて、どちらでも窓の幅を
-    /// まるごと使うため。
-    private func updateNavigationRows() {
-        guard let navigationStack, let searchStack, let navigationBarHeight else { return }
-        let width = navigationStack.superview?.bounds.width ?? 0
-        guard width > 1 else { return }
-        let needed = navigationStack.fittingSize.width + searchStack.fittingSize.width + 30
-        let wantsOneRow = width >= needed
-        guard wantsOneRow != usesOneRowNavigation else { return }
-        usesOneRowNavigation = wantsOneRow
-        NSLayoutConstraint.deactivate(wantsOneRow ? twoRowConstraints : oneRowConstraints)
-        NSLayoutConstraint.activate(wantsOneRow ? oneRowConstraints : twoRowConstraints)
-        // 住所欄の行（間隔5 + 高さ24）を足した高さ。
-        navigationBarHeight.constant = wantsOneRow ? Self.oneRowBarHeight : Self.twoRowBarHeight
-    }
-
-    /// ボタンと検索が一段のときのバーの高さ。上余白6 + ボタン27 + 間隔5 +
+    /// ナビゲーションバーの高さ。上余白6 + ボタンと検索の行27 + 間隔5 +
     /// 住所欄24 + 下余白6。
-    private static let oneRowBarHeight: CGFloat = 68
-    /// 二段のとき。検索の行（間隔5 + 27）があいだに入る。
-    private static let twoRowBarHeight: CGFloat = 105
+    ///
+    /// 幅を見て段数を変えるのはやめた。住所欄が自分の行を持ったことで、上の行に
+    /// 残るのは幅の要らないものだけになり、二行で足りるようになった。段が窓幅で
+    /// 増えたり減ったりすると、下にある中身の位置もそのたび動く。
+    private static let barHeight: CGFloat = 68
 
     /// サイドバーを置いたあと、本文に最低これだけは残す。下回るならサイドバーを削る。
     private static let minimumFileAreaWidth: CGFloat = 320
@@ -1135,7 +1108,6 @@ final class WorkspaceBrowserViewController: NSViewController {
         galleryScrollView = galleryScroll
         configureListingErrorState()
 
-        navigationBarHeight = navigationBar.heightAnchor.constraint(equalToConstant: Self.twoRowBarHeight)
         let ribbon = makeRibbon()
         [navigationBar, fileArea, ribbon].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
@@ -1145,7 +1117,7 @@ final class WorkspaceBrowserViewController: NSViewController {
             navigationBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             navigationBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             navigationBar.topAnchor.constraint(equalTo: root.topAnchor),
-            navigationBarHeight!,
+            navigationBar.heightAnchor.constraint(equalToConstant: Self.barHeight),
             fileArea.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             fileArea.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             fileArea.topAnchor.constraint(equalTo: navigationBar.bottomAnchor),
@@ -1853,10 +1825,9 @@ final class WorkspaceBrowserViewController: NSViewController {
         searchField.setContentHuggingPriority(.defaultLow, for: .horizontal)
         searchField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        // 分割表示ではペインが窓の半分しかない。全部を一段に押し込むと、いちばん
-        // 効く場所——住所欄——から潰れる。かといって常に二段だと、広いときは
-        // 二段目の八割が空いたままで、それが「作りかけ」に見える。
-        // **入るときだけ一段**にする（`updateNavigationRows()`が幅を見て決める）。
+        // ボタンと検索は同じ行に置く。住所欄が自分の行を持ったので、上の行に残るのは
+        // 幅を大して要らないものだけになった。狭いときは検索が縮む——ボタンは的として
+        // 縮められないので、縮む役はこちらが持つ。
         configureAppearanceButton()
         let navigationStack = NSStackView(views: [
             backButton, forwardButton, upButton, copyCDButton,
@@ -1881,40 +1852,31 @@ final class WorkspaceBrowserViewController: NSViewController {
         bar.addSubview(navigationStack)
         bar.addSubview(searchStack)
         bar.addSubview(pathSlot)
-        self.navigationStack = navigationStack
-        self.searchStack = searchStack
         NSLayoutConstraint.activate([
             navigationStack.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
             navigationStack.topAnchor.constraint(equalTo: bar.topAnchor, constant: 6),
             navigationStack.heightAnchor.constraint(equalToConstant: 27),
-            searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: 140),
-            searchField.widthAnchor.constraint(lessThanOrEqualToConstant: 240),
-            // 住所欄は自分の行を持ち、窓の幅をそのまま使う。ボタンに挟ませていた
-            // ときは、いちばん縮んでよい要素として扱われて末尾の数文字まで潰れた
-            // ——実測で「...t」だけが残り、どこに居るのか読めなかった。
-            pathSlot.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
-            pathSlot.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
-            pathSlot.bottomAnchor.constraint(equalTo: bar.bottomAnchor, constant: -6)
-        ])
-        // 一段のとき: 検索はボタンと同じ行の右端。
-        oneRowConstraints = [
+            // 検索はボタンと同じ行の右端。
             navigationStack.trailingAnchor.constraint(
                 equalTo: searchStack.leadingAnchor,
                 constant: -10
             ),
             searchStack.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
             searchStack.centerYAnchor.constraint(equalTo: navigationStack.centerYAnchor),
-            pathSlot.topAnchor.constraint(equalTo: navigationStack.bottomAnchor, constant: 5)
-        ]
-        // 二段のとき: 検索はボタンの下の行いっぱい。住所欄はさらにその下。
-        twoRowConstraints = [
-            navigationStack.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
-            searchStack.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
-            searchStack.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
-            searchStack.topAnchor.constraint(equalTo: navigationStack.bottomAnchor, constant: 5),
-            pathSlot.topAnchor.constraint(equalTo: searchStack.bottomAnchor, constant: 5)
-        ]
-        NSLayoutConstraint.activate(twoRowConstraints)
+            searchField.widthAnchor.constraint(lessThanOrEqualToConstant: 240),
+            // 住所欄は自分の行を持ち、窓の幅をそのまま使う。ボタンに挟ませていた
+            // ときは、いちばん縮んでよい要素として扱われて末尾の数文字まで潰れた
+            // ——実測で「...t」だけが残り、どこに居るのか読めなかった。
+            pathSlot.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
+            pathSlot.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
+            pathSlot.topAnchor.constraint(equalTo: navigationStack.bottomAnchor, constant: 5),
+            pathSlot.bottomAnchor.constraint(equalTo: bar.bottomAnchor, constant: -6)
+        ])
+        // 検索の下限は折れる制約にする。狭い窓では検索が縮んでほしいが、縮みきって
+        // なお足りないときに、制約そのものが壊れて配置が崩れては困る。
+        let searchMinimum = searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: 110)
+        searchMinimum.priority = .defaultHigh
+        searchMinimum.isActive = true
         return bar
     }
 
