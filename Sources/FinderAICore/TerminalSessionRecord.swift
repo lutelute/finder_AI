@@ -95,9 +95,12 @@ public enum SessionHistoryLimit {
 
     /// 溢れたぶんの履歴を落とす。
     ///
-    /// 落とすのは「終わっていて、留めていない」記録だけ。走っているセッションと
-    /// ピン留めした記録は数に入れない——留めたものが本数のせいで消えるなら、
-    /// 留める意味がない。
+    /// 落とすのは「終わっていて、留めておらず、名前も役割も付けていない」記録だけ。
+    /// 走っているセッション・ピン留め・名前や役割を持つ記録は数に入れない。
+    ///
+    /// 「そこで前に動かしたか」の判断にこの台帳を使ってはいけない。本数で古いものが
+    /// 落ちるので、消えた場所では「前回の続き」が出なくなる——会話の実体は
+    /// claude/codexのログのほうにあり、そちらを読めば台帳より広く分かる。
     ///
     /// 残す順は最終活動の新しい順。同時刻のものは台帳の並びで決めるので、
     /// 呼ぶたびに残るものが入れ替わることはない。
@@ -105,8 +108,14 @@ public enum SessionHistoryLimit {
         _ records: [TerminalSessionRecord],
         capacity: Int = defaultCapacity
     ) -> [TerminalSessionRecord] {
-        let expendable = records.enumerated().filter {
-            $0.element.endedAt != nil && !$0.element.isPinned
+        let expendable = records.enumerated().filter { entry in
+            let record = entry.element
+            guard record.endedAt != nil, !record.isPinned else { return false }
+            // 名前や役割を付けた記録には手を付けない。それはその場所の設定そのもの
+            // で、消えると次にそこで始めたAIが役割を失って立ち上がる。ただ動かした
+            // だけの記録は、本数で落としてよい。
+            guard record.customName == nil, record.role == nil else { return false }
+            return true
         }
         guard expendable.count > capacity else { return records }
         let kept = Set(

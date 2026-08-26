@@ -819,9 +819,16 @@ final class DrawerContentViewController: NSViewController {
             let reattaches = directoryURL.map {
                 sessionManager.hasDetachedPersistentSession(kind: kind, directoryURL: $0)
             } ?? false
-            let resumes = !reattaches && (directoryURL.map {
-                sessionManager.hasResumableConversation(kind: kind, directoryURL: $0)
-            } ?? false)
+            // 会話の実体はclaudeとcodexのログにあって、台帳はそれを動かした控えに
+            // すぎない。控えは本数で古いものから落ちるが、実体は残っている——
+            // 読めた履歴があるなら、台帳に無くてもそちらを信じる。実測で、控えが
+            // 20箇所しか覚えていないのに対し、claudeのログは214フォルダにあった。
+            let resumes = !reattaches && (
+                historyDigests.values.contains { $0.kind == kind }
+                    || (directoryURL.map {
+                        sessionManager.hasResumableConversation(kind: kind, directoryURL: $0)
+                    } ?? false)
+            )
             button.title = reattaches
                 ? "\(kind.displayName)に再接続"
                 : resumes
@@ -873,6 +880,9 @@ final class DrawerContentViewController: NSViewController {
             return
         }
         historyStack.isHidden = false
+        // 履歴が読めた時点で「前回の続き」に変わりうる。読むのは裏なので、
+        // 出揃ってから名前を付け直す。
+        updateStartButtonTitles()
         let title = NSTextField(labelWithString: "このフォルダの履歴")
         title.font = .systemFont(ofSize: 10, weight: .semibold)
         title.textColor = IntegratedPanelTheme.secondaryText
