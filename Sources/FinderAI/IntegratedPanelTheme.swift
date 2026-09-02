@@ -100,6 +100,18 @@ extension WorkspaceAppearance {
 /// 既存の作りを広く触ることになる。
 @MainActor
 final class ThemedLayerPainter {
+    /// その面が額縁か中身か。ウインドウごとの色は**額縁にだけ**混ぜる。
+    ///
+    /// 色を引く側（`IntegratedPanelTheme`）には手を入れない。あちらは
+    /// 「画面のどこであれ同じ意味の色」を返す場所で、ウインドウごとに答えが
+    /// 変わってはいけない。窓の色は塗る側の事情なので、ここで混ぜる。
+    enum SurfaceRole {
+        /// タイトルバー・ツールバー・サイドバー・下帯・ターミナルの見出し。
+        case frame
+        /// ファイル一覧とターミナルの地。名前を読む場所なので色を敷かない。
+        case content
+    }
+
     /// この区画に掛けてある外観。
     ///
     /// ビューの`effectiveAppearance`を見に行くと、まだ画面へ入れる前は親が
@@ -107,26 +119,68 @@ final class ThemedLayerPainter {
     /// ほとんどで、暗く選んだはずの区画が明るいまま固まった。
     var appearance: NSAppearance?
 
-    private var entries: [(view: NSView, color: @MainActor () -> NSColor)] = []
+    /// このウインドウの目印の色。`nil`なら従来どおりの灰。
+    var tint: WorkspaceWindowTint?
 
-    func register(_ view: NSView, _ color: @escaping @MainActor () -> NSColor) {
+    private var entries: [(view: NSView, role: SurfaceRole, color: @MainActor () -> NSColor)] = []
+
+    func register(
+        _ view: NSView,
+        role: SurfaceRole = .content,
+        _ color: @escaping @MainActor () -> NSColor
+    ) {
         view.wantsLayer = true
-        entries.append((view, color))
-        paint(view, color)
+        entries.append((view, role, color))
+        paint(view, role, color)
     }
 
     func repaint() {
         // 画面から外れたものは捨てる。控えを持ち続けても塗る先がない。
         entries.removeAll { $0.view.superview == nil && $0.view.window == nil }
-        for entry in entries { paint(entry.view, entry.color) }
+        for entry in entries { paint(entry.view, entry.role, entry.color) }
     }
 
-    private func paint(_ view: NSView, _ color: @MainActor () -> NSColor) {
+    private func paint(_ view: NSView, _ role: SurfaceRole, _ color: @MainActor () -> NSColor) {
+        let appearance = self.appearance ?? view.effectiveAppearance
         // そのビューの外観で色を解いてから固める。ここを外すと、暗い側の値が
         // 明るい画面にも塗られる。
-        (appearance ?? view.effectiveAppearance).performAsCurrentDrawingAppearance {
-            view.layer?.backgroundColor = color().cgColor
+        appearance.performAsCurrentDrawingAppearance {
+            let base = color()
+            let painted = role == .frame
+                ? Self.blend(tint, into: base, isDark: appearance.isDark)
+                : base
+            view.layer?.backgroundColor = painted.cgColor
         }
+    }
+
+    /// 地に窓の色を混ぜる。`tint`が無ければ地をそのまま返す。
+    ///
+    /// 呼ぶ側が`performAsCurrentDrawingAppearance`の中に居ることが前提。
+    /// 動的色は、そこを外れると別の明るさで解ける。
+    static func blend(
+        _ tint: WorkspaceWindowTint?,
+        into base: NSColor,
+        isDark: Bool
+    ) -> NSColor {
+        guard let tint else { return base }
+        let amount = CGFloat(WorkspaceWindowTint.strength(isDark: isDark))
+        let hex = isDark ? tint.darkHex : tint.lightHex
+        guard let ground = base.usingColorSpace(.sRGB) else { return base }
+        let top = rgb(hex)
+        return NSColor(
+            srgbRed: top.r * amount + ground.redComponent * (1 - amount),
+            green: top.g * amount + ground.greenComponent * (1 - amount),
+            blue: top.b * amount + ground.blueComponent * (1 - amount),
+            alpha: 1
+        )
+    }
+
+    private static func rgb(_ hex: UInt32) -> (r: CGFloat, g: CGFloat, b: CGFloat) {
+        (
+            CGFloat((hex >> 16) & 0xFF) / 255.0,
+            CGFloat((hex >> 8) & 0xFF) / 255.0,
+            CGFloat(hex & 0xFF) / 255.0
+        )
     }
 }
 

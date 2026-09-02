@@ -129,6 +129,8 @@ final class WorkspaceAppCoordinator {
                 guard let key = NSApp.keyWindow,
                       self.windows.contains(where: { $0.window === key }) else { return }
                 self.lastKeyWorkspaceWindow = key
+                // 色の印は手前の1枚に付く。前面が変われば指す先も変わる。
+                self.refreshWindowTintMenu()
                 // 覗いていた1枚をそのまま使い始めたなら、浮かせたままにしない。
                 self.endWindowPreview()
                 self.windowsPanel?.refreshIfVisible()
@@ -305,14 +307,15 @@ final class WorkspaceAppCoordinator {
         // ここを呼ぶ。最後には「0枚」で上書きされ、次の起動で戻すものが無くなる。
         // クラッシュではこの経路を通らないので、これまで表に出ていなかった。
         guard !isTerminating else { return }
+        // パスと色は同じ並びで持つので、閉じた窓を落とすのも一度で行う。
+        // 別々に compactMap すると、片方だけずれて別の窓の色が付く。
+        let open = windows.filter { $0.window != nil }
         let snapshot = WorkspaceRestorationSnapshot(
-            windowDirectoryPaths: windows.compactMap { controller in
-                guard controller.window != nil else { return nil }
-                return controller.browser.currentDirectory.path
-            },
+            windowDirectoryPaths: open.map { $0.browser.currentDirectory.path },
             sessions: sessionManager.allSessions
                 .filter(\.isRunning)
-                .map { .init(directoryPath: $0.directoryURL.path, kind: $0.kind) }
+                .map { .init(directoryPath: $0.directoryURL.path, kind: $0.kind) },
+            windowTints: open.map { $0.tint?.rawValue ?? "" }
         )
         guard snapshot != lastCapturedSnapshot else { return }
         lastCapturedSnapshot = snapshot
@@ -356,11 +359,13 @@ final class WorkspaceAppCoordinator {
                 guard await Self.isReachableDirectory(url) else { continue }
                 if index == 0 {
                     self.windows.first?.browser.navigate(to: url)
+                    self.windows.first?.setTint(snapshot.tint(at: index))
                 } else if self.windows.count < Self.windowLimit {
                     if self.cascadePoint == .zero, let front = self.frontmostWindow {
                         self.cascadePoint = front.cascadeOrigin
                     }
                     let controller = self.makeWindow(directory: url)
+                    controller.setTint(snapshot.tint(at: index))
                     self.cascadePoint = controller.cascade(from: self.cascadePoint)
                     controller.show()
                 }
@@ -378,11 +383,13 @@ final class WorkspaceAppCoordinator {
                 guard await Self.isReachableDirectory(url) else { continue }
                 if index == 0 {
                     self.windows.first?.browser.navigate(to: url)
+                    self.windows.first?.setTint(snapshot.tint(at: index))
                 } else if self.windows.count < Self.windowLimit {
                     if self.cascadePoint == .zero, let front = self.frontmostWindow {
                         self.cascadePoint = front.cascadeOrigin
                     }
                     let controller = self.makeWindow(directory: url)
+                    controller.setTint(snapshot.tint(at: index))
                     self.cascadePoint = controller.cascade(from: self.cascadePoint)
                     controller.show()
                 }
@@ -618,6 +625,34 @@ final class WorkspaceAppCoordinator {
         }
     }
 
+    /// 手前のウインドウ1枚に目印の色を掛ける。
+    ///
+    /// 覚える単位は窓ごと。アプリ全体で一色では「どれがどれか」に答えられないし、
+    /// フォルダごとにすると、同じフォルダを2枚開いたときに区別が付かない。
+    @objc func setWindowTint(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String else { return }
+        guard let target = frontmostWindow else { return }
+        target.setTint(WorkspaceWindowTint.decoded(raw.isEmpty ? nil : raw))
+        captureSnapshot()
+        refreshWindowTintMenu()
+        windowsPanel?.refreshIfVisible()
+        edgeTabs.refreshWindowsOverview()
+    }
+
+    /// 印は**手前のウインドウ**の色に付く。設定ではなく窓ごとの状態なので、
+    /// 前面が入れ替わるたびに引き直す。
+    private func refreshWindowTintMenu() {
+        guard let submenu = NSApp.mainMenu?
+            .items.compactMap(\.submenu).first(where: { $0.title == "表示" })?
+            .items.first(where: { $0.submenu?.title == "このウインドウの色" })?
+            .submenu else { return }
+        let current = frontmostWindow?.tint?.rawValue ?? ""
+        for item in submenu.items {
+            guard let raw = item.representedObject as? String else { continue }
+            item.state = raw == current ? .on : .off
+        }
+    }
+
     /// 覗き方を選ぶ。縮小はここで許可を確かめる——覗いた拍子に許可を訊かれる
     /// のは唐突なので、選んだ時点で1度だけ。
     @objc func setWindowPeek(_ sender: NSMenuItem) {
@@ -665,6 +700,7 @@ final class WorkspaceAppCoordinator {
                 runningSessions: sessionManager.sessions(for: directory)
                     .filter(\.isRunning).count,
                 isFrontmost: controller.window === front,
+                tint: controller.tint,
                 windowFrame: frame,
                 screenFrame: screen?.visibleFrame ?? .zero,
                 screenName: Self.screenName(for: screen),
@@ -1151,6 +1187,34 @@ final class WorkspaceAppCoordinator {
         let peekItem = NSMenuItem(title: "ウインドウ一覧の覗き方", action: nil, keyEquivalent: "")
         peekItem.submenu = peekMenu
         viewMenu.addItem(peekItem)
+
+        // 何十枚と開くので、名前だけでは追えない。色は名前を読まずに済む
+        // 手掛かりで、覚える単位は窓ごと。
+        let tintMenu = NSMenu(title: "このウインドウの色")
+        let noTint = NSMenuItem(
+            title: "色なし",
+            action: #selector(WorkspaceAppCoordinator.setWindowTint(_:)),
+            keyEquivalent: ""
+        )
+        noTint.target = coordinator
+        noTint.representedObject = ""
+        tintMenu.addItem(noTint)
+        tintMenu.addItem(.separator())
+        for tint in WorkspaceWindowTint.allCases {
+            let entry = NSMenuItem(
+                title: tint.title,
+                action: #selector(WorkspaceAppCoordinator.setWindowTint(_:)),
+                keyEquivalent: ""
+            )
+            entry.target = coordinator
+            entry.representedObject = tint.rawValue
+            // 名前だけでは何色か分からない。選ぶ前に見えている必要がある。
+            entry.image = WorkspaceWindowTintPalette.swatch(for: tint)
+            tintMenu.addItem(entry)
+        }
+        let tintItem = NSMenuItem(title: "このウインドウの色", action: nil, keyEquivalent: "")
+        tintItem.submenu = tintMenu
+        viewMenu.addItem(tintItem)
 
         viewMenu.addItem(.separator())
         // 一覧とターミナルで別々に選べる。一覧は明るく、ターミナルは暗く、と

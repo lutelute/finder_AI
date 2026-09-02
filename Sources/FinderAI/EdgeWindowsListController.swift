@@ -173,6 +173,7 @@ final class EdgeWindowsListController: NSObject {
             serial: row.serial,
             runningSessions: row.runningSessions,
             isFrontmost: row.isFrontmost,
+            tint: row.tint,
             onDark: true
         )
         let region = WorkspaceScreenRegion.describe(window: row.windowFrame, on: row.screenFrame)

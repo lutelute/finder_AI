@@ -22,6 +22,8 @@ final class WorkspaceWindowRowView: NSView {
     private let serialLabel = NSTextField(labelWithString: "")
     private let sessionDot = NSView()
     private let closeButton = NSButton()
+    /// 窓の目印の色。左端に立てる細い柱で、一覧のグループのレールと同じ読み方。
+    private let tintRail = NSView()
     private let isFrontmost: Bool
 
     private var isHighlighted = false {
@@ -39,6 +41,7 @@ final class WorkspaceWindowRowView: NSView {
         serial: Int,
         runningSessions: Int,
         isFrontmost: Bool,
+        tint: WorkspaceWindowTint?,
         onDark: Bool
     ) {
         self.isFrontmost = isFrontmost
@@ -90,12 +93,30 @@ final class WorkspaceWindowRowView: NSView {
         closeButton.isHidden = true
         closeButton.toolTip = "このウインドウを閉じる"
 
-        [iconView, nameLabel, parentLabel, serialLabel, sessionDot, closeButton].forEach {
+        // 色は左端の柱に出す。名前と親フォルダの幅を一切奪わないよう、
+        // すでに空いている左の余白（9pt）の中に立てる。名前が読めなく
+        // なるくらいなら、目印は無いほうがまし。
+        tintRail.wantsLayer = true
+        tintRail.layer?.cornerRadius = 1.5
+        tintRail.isHidden = tint == nil
+        if let tint {
+            tintRail.layer?.backgroundColor = WorkspaceWindowTintPalette
+                .color(for: tint)
+                .cgColor
+            tintRail.toolTip = "このウインドウの色：\(tint.title)"
+        }
+
+        [iconView, nameLabel, parentLabel, serialLabel, sessionDot, closeButton, tintRail].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             addSubview($0)
         }
         NSLayoutConstraint.activate([
             heightAnchor.constraint(equalToConstant: Self.height),
+
+            tintRail.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 3),
+            tintRail.centerYAnchor.constraint(equalTo: centerYAnchor),
+            tintRail.widthAnchor.constraint(equalToConstant: 3),
+            tintRail.heightAnchor.constraint(equalToConstant: Self.height - 10),
 
             iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 9),
             iconView.centerYAnchor.constraint(equalTo: centerYAnchor),

@@ -901,6 +901,12 @@ final class WorkspaceBrowserViewController: NSViewController {
         themePainter.repaint()
     }
 
+    /// このペインの額縁に、ウインドウの目印の色を掛ける。
+    func applyTint(_ tint: WorkspaceWindowTint?) {
+        themePainter.tint = tint
+        themePainter.repaint()
+    }
+
     override func loadView() {
         let root = ThemedRootView()
         // ターミナルとは別に明るさを選べる。
@@ -1047,7 +1053,7 @@ final class WorkspaceBrowserViewController: NSViewController {
 
     private func makeSidebar() -> NSView {
         let root = NSView()
-        themePainter.register(root) { IntegratedPanelTheme.sidebar }
+        themePainter.register(root, role: .frame) { IntegratedPanelTheme.sidebar }
 
         let title = NSTextField(labelWithString: "WORKSPACE")
         title.font = .systemFont(ofSize: 11, weight: .semibold)
@@ -1170,7 +1176,7 @@ final class WorkspaceBrowserViewController: NSViewController {
     /// froze the app on protected folders.
     private func makeRibbon() -> NSView {
         let bar = NSView()
-        themePainter.register(bar) { IntegratedPanelTheme.header }
+        themePainter.register(bar, role: .frame) { IntegratedPanelTheme.header }
 
         ribbonPath.pathStyle = .standard
         ribbonPath.controlSize = .small
@@ -1741,7 +1747,7 @@ final class WorkspaceBrowserViewController: NSViewController {
 
     private func makeNavigationBar() -> NSView {
         let bar = NSView()
-        themePainter.register(bar) { IntegratedPanelTheme.header }
+        themePainter.register(bar, role: .frame) { IntegratedPanelTheme.header }
         configureNavigationButton(backButton, symbol: "chevron.left", action: #selector(goBack), label: "戻る")
         configureNavigationButton(forwardButton, symbol: "chevron.right", action: #selector(goForward), label: "進む")
         configureNavigationButton(upButton, symbol: "arrow.up", action: #selector(goUp), label: "親フォルダ")
