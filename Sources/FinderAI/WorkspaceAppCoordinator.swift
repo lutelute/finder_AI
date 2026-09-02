@@ -227,6 +227,12 @@ final class WorkspaceAppCoordinator {
             self?.refreshWindowTitles()
             self?.windowsPanel?.refreshIfVisible()
         }
+        controller.onTintChanged = { [weak self] in
+            self?.captureSnapshot()
+            self?.refreshWindowTintMenu()
+            self?.windowsPanel?.refreshIfVisible()
+            self?.edgeTabs.refreshWindowsOverview()
+        }
         controller.onManageTerminalSessions = { [weak self] in
             self?.showTerminalSessionsPanel()
         }
@@ -632,11 +638,9 @@ final class WorkspaceAppCoordinator {
     @objc func setWindowTint(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String else { return }
         guard let target = frontmostWindow else { return }
+        // 保存とメニューの印の引き直しは`onTintChanged`が受ける。
+        // ボタンから選んでもメニューから選んでも同じ道を通す。
         target.setTint(WorkspaceWindowTint.decoded(raw.isEmpty ? nil : raw))
-        captureSnapshot()
-        refreshWindowTintMenu()
-        windowsPanel?.refreshIfVisible()
-        edgeTabs.refreshWindowsOverview()
     }
 
     /// 印は**手前のウインドウ**の色に付く。設定ではなく窓ごとの状態なので、
