@@ -67,7 +67,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         themePainter.appearance = root.appearance
         rootController.view = root
 
-        let window = NSWindow(
+        let window = TerminalWheelWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1180, height: 760),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,

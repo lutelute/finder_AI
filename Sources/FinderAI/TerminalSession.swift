@@ -56,9 +56,38 @@ enum OwnedProcessTerminator {
 final class LoggingTerminalView: LocalProcessTerminalView {
     var outputLog: SessionOutputLog?
 
+    /// ホイールを↑↓キーに変換してよい相手かを見分けるための、DECSET 1007の追跡。
+    /// 詳しい経緯は`TerminalWheelRouting`側に書いてある。
+    private var alternateScroll = AlternateScrollTracker()
+
     override func dataReceived(slice: ArraySlice<UInt8>) {
         outputLog?.append(Array(slice))
+        alternateScroll.consume(slice)
         super.dataReceived(slice: slice)
+    }
+
+    /// このホイールをSwiftTermへ渡してよいか。`TerminalWheelGuard`から呼ばれる。
+    ///
+    /// SwiftTerm 1.14はalternate screenならホイールを無条件で↑↓キーへ変換する。
+    /// tmuxのシェルもclaudeもalternate screenなので、スクロールのつもりで回すたびに
+    /// シェルの履歴や直前のプロンプトが呼び出されていた。1007を立てたアプリにだけ
+    /// 従来の変換を残し、それ以外では何もしない。
+    func wheelAction(for event: NSEvent) -> TerminalWheelRouting.Action {
+        let terminal = getTerminal()
+        // SwiftTerm自身の判定（`MacTerminalView.scrollWheel`）と同じ条件。⇧は
+        // マウス報告を迂回して選択・スクロールに使う——アプリが⇧を要求している
+        // ときだけ、そのまま報告へ回す。
+        let shiftBypassesReporting = event.modifierFlags.contains(.shift)
+            && !terminal.mouseShiftCapture
+        let reportsMouse = allowMouseReporting
+            && !shiftBypassesReporting
+            && terminal.mouseMode != .off
+
+        return TerminalWheelRouting.action(
+            isAlternateBuffer: terminal.isCurrentBufferAlternate,
+            reportsMouse: reportsMouse,
+            alternateScrollEnabled: alternateScroll.isEnabled
+        )
     }
 
     /// SwiftTermは`nativeForegroundColor`/`nativeBackgroundColor`を代入した瞬間の

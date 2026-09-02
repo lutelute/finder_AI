@@ -110,6 +110,8 @@
 - [ ] 右辺＋`⌃⌘S`の2画面分割でも、一覧が読める幅を保ったままterminalが縮む
 - [ ] `Shell`でzshが現在フォルダから始まり、`pwd`が一致する
 - [ ] `echo test`、日本語入力、copy、pasteが動く
+- [ ] tmuxのshellやclaudeの上でwheelを回しても、コマンド履歴や前のpromptが呼び出されない
+- [ ] tmux永続化をオフにしたzshでは、wheelでscrollbackを遡れる
 - [ ] `＋`からShell／Codex／Claudeを選べる
 - [ ] CLIなしの場合は対応項目が無効で、自動インストールしない
 - [ ] 長い処理中に閉じても継続する
