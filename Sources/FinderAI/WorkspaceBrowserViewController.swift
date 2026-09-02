@@ -1131,11 +1131,18 @@ final class WorkspaceBrowserViewController: NSViewController {
 
         let scroll = NSScrollView()
         scroll.drawsBackground = false
+        // **切り抜き側も切る。** `NSScrollView.drawsBackground`を落としても
+        // `NSClipView`は自分の背景を持っていて、そちらが不透明なまま残る。
+        // 根に敷いた色（窓ごとの色を含む）がここで隠れて、一覧の地だけ
+        // 素の灰になっていた。
+        scroll.contentView.drawsBackground = false
         scroll.hasVerticalScroller = true
         sidebarTable.headerView = nil
         sidebarTable.backgroundColor = .clear
+        // `.sourceList`はvibrancyの地を自分で描くので、下に敷いた色が透けない。
+        // 行の見た目（角丸の選択・字下げ）は`.inset`でほぼ同じまま残る。
         sidebarTable.rowHeight = 23
-        sidebarTable.style = .sourceList
+        sidebarTable.style = .inset
         sidebarTable.delegate = self
         sidebarTable.dataSource = self
         sidebarTable.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("sidebar")))

@@ -7,11 +7,13 @@ import FinderAICore
 /// だけの層で、`WorkspaceGroupPalette`と同じ切り分け——値はCore、見せ方はApp。
 @MainActor
 enum WorkspaceWindowTintPalette {
-    /// 明るさに追い付く色。額縁へ混ぜるときと、印を出すときの両方で使う。
+    /// 帯・丸い印・一覧の柱に置く色。
+    ///
+    /// 明暗で変えない。混ぜる色（`lightHex`/`darkHex`）は地の明度に寄せてあるので
+    /// 単体では薄すぎる。ここは線や点として読ませる場所なので、どちらの地の上でも
+    /// 成立する中間調を一つ持つ。
     static func color(for tint: WorkspaceWindowTint) -> NSColor {
-        NSColor(name: nil) { appearance in
-            color(hex: appearance.isDark ? tint.darkHex : tint.lightHex)
-        }
+        color(hex: tint.barHex)
     }
 
     /// メニューや一覧に出す丸い見本。
