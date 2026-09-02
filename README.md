@@ -271,7 +271,7 @@ cdhashはビルドごとに変わるため、macOSは各ビルドを別のアプ
 
 現在のテスト範囲と未実施項目は[検証レポート](docs/VERIFICATION_REPORT.md)、実際に触る確認手順は[実機チェックリスト](docs/MANUAL_TEST_CHECKLIST.md)を参照してください。
 
-今回の設計変更、完成時のhash、発見した起動問題、旧session保護、次回の確認順は[2026-07-16開発記録](docs/SESSION_RECORD_2026-07-16.md)に固定しています。
+過去の計画と作業記録は[docs/archive](docs/archive/)にまとめてあります。その時点の記録なので、いまの実装の説明としては読まないでください。
 
 ## 安全設計
 
