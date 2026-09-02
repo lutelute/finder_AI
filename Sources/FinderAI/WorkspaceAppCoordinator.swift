@@ -637,7 +637,14 @@ final class WorkspaceAppCoordinator {
     /// フォルダごとにすると、同じフォルダを2枚開いたときに区別が付かない。
     @objc func setWindowTint(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String else { return }
-        guard let target = frontmostWindow else { return }
+        // **`frontmostWindow`だけでは足りない。** keyWindowが無いとき
+        // （メニューを開いた拍子や、パネルがkeyのとき）配列の先頭＝最初に
+        // 作った窓へ落ちる。実機で、見ている窓ではなく別の窓に色が付いた。
+        // 最後にkeyだったワークスペース窓を先に見る。
+        let target = windows.first { $0.window === NSApp.keyWindow }
+            ?? windows.first { $0.window === lastKeyWorkspaceWindow }
+            ?? frontmostWindow
+        guard let target else { return }
         // 保存とメニューの印の引き直しは`onTintChanged`が受ける。
         // ボタンから選んでもメニューから選んでも同じ道を通す。
         target.setTint(WorkspaceWindowTint.decoded(raw.isEmpty ? nil : raw))

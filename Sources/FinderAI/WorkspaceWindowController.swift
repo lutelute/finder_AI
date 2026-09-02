@@ -24,6 +24,10 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     private let preferences: WorkspacePreferences
     private let sessionManager: any TerminalSessionManaging
     private let themePainter = ThemedLayerPainter()
+    /// ウインドウ上端の色の帯。面の色だけでは弱いときの、もう一段の手掛かり。
+    /// 色なしのときは高さ0にして、いまの見た目を一切崩さない。
+    private let tintBar = NSView()
+    private var tintBarHeight: NSLayoutConstraint!
     private var rootController: NSViewController!
 
     /// このウインドウの通し番号。閉じても詰め直さないので、セッション中ずっと
@@ -93,6 +97,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         // 塗りの控えはsuper.initの後で。それより前は自分を触れない。
         root.onAppearanceChanged = { [weak self] in self?.themePainter.repaint() }
         themePainter.register(root, role: .frame) { IntegratedPanelTheme.background }
+        // タイトルバーの素材と文字色を中身に合わせる。掛けないと、暗い中身の上に
+        // 明るいタイトルバーが乗ったままになる。
+        window.appearance = preferences.browserAppearance.nsAppearance
         window.delegate = self
 
         rootController.addChild(leftPane)
@@ -106,10 +113,18 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         paneSplit.addArrangedSubview(leftPane.view)
         paneSplit.delegate = self
 
-        [paneSplit, terminal.view].forEach {
+        [paneSplit, terminal.view, tintBar].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview($0)
         }
+        tintBar.wantsLayer = true
+        tintBarHeight = tintBar.heightAnchor.constraint(equalToConstant: 0)
+        NSLayoutConstraint.activate([
+            tintBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            tintBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            tintBar.topAnchor.constraint(equalTo: root.topAnchor),
+            tintBarHeight
+        ])
         terminalEdge = preferences.terminalEdge
         requestedTerminalThickness = preferences.terminalThickness(for: terminalEdge)
         terminalExpanded = preferences.terminalExpanded
@@ -196,7 +211,21 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         rightPane?.applyTint(tint)
         terminal.applyTint(tint)
         applyTitlebarTint()
+        applyTintBar()
         onTintChanged?()
+    }
+
+    /// 上端の帯を出す／消す。
+    ///
+    /// 面に混ぜた色は地に寄せてあるので、遠目や小さい窓では弱い。帯は
+    /// **混ぜない一色**なので、面の色が読めない場面でも残る手掛かりになる。
+    /// 色なしのときは高さ0にして、帯そのものを無かったことにする。
+    private func applyTintBar() {
+        tintBarHeight.constant = tint == nil ? 0 : WorkspaceWindowTint.barThickness
+        tintBar.isHidden = tint == nil
+        if let tint {
+            tintBar.layer?.backgroundColor = WorkspaceWindowTintPalette.color(for: tint).cgColor
+        }
     }
 
     /// タイトルバーを塗る。
@@ -208,6 +237,14 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// 素材感の違うタイトルバーになる。
     private func applyTitlebarTint() {
         guard let window else { return }
+        // **タイトルバーの文字色はウインドウの外観が決める。** 背景だけ塗っても
+        // 文字はついて来ない。ウインドウに外観を掛けていなかったので、中身を
+        // 暗くしていてもタイトルバーだけ明るい素材＋暗い文字のままで、そこへ
+        // 暗い色を敷いて文字が沈んだ（実機で確認）。
+        //
+        // 中身と同じ外観をウインドウにも掛ける。子のビューは自分の外観を
+        // 持っているので、ターミナルの明るさは巻き込まない。
+        window.appearance = preferences.browserAppearance.nsAppearance
         guard let tint else {
             window.titlebarAppearsTransparent = false
             window.backgroundColor = .windowBackgroundColor
@@ -459,7 +496,7 @@ extension WorkspaceWindowController: NSSplitViewDelegate {
             constraints = [
                 browserView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
                 browserView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-                browserView.topAnchor.constraint(equalTo: root.topAnchor),
+                browserView.topAnchor.constraint(equalTo: tintBar.bottomAnchor),
                 browserView.bottomAnchor.constraint(equalTo: terminalView.topAnchor),
                 terminalView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
                 terminalView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
@@ -472,11 +509,11 @@ extension WorkspaceWindowController: NSSplitViewDelegate {
             )
             constraints = [
                 browserView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-                browserView.topAnchor.constraint(equalTo: root.topAnchor),
+                browserView.topAnchor.constraint(equalTo: tintBar.bottomAnchor),
                 browserView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
                 browserView.trailingAnchor.constraint(equalTo: terminalView.leadingAnchor),
                 terminalView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-                terminalView.topAnchor.constraint(equalTo: root.topAnchor),
+                terminalView.topAnchor.constraint(equalTo: tintBar.bottomAnchor),
                 terminalView.bottomAnchor.constraint(equalTo: root.bottomAnchor)
             ]
         }

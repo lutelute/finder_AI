@@ -20,20 +20,26 @@ struct WorkspaceWindowTintTests {
         #expect(WorkspaceWindowTint.decoded("むかしの色") == nil)
     }
 
-    @Test("暗い側のほうが濃く混ぜる")
-    func darkMixesStronger() {
-        // 地が黒に近いほど混ぜた色が沈む。同じ割合ではダークだけ灰に見える。
+    @Test("混ぜる割合は明暗で変えない")
+    func strengthIsTheSameBothWays() {
+        // 一度は暗い側だけ濃くしていた（黒に近い地では色が沈むから、という理屈）。
+        // 効いていたのは割合ではなく**混ぜる色の明度**のほうで、いまはどちらも
+        // 地の明度に寄せてあるので、同じ割合で同じだけ色が出る。
         #expect(WorkspaceWindowTint.strength(isDark: true)
-            > WorkspaceWindowTint.strength(isDark: false))
+            == WorkspaceWindowTint.strength(isDark: false))
     }
 
-    @Test("濃さは、色を敷く面の副文が読める範囲に収める")
-    func strengthStaysReadable() {
-        // 色を敷くのはサイドバー(232)と見出し(237)で、そこに副文(110)が載る。
-        // 素の状態で既に4.4しかないので、混ぜて4.5をさらに下回らせる幅は狭い。
-        // ここを緩めるなら、先に副文の濃さを変える必要がある。
-        #expect(WorkspaceWindowTint.strength(isDark: false) <= 0.16)
-        #expect(WorkspaceWindowTint.strength(isDark: true) <= 0.22)
+    @Test("混ぜる割合は0と1のあいだにある")
+    func strengthIsAProportion() {
+        // **読めるかどうかはここでは測れない。** 同じ割合でも混ぜる色を変えれば
+        // コントラストは変わる。実際、数字だけを縛っていたときに暗い側の副文が
+        // 4.5を割ったまま通り抜けた。実際の比は
+        // `WindowTintContrastTests`（AppKitの色を解ける側）が測る。
+        for isDark in [true, false] {
+            let amount = WorkspaceWindowTint.strength(isDark: isDark)
+            #expect(amount > 0)
+            #expect(amount < 1)
+        }
     }
 
     @Test("6色はすべて違う色で、明暗それぞれに別の値を持つ")
@@ -48,17 +54,28 @@ struct WorkspaceWindowTintTests {
         }
     }
 
-    @Test("暗い側の色は明るい側より明るい")
-    func darkVariantsAreLighter() {
-        // 黒に近い地へ混ぜるので、混ぜる色そのものが明るくないと色が出ない。
+    @Test("暗い側の色は、明るい側より暗くて色味が強い")
+    func darkVariantsAreDeepNotBright() {
+        // 最初は逆にしていた（暗い地に負けないよう明るい色にする）。実機で外した——
+        // 暗い地の上の字は明るいので、面の明度を上げると字が読みにくくなる。
+        // 明度ではなく彩度で出す。
         func brightness(_ hex: UInt32) -> Double {
             let r = Double((hex >> 16) & 0xFF)
             let g = Double((hex >> 8) & 0xFF)
             let b = Double(hex & 0xFF)
             return 0.2126 * r + 0.7152 * g + 0.0722 * b
         }
+        func spread(_ hex: UInt32) -> Double {
+            let channels = [
+                Double((hex >> 16) & 0xFF), Double((hex >> 8) & 0xFF), Double(hex & 0xFF)
+            ]
+            return channels.max()! - channels.min()!
+        }
         for tint in WorkspaceWindowTint.allCases {
-            #expect(brightness(tint.darkHex) > brightness(tint.lightHex))
+            #expect(brightness(tint.darkHex) < brightness(tint.lightHex))
+            // 灰では目印にならない。
+            #expect(spread(tint.darkHex) >= 20)
+            #expect(spread(tint.lightHex) >= 20)
         }
     }
 
