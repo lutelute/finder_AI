@@ -802,6 +802,10 @@ final class WorkspaceBrowserViewController: NSViewController {
     private let refreshButton = NSButton()
     /// この区画の明るさ。押すたびに システム → ライト → ダーク と巡る。
     private let appearanceButton = NSButton()
+    /// 窓の色を選ぶボタン。メニューの奥にだけ置くと、在ることに気付かれない。
+    private let tintButton = NSButton()
+    /// いまこの窓に付いている色。ボタンの見た目と、開いたメニューの印に使う。
+    private var currentTint: WorkspaceWindowTint?
     private let copyCDButton = NSButton()
     private let newFolderButton = NSButton()
     private let newGroupButton = NSButton()
@@ -879,6 +883,70 @@ final class WorkspaceBrowserViewController: NSViewController {
         refreshAppearanceButton()
     }
 
+    /// 色を選んだ。掛けるのはウインドウの仕事なので、窓へ渡す。
+    ///
+    /// ペインは自分の額縁しか塗れないが、色はタイトルバーや反対側のペイン、
+    /// ターミナルにも掛かる。ここで自分だけ塗ると、窓の中で色が食い違う。
+    var onSelectTint: ((WorkspaceWindowTint?) -> Void)?
+
+    private func configureTintButton() {
+        configureNavigationButton(
+            tintButton,
+            symbol: "circle",
+            action: #selector(showTintMenu),
+            label: "このウインドウの色"
+        )
+        refreshTintButton()
+    }
+
+    private func refreshTintButton() {
+        tintButton.image = WorkspaceWindowTintPalette.buttonImage(for: currentTint)
+        // 名前は絵ではなくボタンに持たせる。`configureNavigationButton`は
+        // 記号の`accessibilityDescription`を当てにしているが、ここは絵を
+        // 差し替えるので、そのままだと読み上げから名前が消える。
+        tintButton.setAccessibilityLabel("このウインドウの色")
+        // 色そのものを見せる絵なので、ボタンの色付けに塗り潰させない。
+        tintButton.contentTintColor = nil
+        tintButton.toolTip = currentTint
+            .map { "このウインドウの色：\($0.title)（押すと選び直せます）" }
+            ?? "このウインドウの色：なし（押すと選べます）"
+    }
+
+    /// 押した場所から色の一覧を出す。
+    ///
+    /// 6色しかないので、階層を作らずその場に全部並べる。見本を添えるのは、
+    /// 名前（藍鼠・苔・小豆…）だけでは何色か分からないため。
+    @objc private func showTintMenu() {
+        let menu = NSMenu(title: "このウインドウの色")
+        let none = NSMenuItem(title: "色なし", action: #selector(pickTint(_:)), keyEquivalent: "")
+        none.target = self
+        none.representedObject = ""
+        none.image = WorkspaceWindowTintPalette.buttonImage(for: nil)
+        none.state = currentTint == nil ? .on : .off
+        menu.addItem(none)
+        menu.addItem(.separator())
+        for tint in WorkspaceWindowTint.allCases {
+            let item = NSMenuItem(title: tint.title, action: #selector(pickTint(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = tint.rawValue
+            item.image = WorkspaceWindowTintPalette.swatch(for: tint)
+            item.state = currentTint == tint ? .on : .off
+            menu.addItem(item)
+        }
+        // ボタンの真下に開く。押した指の位置と出る場所がずれると、
+        // どのボタンのメニューなのか分からなくなる。
+        menu.popUp(
+            positioning: nil,
+            at: NSPoint(x: 0, y: tintButton.bounds.height + 4),
+            in: tintButton
+        )
+    }
+
+    @objc private func pickTint(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String else { return }
+        onSelectTint?(WorkspaceWindowTint.decoded(raw.isEmpty ? nil : raw))
+    }
+
     private func refreshAppearanceButton() {
         let mode = preferences.browserAppearance
         appearanceButton.image = NSImage(
@@ -903,6 +971,8 @@ final class WorkspaceBrowserViewController: NSViewController {
 
     /// このペインの額縁に、ウインドウの目印の色を掛ける。
     func applyTint(_ tint: WorkspaceWindowTint?) {
+        currentTint = tint
+        refreshTintButton()
         themePainter.tint = tint
         themePainter.repaint()
     }
@@ -1835,9 +1905,11 @@ final class WorkspaceBrowserViewController: NSViewController {
         // 幅を大して要らないものだけになった。狭いときは検索が縮む——ボタンは的として
         // 縮められないので、縮む役はこちらが持つ。
         configureAppearanceButton()
+        configureTintButton()
         let navigationStack = NSStackView(views: [
             backButton, forwardButton, upButton, copyCDButton,
-            refreshButton, newFolderButton, newGroupButton, appearanceButton, viewModeControl
+            refreshButton, newFolderButton, newGroupButton,
+            appearanceButton, tintButton, viewModeControl
         ])
         navigationStack.orientation = .horizontal
         navigationStack.alignment = .centerY

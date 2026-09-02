@@ -144,6 +144,9 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             self.window?.representedURL = url
         }
         pane.onToggleTerminal = { [weak self] in self?.toggleTerminal() }
+        // 色はペインではなく窓の持ちもの。どちらのペインのボタンから選んでも
+        // 窓ぜんぶに掛かる。
+        pane.onSelectTint = { [weak self] tint in self?.setTint(tint) }
         pane.onBecameActive = { [weak self, weak pane] in
             guard let self, let pane, pane !== self.activePane else { return }
             self.activePane = pane
@@ -178,6 +181,11 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     /// このウインドウの目印の色。`nil`なら従来どおりの灰。
     private(set) var tint: WorkspaceWindowTint?
 
+    /// 色が変わったら呼ばれる。コーディネータが構成を撮り直し、
+    /// メニューの印と一覧を引き直すためのフック。ボタンから選んでも
+    /// メニューから選んでも、後始末はここ一本に通す。
+    var onTintChanged: (() -> Void)?
+
     /// 目印の色を掛け替える。額縁（タイトルバー・ツールバー・サイドバー・
     /// 下帯・ターミナルの見出し）にだけ効き、ファイル一覧の地は変わらない。
     func setTint(_ tint: WorkspaceWindowTint?) {
@@ -188,6 +196,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         rightPane?.applyTint(tint)
         terminal.applyTint(tint)
         applyTitlebarTint()
+        onTintChanged?()
     }
 
     /// タイトルバーを塗る。
