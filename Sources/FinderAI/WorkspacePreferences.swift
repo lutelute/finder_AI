@@ -63,6 +63,29 @@ struct WorkspacePreferences {
         static let browserAppearance = "workspace.browserAppearance"
         static let terminalAppearance = "workspace.terminalAppearance"
         static let newWindowDirectory = "workspace.newWindowDirectory"
+        static let windowTintStrength = "workspace.windowTintStrength"
+    }
+
+    /// 窓の色を地にどれだけ混ぜるか。
+    ///
+    /// 未設定（キーが無い）ときは既定値。`double(forKey:)`は無いキーに0を返すので、
+    /// 「0を選んだ」と「まだ選んでいない」を`object(forKey:)`で分ける——分けないと
+    /// 初回起動が必ず0（色なしと同じ見た目）になる。
+    var windowTintStrength: Double {
+        get {
+            guard defaults.object(forKey: Key.windowTintStrength) != nil else {
+                return WorkspaceWindowTint.defaultStrength
+            }
+            return WorkspaceWindowTint.clampedStrength(
+                defaults.double(forKey: Key.windowTintStrength)
+            )
+        }
+        nonmutating set {
+            defaults.set(
+                WorkspaceWindowTint.clampedStrength(newValue),
+                forKey: Key.windowTintStrength
+            )
+        }
     }
 
     /// 新しいウインドウ（⌘Nと起動時の最初の1枚）で開くフォルダ。

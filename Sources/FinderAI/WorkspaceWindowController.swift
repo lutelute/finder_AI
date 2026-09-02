@@ -206,6 +206,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
     func setTint(_ tint: WorkspaceWindowTint?) {
         self.tint = tint
         themePainter.tint = tint
+        themePainter.tintStrength = preferences.windowTintStrength
         themePainter.repaint()
         leftPane.applyTint(tint)
         rightPane?.applyTint(tint)
@@ -226,6 +227,11 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         if let tint {
             tintBar.layer?.backgroundColor = WorkspaceWindowTintPalette.color(for: tint).cgColor
         }
+    }
+
+    /// 濃さを選び直したときに、色はそのままで塗りだけやり直す。
+    func refreshTintStrength() {
+        setTint(tint)
     }
 
     /// タイトルバーを塗る。
@@ -257,7 +263,8 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             painted = ThemedLayerPainter.blend(
                 tint,
                 into: IntegratedPanelTheme.header,
-                isDark: appearance.isDark
+                isDark: appearance.isDark,
+                strength: preferences.windowTintStrength
             )
         }
         window.titlebarAppearsTransparent = true

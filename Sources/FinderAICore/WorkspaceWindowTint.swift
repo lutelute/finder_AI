@@ -102,17 +102,32 @@ public enum WorkspaceWindowTint: String, CaseIterable, Sendable, Codable {
 
     /// 地に混ぜる割合。
     ///
-    /// 明暗どちらも同じ割合でよい。混ぜる色を**地と同じ明度に寄せて彩度だけ上げて**
-    /// あるので、たくさん混ぜても面の明るさがほとんど動かない。動かないから、
-    /// 上に載る字とのコントラストも保たれる。
+    /// 地に混ぜる既定の割合。明暗で変えない。
+    ///
+    /// 混ぜる色を**地と同じ明度に寄せて彩度だけ上げて**あるので、たくさん混ぜても
+    /// 面の明るさがほとんど動かない。動かないから、上に載る字とのコントラストも保たれる。
     ///
     /// 薄く混ぜるほど安全、ではない。中間調の色を薄く混ぜていたときは、色が出ない
     /// うえに面の明度だけ動いて**字も読みにくかった**（明るい側で副文4.16→3.44、
     /// 暗い側で5.79→4.09）。効くのは割合ではなく混ぜる色のほう。
     ///
-    /// 実際の比は `WindowTintContrastTests` が測る——ここの数字だけを縛っても
-    /// 何も守れない。
-    public static func strength(isDark: Bool) -> Double { 0.45 }
+    /// この値は暗い側の副文が4.5を保つ上限でもある（実測4.52）。
+    /// 実際の比は `WindowTintContrastTests` が測る——数字だけを縛っても何も守れない。
+    public static let defaultStrength: Double = 0.45
+
+    /// 設定で動かせる幅。
+    ///
+    /// 下限は「色が付いていると分かる」下限、上限は**読みやすさを進んで手放す側**。
+    /// 既定より濃くすると副文の比は落ちる（0.80で暗い側3.82・明るい側3.26）。
+    /// それでも開けてあるのは、何十枚と開く人にとって「どれがどれか」のほうが
+    /// 切実な場面があるため。既定は落とさない側に置いてある。
+    public static let strengthRange: ClosedRange<Double> = 0.15...0.80
+
+    /// 範囲へ収める。壊れた値や古い値が入っていても、極端な見た目にしない。
+    public static func clampedStrength(_ value: Double) -> Double {
+        guard value.isFinite else { return defaultStrength }
+        return min(max(value, strengthRange.lowerBound), strengthRange.upperBound)
+    }
 
     /// 保存された文字列から戻す。読めない値は「色なし」に落とす——目印が消えるだけで、
     /// ウインドウは開く。

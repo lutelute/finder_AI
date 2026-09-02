@@ -205,6 +205,7 @@ final class DrawerContentViewController: NSViewController {
     /// ターミナルの見出しに、ウインドウの目印の色を掛ける。本文の地は変えない。
     func applyTint(_ tint: WorkspaceWindowTint?) {
         themePainter.tint = tint
+        themePainter.tintStrength = preferences.windowTintStrength
         themePainter.repaint()
     }
 

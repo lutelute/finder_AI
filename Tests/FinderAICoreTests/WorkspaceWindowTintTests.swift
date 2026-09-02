@@ -20,26 +20,46 @@ struct WorkspaceWindowTintTests {
         #expect(WorkspaceWindowTint.decoded("むかしの色") == nil)
     }
 
-    @Test("混ぜる割合は明暗で変えない")
-    func strengthIsTheSameBothWays() {
+    @Test("既定の濃さは可動域の中にある")
+    func defaultStrengthIsInRange() {
         // 一度は暗い側だけ濃くしていた（黒に近い地では色が沈むから、という理屈）。
         // 効いていたのは割合ではなく**混ぜる色の明度**のほうで、いまはどちらも
-        // 地の明度に寄せてあるので、同じ割合で同じだけ色が出る。
-        #expect(WorkspaceWindowTint.strength(isDark: true)
-            == WorkspaceWindowTint.strength(isDark: false))
+        // 地の明度に寄せてあるので、明暗で分ける必要がない。
+        #expect(WorkspaceWindowTint.strengthRange.contains(WorkspaceWindowTint.defaultStrength))
     }
 
-    @Test("混ぜる割合は0と1のあいだにある")
+    @Test("範囲の外の値は、範囲へ収める")
+    func clampsOutOfRangeStrength() {
+        let lo = WorkspaceWindowTint.strengthRange.lowerBound
+        let hi = WorkspaceWindowTint.strengthRange.upperBound
+        #expect(WorkspaceWindowTint.clampedStrength(-1) == lo)
+        #expect(WorkspaceWindowTint.clampedStrength(0) == lo)
+        #expect(WorkspaceWindowTint.clampedStrength(9) == hi)
+        #expect(WorkspaceWindowTint.clampedStrength(lo) == lo)
+        #expect(WorkspaceWindowTint.clampedStrength(hi) == hi)
+        // 壊れた値で真っ黒／真っ白な窓を作らない。
+        #expect(WorkspaceWindowTint.clampedStrength(.nan)
+            == WorkspaceWindowTint.defaultStrength)
+        #expect(WorkspaceWindowTint.clampedStrength(.infinity)
+            == WorkspaceWindowTint.defaultStrength)
+    }
+
+    @Test("濃さの上限でも、色が完全に地を塗り替えない")
+    func theStrongestSettingStillMixes() {
+        // 1.0を許すと「色を敷く」ではなく「色で塗る」になり、額縁だけという
+        // 決めごとが崩れる。
+        #expect(WorkspaceWindowTint.strengthRange.upperBound < 1.0)
+        #expect(WorkspaceWindowTint.strengthRange.lowerBound > 0)
+    }
+
+    @Test("濃さは0と1のあいだの割合")
     func strengthIsAProportion() {
         // **読めるかどうかはここでは測れない。** 同じ割合でも混ぜる色を変えれば
         // コントラストは変わる。実際、数字だけを縛っていたときに暗い側の副文が
         // 4.5を割ったまま通り抜けた。実際の比は
         // `WindowTintContrastTests`（AppKitの色を解ける側）が測る。
-        for isDark in [true, false] {
-            let amount = WorkspaceWindowTint.strength(isDark: isDark)
-            #expect(amount > 0)
-            #expect(amount < 1)
-        }
+        #expect(WorkspaceWindowTint.defaultStrength > 0)
+        #expect(WorkspaceWindowTint.defaultStrength < 1)
     }
 
     @Test("6色はすべて違う色で、明暗それぞれに別の値を持つ")
