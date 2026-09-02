@@ -121,6 +121,8 @@ final class ThemedLayerPainter {
 
     /// このウインドウの目印の色。`nil`なら従来どおりの灰。
     var tint: WorkspaceWindowTint?
+    /// 地に混ぜる割合。設定で動かせる。
+    var tintStrength: Double = WorkspaceWindowTint.defaultStrength
 
     private var entries: [(view: NSView, role: SurfaceRole, color: @MainActor () -> NSColor)] = []
 
@@ -147,7 +149,7 @@ final class ThemedLayerPainter {
         appearance.performAsCurrentDrawingAppearance {
             let base = color()
             let painted = role == .frame
-                ? Self.blend(tint, into: base, isDark: appearance.isDark)
+                ? Self.blend(tint, into: base, isDark: appearance.isDark, strength: tintStrength)
                 : base
             view.layer?.backgroundColor = painted.cgColor
         }
@@ -160,10 +162,11 @@ final class ThemedLayerPainter {
     static func blend(
         _ tint: WorkspaceWindowTint?,
         into base: NSColor,
-        isDark: Bool
+        isDark: Bool,
+        strength: Double = WorkspaceWindowTint.defaultStrength
     ) -> NSColor {
         guard let tint else { return base }
-        let amount = CGFloat(WorkspaceWindowTint.strength(isDark: isDark))
+        let amount = CGFloat(WorkspaceWindowTint.clampedStrength(strength))
         let hex = isDark ? tint.darkHex : tint.lightHex
         guard let ground = base.usingColorSpace(.sRGB) else { return base }
         let top = rgb(hex)

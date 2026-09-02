@@ -974,6 +974,7 @@ final class WorkspaceBrowserViewController: NSViewController {
         currentTint = tint
         refreshTintButton()
         themePainter.tint = tint
+        themePainter.tintStrength = preferences.windowTintStrength
         themePainter.repaint()
     }
 

@@ -460,6 +460,11 @@ final class WorkspaceAppCoordinator {
             controller.onTerminalEdgeChanged = { [weak self] edge in
                 self?.windows.forEach { $0.applyTerminalEdge(edge) }
             }
+            // 濃さは全ウインドウ共通の設定。掴んで動かしているあいだ、
+            // 色を付けた窓がその場で変わる。
+            controller.onWindowTintStrengthChanged = { [weak self] in
+                self?.windows.forEach { $0.refreshTintStrength() }
+            }
             settingsWindow = controller
         }
         settingsWindow?.show()

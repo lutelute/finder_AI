@@ -11,6 +11,8 @@ final class SettingsWindowController: NSWindowController {
     var onEdgeTabsChanged: (() -> Void)?
     /// Terminalパネルの辺が変わった。開いている全ウインドウに適用する。
     var onTerminalEdgeChanged: ((TerminalPanelEdge) -> Void)?
+    /// 窓の色の濃さが変わった。色を付けている窓を塗り直す。
+    var onWindowTintStrengthChanged: (() -> Void)?
 
     private let sessionManager: any TerminalSessionManaging
     private let preferences: WorkspacePreferences
@@ -55,6 +57,13 @@ final class SettingsWindowController: NSWindowController {
     /// 縁に置くフォルダを、ここからも足せるように。⌃⌘Eしか道が無いと、
     /// 何も登録していない人には設定画面から始められる操作が1つも無い。
     private let edgeTabsAddButton = NSButton(title: "", target: nil, action: nil)
+    /// 窓の色をどれだけ濃く敷くか。動かしたその場で全部の窓が変わるので、
+    /// 数字を読んで決めるものではなく、見ながら決めるもの。
+    private let tintStrengthSlider = NSSlider()
+    private let tintStrengthValueLabel = NSTextField(labelWithString: "")
+    /// 6色を、いまの濃さで敷いた見本。スライダーを動かすと一緒に変わる。
+    private let tintStrengthPreview = WorkspaceTintStrengthPreview()
+    private let tintStrengthCaption = NSTextField(wrappingLabelWithString: "")
     /// 新しいウインドウで開くフォルダの現在値。指定なしのときはその旨を出す。
     private let newWindowPathLabel = NSTextField(labelWithString: "")
     private let newWindowCaption = NSTextField(wrappingLabelWithString: "")
@@ -131,6 +140,10 @@ final class SettingsWindowController: NSWindowController {
             ? "FinderAIが落ちたり終了しても、以降に開始したセッションはtmux内で生き続け、同じフォルダから再接続できます。"
             : "tmuxが見つかりません。Homebrewなら `brew install tmux` で導入すると有効にできます。"
         loggingCheckbox.state = preferences.sessionLogging ? .on : .off
+        let strength = preferences.windowTintStrength
+        tintStrengthSlider.doubleValue = strength
+        tintStrengthValueLabel.stringValue = "\(Int((strength * 100).rounded()))%"
+        tintStrengthPreview.strength = strength
         newWindowPathLabel.stringValue = preferences.newWindowDirectory
             .map { "開く先: \($0.path)" }
             ?? "指定なし（⌘Nは手前のウインドウと同じフォルダ）"
@@ -239,6 +252,7 @@ final class SettingsWindowController: NSWindowController {
             edgeTabsMapCaption,
             edgeTabsAutoHideCaption,
             edgeTabsFinderCaption,
+            tintStrengthCaption,
             newWindowCaption,
             commitLabel,
             installationLabel
@@ -284,6 +298,33 @@ final class SettingsWindowController: NSWindowController {
         newWindowButtonsRow.orientation = .horizontal
         newWindowButtonsRow.spacing = 8
 
+        tintStrengthSlider.minValue = WorkspaceWindowTint.strengthRange.lowerBound
+        tintStrengthSlider.maxValue = WorkspaceWindowTint.strengthRange.upperBound
+        tintStrengthSlider.target = self
+        tintStrengthSlider.action = #selector(changeTintStrength)
+        // 掴んでいるあいだも送る。離すまで何も起きないと、どこまで動かせば
+        // どうなるのかが分からないまま当てずっぽうになる。
+        tintStrengthSlider.isContinuous = true
+        tintStrengthSlider.controlSize = .small
+        tintStrengthSlider.setAccessibilityLabel("窓の色の濃さ")
+        tintStrengthValueLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        tintStrengthValueLabel.textColor = .secondaryLabelColor
+        tintStrengthCaption.stringValue = "窓ごとに付けた色を、額縁へどれだけ濃く敷くか。上の見本がそのまま窓の見え方です。濃くするほど見分けはつきますが、色を敷いた面の小さい字は読みにくくなります。既定（\(Int(WorkspaceWindowTint.defaultStrength * 100))%）は、その字が読める上限に置いてあります。"
+        tintStrengthSlider.translatesAutoresizingMaskIntoConstraints = false
+        tintStrengthPreview.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            tintStrengthSlider.widthAnchor.constraint(equalToConstant: 220),
+            tintStrengthPreview.widthAnchor.constraint(equalToConstant: 296),
+            tintStrengthPreview.heightAnchor.constraint(equalToConstant: 44)
+        ])
+        let tintStrengthRow = NSStackView(views: [
+            NSTextField(labelWithString: "色の濃さ"),
+            tintStrengthSlider,
+            tintStrengthValueLabel
+        ])
+        tintStrengthRow.orientation = .horizontal
+        tintStrengthRow.spacing = 10
+
         let placementRow = NSStackView(views: [
             NSTextField(labelWithString: "パネルの位置"),
             terminalEdgeControl
@@ -305,6 +346,8 @@ final class SettingsWindowController: NSWindowController {
             loggingCheckbox, indented(loggingCaption), indented(openLogs),
             windowSeparator,
             windowTitle,
+            tintStrengthRow,
+            indented(tintStrengthPreview), indented(tintStrengthCaption),
             newWindowPathLabel,
             newWindowButtonsRow, indented(newWindowCaption),
             edgeTabsSeparator,
@@ -515,6 +558,14 @@ final class SettingsWindowController: NSWindowController {
             withIntermediateDirectories: true
         )
         NSWorkspace.shared.open(SessionLogStore.directory)
+    }
+
+    @objc private func changeTintStrength() {
+        preferences.windowTintStrength = tintStrengthSlider.doubleValue
+        // 先に見本と数字を更新してから窓へ配る。掴んだまま動かすので、
+        // 手元の反応が遅れると「効いていない」に見える。
+        refresh()
+        onWindowTintStrengthChanged?()
     }
 
     @objc private func chooseNewWindowDirectory() {
