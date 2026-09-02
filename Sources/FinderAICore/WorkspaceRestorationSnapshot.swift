@@ -18,10 +18,27 @@ public struct WorkspaceRestorationSnapshot: Codable, Equatable, Sendable {
     /// ウインドウの表示順どおりのフォルダパス。先頭が1枚目。
     public var windowDirectoryPaths: [String]
     public var sessions: [Session]
+    /// 窓ごとの目印の色。`windowDirectoryPaths`と同じ並びで、色なしは空文字。
+    ///
+    /// optionalにしてあるのは、この項目が無かった頃のスナップショットを
+    /// 読めなくしないため。無ければ全部「色なし」として開く——目印が
+    /// 戻らないだけで、ウインドウの復元そのものは通る。
+    public var windowTints: [String]?
 
-    public init(windowDirectoryPaths: [String], sessions: [Session]) {
+    public init(
+        windowDirectoryPaths: [String],
+        sessions: [Session],
+        windowTints: [String]? = nil
+    ) {
         self.windowDirectoryPaths = windowDirectoryPaths
         self.sessions = sessions
+        self.windowTints = windowTints
+    }
+
+    /// 指定した位置のウインドウの色。並びがずれていても落ちない。
+    public func tint(at index: Int) -> WorkspaceWindowTint? {
+        guard let windowTints, index >= 0, index < windowTints.count else { return nil }
+        return WorkspaceWindowTint.decoded(windowTints[index])
     }
 
     /// 1枚のウインドウにセッションなしの構成は`lastDirectory`の復元と同じなので、

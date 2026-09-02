@@ -92,7 +92,7 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         super.init(window: window)
         // 塗りの控えはsuper.initの後で。それより前は自分を触れない。
         root.onAppearanceChanged = { [weak self] in self?.themePainter.repaint() }
-        themePainter.register(root) { IntegratedPanelTheme.background }
+        themePainter.register(root, role: .frame) { IntegratedPanelTheme.background }
         window.delegate = self
 
         rootController.addChild(leftPane)
@@ -170,6 +170,52 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         leftPane.applyAppearance()
         rightPane?.applyAppearance()
         terminal.applyAppearance()
+        // 明るさが変われば混ぜる先の地も変わる。タイトルバーだけは
+        // 塗る控えの外に居るので、ここで一緒に塗り直す。
+        applyTitlebarTint()
+    }
+
+    /// このウインドウの目印の色。`nil`なら従来どおりの灰。
+    private(set) var tint: WorkspaceWindowTint?
+
+    /// 目印の色を掛け替える。額縁（タイトルバー・ツールバー・サイドバー・
+    /// 下帯・ターミナルの見出し）にだけ効き、ファイル一覧の地は変わらない。
+    func setTint(_ tint: WorkspaceWindowTint?) {
+        self.tint = tint
+        themePainter.tint = tint
+        themePainter.repaint()
+        leftPane.applyTint(tint)
+        rightPane?.applyTint(tint)
+        terminal.applyTint(tint)
+        applyTitlebarTint()
+    }
+
+    /// タイトルバーを塗る。
+    ///
+    /// ここだけAppKitが描くので`ThemedLayerPainter`が届かない。
+    /// `titlebarAppearsTransparent`を立てると、その帯にウインドウの背景色が
+    /// 出る——`.fullSizeContentView`を持たないので、中身の配置は動かない。
+    /// 色を外したら透明を降ろす。立てたままにすると、色なしの窓だけ
+    /// 素材感の違うタイトルバーになる。
+    private func applyTitlebarTint() {
+        guard let window else { return }
+        guard let tint else {
+            window.titlebarAppearsTransparent = false
+            window.backgroundColor = .windowBackgroundColor
+            return
+        }
+        let appearance = window.contentViewController?.view.effectiveAppearance
+            ?? window.effectiveAppearance
+        var painted: NSColor = .windowBackgroundColor
+        appearance.performAsCurrentDrawingAppearance {
+            painted = ThemedLayerPainter.blend(
+                tint,
+                into: IntegratedPanelTheme.header,
+                isDark: appearance.isDark
+            )
+        }
+        window.titlebarAppearsTransparent = true
+        window.backgroundColor = painted
     }
 
     func show() {

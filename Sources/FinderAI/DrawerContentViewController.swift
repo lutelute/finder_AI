@@ -202,6 +202,12 @@ final class DrawerContentViewController: NSViewController {
         themePainter.repaint()
     }
 
+    /// ターミナルの見出しに、ウインドウの目印の色を掛ける。本文の地は変えない。
+    func applyTint(_ tint: WorkspaceWindowTint?) {
+        themePainter.tint = tint
+        themePainter.repaint()
+    }
+
     override func loadView() {
         let root = ThemedRootView()
         // ファイル一覧とは別に明るさを選べる。一覧は明るく、ターミナルは暗く、
@@ -409,7 +415,7 @@ final class DrawerContentViewController: NSViewController {
     }
 
     private func configureHeader() {
-        themePainter.register(header) { IntegratedPanelTheme.header }
+        themePainter.register(header, role: .frame) { IntegratedPanelTheme.header }
         // 畳んでいるときだけ開く。開いているときのシングルクリックは何もしない。
         header.onSingleClick = { [weak self] in
             guard let self, !self.expanded else { return }

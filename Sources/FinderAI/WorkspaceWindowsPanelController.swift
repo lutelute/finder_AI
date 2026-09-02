@@ -20,6 +20,8 @@ final class WorkspaceWindowsPanelController: NSWindowController {
         let path: String
         let runningSessions: Int
         let isFrontmost: Bool
+        /// 窓ごとの目印の色。付けていなければ`nil`。
+        let tint: WorkspaceWindowTint?
         /// 置き場所。行に添えるのではなく、ツールチップに回す。
         let windowFrame: CGRect
         let screenFrame: CGRect
@@ -131,6 +133,7 @@ final class WorkspaceWindowsPanelController: NSWindowController {
             serial: row.serial,
             runningSessions: row.runningSessions,
             isFrontmost: row.isFrontmost,
+            tint: row.tint,
             onDark: false
         )
         let region = WorkspaceScreenRegion.describe(window: row.windowFrame, on: row.screenFrame)
