@@ -49,8 +49,36 @@ struct DrawerSessionTabsTests {
         )
         #expect(rows.map(\.fullTitle) == ["Claude · projectB"])
         #expect(rows[0].folderName == "projectB")
-        // 幅が無いときはフォルダを落とす。
-        #expect(rows.map(\.compactTitle) == ["Claude"])
+        // 幅が無いときに落とすのは種類名のほう。「Claude」は何本開いても
+        // 同じ文字列で、並んだときに区別が付かない。
+        #expect(rows.map(\.compactTitle) == ["projectB"])
+        #expect(rows.map(\.shortLabel) == ["pr"])
+    }
+
+    @Test("詰めても、よその場所のものは同じ名前で並ばない")
+    func compactTitlesStayDistinctAcrossFolders() {
+        let third = URL(fileURLWithPath: "/Users/x/projectC", isDirectory: true)
+        let rows = DrawerSessionTabs.rows(
+            sources: [source(in: away), source(in: third), source(in: home)],
+            currentDirectory: home,
+            activeID: nil
+        )
+        // 右辺の厚み375ptでは`.full`が2本しか入らず、3本目から`.nameOnly`へ落ちる。
+        // そこで全部が「Claude」になっていた（実機で3フォルダぶんが並んだ）。
+        #expect(Set(rows.map(\.compactTitle)).count == rows.count)
+        #expect(rows.map(\.compactTitle) == ["Claude", "projectB", "projectC"])
+    }
+
+    @Test("名前を付けてあれば、詰めてもその名前で名乗る")
+    func compactTitlePrefersCustomName() {
+        let rows = DrawerSessionTabs.rows(
+            sources: [source(customName: "査読担当", in: away)],
+            currentDirectory: home,
+            activeID: nil
+        )
+        #expect(rows.map(\.fullTitle) == ["査読担当 · projectB"])
+        #expect(rows.map(\.compactTitle) == ["査読担当"])
+        #expect(rows.map(\.shortLabel) == ["査読"])
     }
 
     @Test("今いる場所のものを先頭へ寄せる。削られてよいのはよその場所のほう")

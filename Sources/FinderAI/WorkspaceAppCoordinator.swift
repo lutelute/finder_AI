@@ -642,14 +642,10 @@ final class WorkspaceAppCoordinator {
     /// フォルダごとにすると、同じフォルダを2枚開いたときに区別が付かない。
     @objc func setWindowTint(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String else { return }
-        // **`frontmostWindow`だけでは足りない。** keyWindowが無いとき
-        // （メニューを開いた拍子や、パネルがkeyのとき）配列の先頭＝最初に
-        // 作った窓へ落ちる。実機で、見ている窓ではなく別の窓に色が付いた。
-        // 最後にkeyだったワークスペース窓を先に見る。
-        let target = windows.first { $0.window === NSApp.keyWindow }
-            ?? windows.first { $0.window === lastKeyWorkspaceWindow }
-            ?? frontmostWindow
-        guard let target else { return }
+        // keyWindowが無いとき（メニューを開いた拍子や、パネルがkeyのとき）に
+        // 最初に作った窓へ落ちると、見ている窓ではなく別の窓に色が付く——
+        // 実機で踏んだ。その順序は`frontmostWindow`が持っている。
+        guard let target = frontmostWindow else { return }
         // 保存とメニューの印の引き直しは`onTintChanged`が受ける。
         // ボタンから選んでもメニューから選んでも同じ道を通す。
         target.setTint(WorkspaceWindowTint.decoded(raw.isEmpty ? nil : raw))
@@ -767,8 +763,16 @@ final class WorkspaceAppCoordinator {
 
     private var cascadePoint: NSPoint = .zero
 
+    /// いま相手にすべきワークスペースの窓。
+    ///
+    /// `NSApp.keyWindow`だけでは足りない。**袖は非アクティブのまま使う場所で、
+    /// アプリが非アクティブなあいだkeyWindowは無い。** そこで配列の先頭——
+    /// 最初に作った窓——へ落ちていたので、袖から何かを開くたび、見ていた窓では
+    /// なく別の窓が前に出て、その窓の中身だけが書き換わっていた。
+    /// 最後にkeyだったワークスペース窓を間に挟む。
     private var frontmostWindow: WorkspaceWindowController? {
         windows.first { $0.window === NSApp.keyWindow }
+            ?? windows.first { $0.window === lastKeyWorkspaceWindow }
             ?? windows.first { $0.window?.isVisible == true }
     }
 
