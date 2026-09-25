@@ -130,6 +130,10 @@ final class FinderInlineRenameField: NSTextField, NSTextFieldDelegate {
         textColor = .textColor
         focusRingType = .default
         lineBreakMode = .byClipping
+        // 欄より長い名前の中をカーソルで進んだとき、字のほうが送られて
+        // カーソルが見えつづけるように。これが無いと欄の幅で切れたまま、
+        // 右端から先は打っても動かしても何も見えない。
+        cell?.isScrollable = true
 
         guard window?.makeFirstResponder(self) == true else {
             cancelEditing()
@@ -198,6 +202,10 @@ final class FinderInlineRenameField: NSTextField, NSTextFieldDelegate {
         backgroundColor = .clear
         if let restingTextColor { textColor = restingTextColor }
         focusRingType = .none
+        // 字送りは編集の間だけ。残しても中ほどの省略は効く（オフスクリーンで
+        // 確かめた）が、編集で触った設定は編集で戻し、休んでいる欄を編集前と
+        // 同じ状態に揃えておく。
+        cell?.isScrollable = false
         lineBreakMode = .byTruncatingMiddle
     }
 
