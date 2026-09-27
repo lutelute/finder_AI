@@ -250,6 +250,30 @@ struct EdgeTabPlacementTests {
         #expect(high.minY >= screen.minY)
     }
 
+    /// 呼び戻した帯は手の高さへ寄るが、中央付近まで。画面の上のほうは窓の
+    /// ボタンを押しに行く場所で、手の高さにそのまま出すと被さった。
+    @Test("a recalled strip leans toward the hand but stays near the middle")
+    func recallStaysNearTheMiddle() {
+        let reach = screen.height * EdgeTabPlacement.recallReach
+        func centre(_ y: CGFloat) -> CGFloat {
+            EdgeTabPlacement.recallCenterY(mouseY: y, visibleFrame: screen)
+        }
+        // 中央付近なら手の高さそのまま。
+        #expect(centre(screen.midY + reach / 2) == screen.midY + reach / 2)
+        #expect(centre(screen.midY - reach / 2) == screen.midY - reach / 2)
+        // 上や下の端で呼んでも、中央付近で止まる。
+        #expect(centre(screen.maxY - 20) == screen.midY + reach)
+        #expect(centre(screen.minY + 20) == screen.midY - reach)
+        // 上の端で呼んだ帯は、画面の上側の5分の1に掛からない。
+        let high = EdgeTabPlacement.stripFrame(
+            tabCount: 3,
+            edge: .right,
+            visibleFrame: screen,
+            preferredCenterY: centre(screen.maxY - 20)
+        )
+        #expect((high?.maxY ?? .infinity) < screen.maxY - screen.height / 5)
+    }
+
     @Test("the trigger sits in the edge's last few points, within the strip's rows")
     func triggerIsAThinBandBesideTheStrip() throws {
         let strip = try #require(EdgeTabPlacement.stripFrame(

@@ -224,9 +224,8 @@ public enum EdgeTabPlacement {
     /// どちらの端も「常にそこにある」と言えないから。
     /// `preferredCenterY`を渡すと、その高さを中心に置く。
     ///
-    /// 隠れた帯を呼び出すとき、縁のどこに当てたかに寄せるために使う。画面の
-    /// 中央に固定していると、上や下の縁で呼び出しても帯は真ん中に現れ、そこへ
-    /// カーソルを運ぶ前に引っ込む——「出たのに触れない」になる。
+    /// 隠れた帯を呼び出すとき、縁のどこに当てたかに寄せるために使う。寄せる幅は
+    /// `recallCenterY`が中央付近に絞る。
     public static func stripFrame(
         tabCount: Int,
         edge: WorkspaceScreenEdge,
@@ -243,6 +242,20 @@ public enum EdgeTabPlacement {
         let highest = visibleFrame.maxY - size.height
         let y = min(max(center - size.height / 2, lowest), highest)
         return CGRect(x: x, y: y, width: size.width, height: size.height).integral
+    }
+
+    /// 呼び戻した帯を手の高さへ寄せてよい幅。画面の高さに対する、縦中央からの割合。
+    ///
+    /// 1.40.3〜1.40.4は手の高さにそのまま出していたが、画面の上のほうは窓の
+    /// ボタンやツールバーを押しに行く場所で、そこへ手を運ぶたびに帯が被さった
+    /// （実機で「画面の上には出てほしくない。よくボタンで使う」「中心付近でいい」）。
+    /// 寄せるのは中央付近までにして、上下の端には出さない。
+    public static let recallReach: CGFloat = 0.15
+
+    /// 縁のこの高さで呼び戻したとき、帯の中心をどこに置くか。
+    public static func recallCenterY(mouseY: CGFloat, visibleFrame: CGRect) -> CGFloat {
+        let reach = visibleFrame.height * recallReach
+        return min(max(mouseY, visibleFrame.midY - reach), visibleFrame.midY + reach)
     }
 
     /// 縁がどれだけ離れていれば別の場所とみなすか。画面の枠は整数で並ぶので、
