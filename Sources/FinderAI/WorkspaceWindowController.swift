@@ -284,7 +284,16 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
         }
         pullOntoScreen()
         showWindow(nil)
-        window?.makeKeyAndOrderFront(nil)
+        guard let window else { return }
+        // 畳んだままでは、前に出す先がDockの中になる。
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        // 呼び元は袖の一覧——**FinderAIが非アクティブなときに使う場所**で、その
+        // 状態では`makeKeyAndOrderFront`はウインドウを画面の前に出さない。袖の
+        // パネル側は`orderFrontRegardless`で手当て済みだったが、肝心の窓を前へ
+        // 出す道だけが漏れていた。覗いているあいだは浮いて見えていた1枚が、
+        // 押した瞬間に引っ込む——実機に出ていたのはその形。
+        window.orderFrontRegardless()
+        window.makeKey()
         NSApp.activate(ignoringOtherApps: true)
     }
 

@@ -25,6 +25,9 @@ struct DrawerSessionTab: Equatable {
     let belongsToCurrentFolder: Bool
     let isAnchored: Bool
     let hasRole: Bool
+    /// 付けた名前を名乗っているか。付けていなければ「Claude」のような種類名で、
+    /// 同じ種類が並ぶと全部同じ文字列になる——狭いときに落としてよいのはそちら。
+    let hasCustomName: Bool
     let tooltip: String
 
     /// 幅があるときの表記。
@@ -34,13 +37,26 @@ struct DrawerSessionTab: Equatable {
         return decorated(text)
     }
 
-    /// フォルダを落とした表記。
-    var compactTitle: String { decorated(name) }
+    /// 幅が足りないときの表記。落とすのは種類名のほうで、場所は残す。
+    ///
+    /// フォルダを落とす作りだった。右辺の厚み375ptでは`.full`が2本しか入らず、
+    /// 3本目から全部が「Claude」になる——実機で、よその3フォルダのClaudeが
+    /// 「Claude・Claude・Claude」と並び、手前のフォルダとどれも無関係なことが
+    /// 帯からは読めなかった。付けた名前があるならそれを、無いなら場所を名乗る。
+    var compactTitle: String {
+        decorated(preferredLabel)
+    }
 
     /// 詰まったときの2文字。記号だけでは同じ種類が全部同じ絵になるので、
-    /// 場所（よそなら フォルダ名、今ここなら 名前）の頭を添えて見分ける。
+    /// 名乗れるほうの頭を添えて見分ける。
     var shortLabel: String {
-        String((folderName ?? name).prefix(2))
+        String(preferredLabel.prefix(2))
+    }
+
+    /// 狭いところで名乗る1つ。付けた名前 → よそなら場所 → 種類名の順。
+    private var preferredLabel: String {
+        if hasCustomName { return name }
+        return folderName ?? name
     }
 
     private func decorated(_ text: String) -> String {
@@ -141,6 +157,7 @@ enum DrawerSessionTabs {
                 belongsToCurrentFolder: belongsToCurrentFolder,
                 isAnchored: source.isAnchored,
                 hasRole: source.role != nil,
+                hasCustomName: source.customName != nil,
                 tooltip: "\(heading) — \(directory.path(percentEncoded: false))\n"
                     + roleLine
                     + "ダブルクリックでこの場所をブラウザに表示"
