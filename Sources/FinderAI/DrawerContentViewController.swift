@@ -109,6 +109,8 @@ final class DrawerContentViewController: NSViewController {
     private let placementButton = NSButton()
     private let manageSessionsButton = NSButton()
     private let newSessionButton = NSButton()
+    /// いま見ているセッションをTerminal.appの窓にも出す（⌃⌘J）。
+    private let handOffButton = NSButton()
     private let closeButton = NSButton()
 
     /// 右辺で畳んだときの34pt幅の縦ストリップ。横並びのヘッダーは入らないので、
@@ -486,6 +488,14 @@ final class DrawerContentViewController: NSViewController {
         newSessionButton.action = #selector(showNewSessionMenu)
 
         configureIconButton(
+            handOffButton,
+            symbol: "arrow.up.forward.app",
+            accessibilityLabel: "このセッションをTerminal.appでも開く"
+        )
+        handOffButton.target = self
+        handOffButton.action = #selector(handOffActiveSessionFromButton)
+
+        configureIconButton(
             closeButton,
             symbol: "xmark.circle",
             accessibilityLabel: "選択中のセッションを閉じる／終了"
@@ -510,6 +520,7 @@ final class DrawerContentViewController: NSViewController {
                 placementButton,
                 manageSessionsButton,
                 newSessionButton,
+                handOffButton,
                 closeButton
             ],
             in: .leading
@@ -787,6 +798,10 @@ final class DrawerContentViewController: NSViewController {
             ? IntegratedPanelTheme.accent
             : IntegratedPanelTheme.secondaryText
         closeButton.isEnabled = activeSession != nil
+        handOffButton.isEnabled = canHandOffActiveSession
+        handOffButton.toolTip = canHandOffActiveSession
+            ? "このセッションをTerminal.appでも開く（⌃⌘J）"
+            : Self.handOffUnavailableHint
         // tmuxで生きているぶんも数える。アプリを開き直した直後はこちらしか
         // 無く、繋いだ数だけを見せると「実行中0件」になる——動いているAIが
         // 1つも無いように読めてしまう。
@@ -1313,6 +1328,14 @@ final class DrawerContentViewController: NSViewController {
             "このセッションの場所をブラウザで表示",
             action: #selector(openSessionDirectoryFromMenu(_:))
         ))
+        // 外の窓でも同じ画面を見たい・打ちたいとき。tmuxの上で動いている
+        // セッションだけ。押せない理由はツールチップに書く（validateMenuItem）。
+        let handOff = item(
+            "Terminal.appでも開く",
+            action: #selector(handOffSessionFromMenu(_:))
+        )
+        handOff.toolTip = session.persistence == nil ? Self.handOffUnavailableHint : nil
+        menu.addItem(handOff)
         // 名前は⌘⇧Tの管理パネルでも付けられるが、名乗らせたくなるのは
         // タブが並んで見分けが付かないこの場所。
         menu.addItem(item(
@@ -1412,6 +1435,68 @@ final class DrawerContentViewController: NSViewController {
     @objc private func openSessionDirectoryFromMenu(_ sender: NSMenuItem) {
         guard let session = session(from: sender) else { return }
         onOpenDirectory?(currentLocationURL(of: session))
+    }
+
+    // MARK: - Terminal.appへの受け渡し
+
+    static let handOffUnavailableHint =
+        "tmuxで動いているセッションだけTerminal.appに出せます（設定 ⌘, →「セッションを永続化（tmux）」）"
+
+    var canHandOffActiveSession: Bool { activeSession?.persistence != nil }
+
+    /// いま見ているセッションをTerminal.appの窓にも出す（⌃⌘J、ヘッダーのボタン）。
+    ///
+    /// FinderAI側は手を離さない。同じtmuxセッションにもう1本クライアントが付く
+    /// だけなので、どちらから打っても同じ画面が両方に映る。
+    func handOffActiveSession() {
+        guard let session = activeSession else {
+            presentHandOffFailure(
+                title: "外に出すセッションがありません",
+                detail: "先にセッションを開くか、タブを選んでください。"
+            )
+            return
+        }
+        handOff(session)
+    }
+
+    @objc private func handOffActiveSessionFromButton() {
+        handOffActiveSession()
+    }
+
+    @objc private func handOffSessionFromMenu(_ sender: NSMenuItem) {
+        guard let session = session(from: sender) else { return }
+        handOff(session)
+    }
+
+    private func handOff(_ session: any ManagedTerminalSession) {
+        let title = [
+            sessionManager.customName(for: session) ?? session.kind.displayName,
+            session.directoryURL.lastPathComponent
+        ].joined(separator: " — ")
+        do {
+            try TerminalHandoffLauncher().open(
+                persistence: session.persistence,
+                directoryURL: session.directoryURL,
+                title: title
+            )
+        } catch {
+            presentHandOffFailure(
+                title: error.localizedDescription,
+                detail: (error as? LocalizedError)?.recoverySuggestion ?? ""
+            )
+        }
+    }
+
+    private func presentHandOffFailure(title: String, detail: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = detail
+        alert.alertStyle = .informational
+        if let window = view.window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
     }
 
     @objc private func saveTranscriptFromMenu(_ sender: NSMenuItem) {
@@ -1521,5 +1606,14 @@ final class DrawerContentViewController: NSViewController {
         } else {
             alert.runModal()
         }
+    }
+}
+
+extension DrawerContentViewController: NSMenuItemValidation {
+    /// 右クリックの「Terminal.appでも開く」だけ、繋げないセッションでは押せなくする。
+    /// 他の項目はこれまで通り常に押せる。
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        guard menuItem.action == #selector(handOffSessionFromMenu(_:)) else { return true }
+        return session(from: menuItem)?.persistence != nil
     }
 }

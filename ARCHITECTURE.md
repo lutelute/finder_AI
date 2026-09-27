@@ -226,6 +226,14 @@ FinderAIが落ちるとPTYは道連れになります。それを3層で受け�
 - **PTYの子にはUTF-8ロケールを補います。** Finder/Dockから起動したGUIアプリの子は`LANG`/`LC_*`を持たず、素のままだとtmuxがクライアントを非UTF-8とみなし（`client_utf8=0`を実測）、日本語・絵文字・罫線を全部`_`で埋めて描きます。ロケールが1つも無いときだけ`LANG=en_US.UTF-8`を与え、明示的な指定は一切上書きしません。
 - **ステータス行はセッション単位で消します**（起動コマンドに`; set-option status off`を続ける）。タブもフォルダ名もドロワーが見せていて、狭いパネルでは切れ端にしかならないためです。グローバル（`-g`）にしないのは、同じtmuxサーバーを使うユーザー自身のtmuxの見た目を巻き込まないためです。
 
+#### Terminal.appへの受け渡し
+
+tmuxの上で動いているセッションは、Terminal.appの窓にも出せます（ドロワーのボタン、タブの右クリック、表示メニューの⌃⌘J）。tmuxは1つのセッションに何本でもクライアントを付けられるので、`tmux attach-session -t =名前`を書いた`.command`ファイルをTerminal.appで開くだけです（`TerminalHandoff`が中身を組み、`TerminalHandoffLauncher`がApplication Supportの`handoff/`に書いて開きます）。FinderAI側は手を離さないので、外の窓を閉じてもdetachしても続きます。
+
+- **AppleScriptで`do script`は使いません。** Apple eventsは「FinderAIがTerminalを操作しようとしています」の許可を求め、断られると黙って何も起きません。実行可能な`.command`を開くだけなら許可は要りません。
+- **`-t`には`=`を付けます。** tmuxの`-t`は前方一致で、別のセッションに繋がる失敗は静かに起きます。
+- **tmuxで動いていないセッションは出せません。** PTYはFinderAIが握っていて、外から繋ぐ口がありません。ボタンと右クリックは押せなくなり、ツールチップが「設定で永続化をオンに」と言います。
+
 ### 会話の再開（`--continue` / `resume --last`）
 
 何の続きなのかを押す前に読ませる仕組みは[docs/CONVERSATION_HISTORY.md](docs/CONVERSATION_HISTORY.md)にあります。claudeもcodexも自分の会話を既にディスクへ書いているので、FinderAIは集め直さず読むだけです。

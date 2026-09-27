@@ -410,6 +410,12 @@ extension WorkspaceWindowController: NSSplitViewDelegate {
         terminal.selectAdjacentSession(offset: 1)
     }
 
+    /// ⌃⌘J。いま見ているTerminalセッションをTerminal.appの窓にも出す。
+    /// メニューはレスポンダチェーンでここへ届き、ドロワーへ渡す。
+    @objc func handOffTerminalSession() {
+        terminal.handOffActiveSession()
+    }
+
     @objc func selectPreviousSession() {
         terminal.selectAdjacentSession(offset: -1)
     }
@@ -701,5 +707,14 @@ extension WorkspaceWindowController: NSSplitViewDelegate {
     func windowDidResize(_ notification: Notification) {
         guard terminalExpanded else { return }
         terminalSizeConstraint.constant = clampedTerminalThickness(requestedTerminalThickness)
+    }
+}
+
+extension WorkspaceWindowController: NSMenuItemValidation {
+    /// 「Terminal.appでも開く」は、tmuxで動いているセッションを見ているときだけ。
+    /// 押せない理由はドロワーのボタンと右クリックのツールチップが言う。
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        guard menuItem.action == #selector(handOffTerminalSession) else { return true }
+        return terminal.canHandOffActiveSession
     }
 }
