@@ -52,8 +52,8 @@ final class EdgeTabsController {
         var isHidden = false
         /// この帯が貼り付いている縁。カーソルのいる側へ移るので、画面ごとに違う。
         var edge: WorkspaceScreenEdge = .right
-        /// 縁に手を振り切って呼び戻したときのカーソルの高さ。帯はそこに出て、
-        /// 隠れたあとの取っ手もその高さに残る。`nil`なら画面の縦中央。
+        /// 縁に手を振り切って呼び戻したときに帯を出した高さ。隠れたあとの取っ手も
+        /// その高さに残る。手の高さを中央付近に絞ったもの。`nil`なら画面の縦中央。
         var preferredCenterY: CGFloat?
 
         init(panel: EdgeTabPanel) {
@@ -633,7 +633,8 @@ final class EdgeTabsController {
                 self.scheduleHideStrips()
                 return
             }
-            guard !self.cursorIsOverPanels, !self.isListPresented else { return }
+            guard !self.cursorIsOverPanels, !self.isListPresented,
+                  !self.keepsStripsOut(at: NSEvent.mouseLocation) else { return }
             self.hideStripsIfAutoHiding()
         }
     }
@@ -676,8 +677,9 @@ final class EdgeTabsController {
     /// 狙うことになる。取っ手がモニタの継ぎ目に来ると、カーソルは止まらず隣の
     /// 画面へ抜けるので当たらない——3画面の実機で「左端に当てているのに出ない」
     /// になった。当たり判定は`EdgeTabPlacement.triggerContains`（縁から24pt、
-    /// 画面のどの高さでも。隅だけはホットコーナーに譲る）。出す高さはカーソルに合わせる:
-    /// 手のある場所に出るので、画面の縦中央まで取りに戻らなくてよい。
+    /// 画面のどの高さでも。隅だけはホットコーナーに譲る）。出す高さは手の高さへ
+    /// 寄せるが、中央付近まで（`EdgeTabPlacement.recallCenterY`）。画面の上のほうは
+    /// 窓のボタンを押しに行く場所で、そこに帯が被さると邪魔になる。
     func recallHiddenStrip(at mouse: CGPoint) {
         guard isVisible, autoHide else { return }
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }),
@@ -690,9 +692,12 @@ final class EdgeTabsController {
                   edge: strip.edge,
                   visibleFrame: screen.visibleFrame
               ) else { return }
-        strip.preferredCenterY = mouse.y
-        // 取っ手を先に手の高さへ移してから滑り出す。元の高さから斜めに飛んでくる
-        // より、目の前から出てくるほうが「呼んだから出た」と分かる。
+        strip.preferredCenterY = EdgeTabPlacement.recallCenterY(
+            mouseY: mouse.y,
+            visibleFrame: screen.visibleFrame
+        )
+        // 取っ手を先に出す高さへ移してから滑り出す。元の高さから斜めに飛んでくる
+        // より、真横から出てくるほうが「呼んだから出た」と分かる。
         if let resting = restingFrame(for: strip, on: screen) {
             strip.panel.setFrame(
                 EdgeTabPlacement.hiddenStripFrame(visible: resting, edge: strip.edge),
@@ -710,8 +715,26 @@ final class EdgeTabsController {
     private func settleStrips() {
         guard autoHide, !hideArmed, !isListPresented, !isDraggingFromPopover else { return }
         guard strips.values.contains(where: { !$0.isHidden }) else { return }
-        guard !cursorIsOverPanels else { return }
+        guard !cursorIsOverPanels, !keepsStripsOut(at: NSEvent.mouseLocation) else { return }
         scheduleHideStrips()
+    }
+
+    /// 出ている帯の縁にカーソルが沿っているあいだは、引っ込めない。
+    ///
+    /// 帯は中央付近にしか出ないので、上や下のほうで呼び戻すと、帯は手から離れた
+    /// 高さに出る。縁に沿って帯まで手を運ぶあいだに引っ込めると、縁にいる手が
+    /// すぐまた呼び戻し、帯が出入りを繰り返す。縁から離れてから引っ込める。
+    func keepsStripsOut(at mouse: CGPoint) -> Bool {
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }),
+              let id = screen.displayID,
+              let strip = strips[id], !strip.isHidden,
+              let resting = restingFrame(for: strip, on: screen) else { return false }
+        return EdgeTabPlacement.triggerContains(
+            mouse: mouse,
+            stripFrame: resting,
+            edge: strip.edge,
+            visibleFrame: screen.visibleFrame
+        )
     }
 
     // MARK: - 試験用
