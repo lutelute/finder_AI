@@ -45,8 +45,8 @@ struct EdgeTabsRecallTests {
         controller.recallHiddenStrip(at: CGPoint(x: visible.maxX - 1, y: visible.minY + 200))
         #expect(controller.stripIsHiddenForTesting(on: screen) == true)
 
-        // 取っ手（画面の縦中央）から遠い高さでも、縁に当てれば出る。出る高さは手の高さ。
-        let hand = CGPoint(x: visible.minX + 1, y: visible.minY + 200)
+        // 取っ手（画面の縦中央）から遠い高さでも、縁に近づけば出る。出る高さは手の高さ。
+        let hand = CGPoint(x: visible.minX + 20, y: visible.minY + 200)
         controller.recallHiddenStrip(at: hand)
         #expect(controller.stripIsHiddenForTesting(on: screen) == false)
         let resting = try #require(controller.stripRestingFrameForTesting(on: screen))

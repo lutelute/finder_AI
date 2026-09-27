@@ -295,9 +295,14 @@ public enum EdgeTabPlacement {
         CGFloat(max(rowCount, 1)) * rowHeight + chrome
     }
 
-    /// 縁に触れたと見なす幅。狙って当てられるだけの太さがあり、画面端を素通り
-    /// する動きでは踏まない程度。
-    public static let triggerThickness: CGFloat = 3
+    /// 縁に近づいたと見なす幅。
+    ///
+    /// 3ptで始めたが、それでは縁に「当てて」から出るので、近づく動きの途中では
+    /// 何も起きず、出るのが手の到着より遅れる（実機で「もう少し早めに出てほしい」）。
+    /// 24ptあれば、縁へ向かう途中で帯が滑り出し始め、着いたときには出ている。
+    /// 画面を横切る動きがこの幅を通過することはあるが、見張りの周期（100ms）で
+    /// 拾う確率は低く、拾っても離れれば0.4秒で引っ込む。
+    public static let triggerThickness: CGFloat = 24
 
     /// 隠したときに縁へ残す取っ手の幅。
     public static let handleWidth: CGFloat = 4

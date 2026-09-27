@@ -141,7 +141,7 @@ Info.plistで`public.folder`と`public.item`を受け、`application(_:open:)`�
 
 画面の縁に貼り付く常駐パネル（`EdgeTabsController`）と、そこから開く一覧（`EdgeTabPopoverController`）。座標の計算は`EdgeTabPlacement`（Core、AppKit非依存）に寄せてあります。
 
-- **追加のTCC権限を取りません。** ホバーは`NSTrackingArea`だけで見て、隠れているあいだの呼び戻しは`NSEvent.mouseLocation`の監視（200ms）で行います。縁の3pt以内に手を振り切れば、画面のどの高さでも帯が**その高さに**出ます（`EdgeTabPlacement.triggerContains`。隅8ptはホットコーナーに譲ります）。取っ手（4pt）へのホバーだけに頼っていた版は、取っ手がモニタの継ぎ目に来るとカーソルが止まらず隣の画面へ抜けて当たらず、3画面の実機で「左端に当てているのに出ない」になりました。呼び戻しで出た帯はカーソルの下へ帯のほうが来るので`mouseEntered`が無く、離れても`mouseExited`が来ないことがあります。引っ込める判断も同じ見張りで行います。`addGlobalMonitorForEvents`は入力監視の許可が要ります。縁に透明なトラッキング用パネルを置く手も採りません——画面端の数ptで他アプリのクリック（スクロールバー、ウインドウの縁）を奪うためです。
+- **追加のTCC権限を取りません。** ホバーは`NSTrackingArea`だけで見て、隠れているあいだの呼び戻しは`NSEvent.mouseLocation`の監視（200ms）で行います。縁から24pt以内に近づけば、画面のどの高さでも帯が**その高さに**出ます（3ptでは「当ててから出る」になり、手の到着より遅れました。見張りは100ms）（`EdgeTabPlacement.triggerContains`。隅8ptはホットコーナーに譲ります）。取っ手（4pt）へのホバーだけに頼っていた版は、取っ手がモニタの継ぎ目に来るとカーソルが止まらず隣の画面へ抜けて当たらず、3画面の実機で「左端に当てているのに出ない」になりました。呼び戻しで出た帯はカーソルの下へ帯のほうが来るので`mouseEntered`が無く、離れても`mouseExited`が来ないことがあります。引っ込める判断も同じ見張りで行います。`addGlobalMonitorForEvents`は入力監視の許可が要ります。縁に透明なトラッキング用パネルを置く手も採りません——画面端の数ptで他アプリのクリック（スクロールバー、ウインドウの縁）を奪うためです。
 - **一覧のファイル操作は本体と同じ実装を通ります。** `WorkspaceFileService`、`WorkspaceFileClipboard`、`WorkspaceDragDrop`をそのまま呼ぶので、同名の拒否・Optionコピー・ゴミ箱の扱いがウインドウ側とずれません。
 - **`orderFrontRegardless()`で出します。** このパネルが役に立つのはFinderAIが非アクティブなときで、その状態では`orderFront`も`makeKeyAndOrderFront`もウインドウを前に出しません。「ウインドウは在るのに画面には何も無い」という形で実機でだけ壊れます（1.17系で踏みました）。
 - **背景は`draw`で塗ります。** ボーダーレスパネルの`contentView`にすると、ビュー側で設定したレイヤーの背景色が効かず透明な板になります。縁のタブも同じ理由で`draw`です。

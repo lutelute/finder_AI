@@ -80,7 +80,9 @@ final class EdgeTabsController {
     /// カーソルの見張り。帯をカーソルのいる側へ移すのと、縁に手を振り切ったとき
     /// 隠れた帯を呼び戻すのと、離れた帯を引っ込めるのを、同じ周期で行う。
     private var pointerFollowTask: Task<Void, Never>?
-    private static let pointerPollInterval = Duration.milliseconds(200)
+    /// 200msでは、縁に着いてから帯が出るまでの間が手に分かる。100msなら
+    /// 近づく途中で拾える。見ているのはカーソル座標だけなので、負荷は無い。
+    private static let pointerPollInterval = Duration.milliseconds(100)
     private static let slideDuration = 0.16
     /// ポップアップから何かを掴んでいる最中。掴んだまま土台が消えると置けない。
     private var isDraggingFromPopover = false
@@ -673,8 +675,8 @@ final class EdgeTabsController {
     /// 隠れた帯は4ptの取っ手しか画面に残らず、ホバーだけで出すには取っ手の高さを
     /// 狙うことになる。取っ手がモニタの継ぎ目に来ると、カーソルは止まらず隣の
     /// 画面へ抜けるので当たらない——3画面の実機で「左端に当てているのに出ない」
-    /// になった。当たり判定は`EdgeTabPlacement.triggerContains`（縁3pt、画面の
-    /// どの高さでも。隅だけはホットコーナーに譲る）。出す高さはカーソルに合わせる:
+    /// になった。当たり判定は`EdgeTabPlacement.triggerContains`（縁から24pt、
+    /// 画面のどの高さでも。隅だけはホットコーナーに譲る）。出す高さはカーソルに合わせる:
     /// 手のある場所に出るので、画面の縦中央まで取りに戻らなくてよい。
     func recallHiddenStrip(at mouse: CGPoint) {
         guard isVisible, autoHide else { return }
