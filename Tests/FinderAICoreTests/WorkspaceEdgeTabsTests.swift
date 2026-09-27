@@ -267,6 +267,8 @@ struct EdgeTabPlacementTests {
         }
 
         #expect(hits(screen.maxX - 1, strip.midY))
+        // 縁へ向かう途中で拾う。着いてから出るのでは、手の到着より帯が遅れる。
+        #expect(hits(screen.maxX - 20, strip.midY))
         // 縁から離れれば踏まない。画面を横切るだけの動きで開かないための線。
         #expect(!hits(screen.maxX - 40, strip.midY))
         // 縦は帯の位置に縛られない。縁に手を振り切れば当たる、が要る——帯の前後
