@@ -1124,6 +1124,15 @@ final class WorkspaceAppCoordinator {
         )
         previousSession.keyEquivalentModifierMask = [.command, .option]
         viewMenu.addItem(previousSession)
+        // 外の窓で同じセッションを見たい・打ちたいとき。⌘J系（Terminal）の並びで、
+        // ⌃⌘はこのアプリの⌃⌘A／⌃⌘T／⌃⌘E／⌃⌘Sと同じ組。
+        let handOff = item(
+            "このセッションをTerminal.appでも開く",
+            action: #selector(WorkspaceWindowController.handOffTerminalSession),
+            key: "j"
+        )
+        handOff.keyEquivalentModifierMask = [.command, .control]
+        viewMenu.addItem(handOff)
         // 永続化と出力ログのトグルは設定ウインドウ（⌘,）にある。メニューに残すのは
         // 動作だけで、状態の置き場にはしない。
         // ⌥⌘Tではなく⌘⇧T。⌥⌘TはmacOSが「ツールバーを表示/隠す」用に押さえて
