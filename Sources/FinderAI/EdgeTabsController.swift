@@ -52,6 +52,9 @@ final class EdgeTabsController {
         var isHidden = false
         /// この帯が貼り付いている縁。カーソルのいる側へ移るので、画面ごとに違う。
         var edge: WorkspaceScreenEdge = .right
+        /// 縁に手を振り切って呼び戻したときのカーソルの高さ。帯はそこに出て、
+        /// 隠れたあとの取っ手もその高さに残る。`nil`なら画面の縦中央。
+        var preferredCenterY: CGFloat?
 
         init(panel: EdgeTabPanel) {
             self.panel = panel
@@ -72,9 +75,12 @@ final class EdgeTabsController {
     private var autoHide = false
 
     private var hideTask: Task<Void, Never>?
-    /// カーソルのいる側へ帯を移すための見張り。
+    /// `hideTask`が待っている最中か。見張りの側が二重に仕掛けないための印。
+    private var hideArmed = false
+    /// カーソルの見張り。帯をカーソルのいる側へ移すのと、縁に手を振り切ったとき
+    /// 隠れた帯を呼び戻すのと、離れた帯を引っ込めるのを、同じ周期で行う。
     private var pointerFollowTask: Task<Void, Never>?
-    private static let pointerFollowInterval = Duration.milliseconds(350)
+    private static let pointerPollInterval = Duration.milliseconds(200)
     private static let slideDuration = 0.16
     /// ポップアップから何かを掴んでいる最中。掴んだまま土台が消えると置けない。
     private var isDraggingFromPopover = false
@@ -296,21 +302,23 @@ final class EdgeTabsController {
         pointerFollowTask?.cancel()
         pointerFollowTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: Self.pointerFollowInterval)
+                try? await Task.sleep(for: Self.pointerPollInterval)
                 guard !Task.isCancelled, let self else { return }
-                self.followPointer()
+                let mouse = NSEvent.mouseLocation
+                self.followPointer(mouse)
+                self.recallHiddenStrip(at: mouse)
+                self.settleStrips()
             }
         }
     }
 
-    private func followPointer() {
+    private func followPointer(_ mouse: CGPoint) {
         guard isVisible, preferences.edgeTabsFollowsPointer else { return }
         // 掴んでいる最中と、一覧を開いている最中は動かさない。狙っているものが
         // 反対側へ飛ぶ。
         guard NSEvent.pressedMouseButtons == 0,
               !isDraggingFromPopover,
               !isListPresented else { return }
-        let mouse = NSEvent.mouseLocation
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }),
               let id = screen.displayID,
               let strip = strips[id] else { return }
@@ -511,12 +519,18 @@ final class EdgeTabsController {
         strip.addTab = add
     }
 
-    private func layout(_ strip: Strip, on screen: NSScreen) {
-        guard let resting = EdgeTabPlacement.stripFrame(
+    /// 帯が出ているときの枠。縁に手を振り切って呼び戻したことがあれば、その高さ。
+    private func restingFrame(for strip: Strip, on screen: NSScreen) -> CGRect? {
+        EdgeTabPlacement.stripFrame(
             tabCount: strip.tabs.count + 1 + (strip.addTab == nil ? 0 : 1),
             edge: strip.edge,
-            visibleFrame: screen.visibleFrame
-        ) else {
+            visibleFrame: screen.visibleFrame,
+            preferredCenterY: strip.preferredCenterY
+        )
+    }
+
+    private func layout(_ strip: Strip, on screen: NSScreen) {
+        guard let resting = restingFrame(for: strip, on: screen) else {
             strip.panel.orderOut(nil)
             return
         }
@@ -606,9 +620,13 @@ final class EdgeTabsController {
     /// 離れてしばらくしたら引っ込める。掴んでいる最中と、一覧を覗いている最中は待つ。
     private func scheduleHideStrips() {
         hideTask?.cancel()
+        hideArmed = true
         hideTask = Task { [weak self] in
             try? await Task.sleep(for: Self.closeDelay)
-            guard !Task.isCancelled, let self, self.autoHide else { return }
+            guard !Task.isCancelled, let self else { return }
+            // 起きた時点で印を下ろす。このあと仕掛け直すなら、そちらが立て直す。
+            self.hideArmed = false
+            guard self.autoHide else { return }
             guard NSEvent.pressedMouseButtons == 0, !self.isDraggingFromPopover else {
                 self.scheduleHideStrips()
                 return
@@ -620,11 +638,7 @@ final class EdgeTabsController {
 
     private func slide(_ strip: Strip, on screen: NSScreen, hidden: Bool) {
         guard hidden != strip.isHidden,
-              let resting = EdgeTabPlacement.stripFrame(
-                  tabCount: strip.tabs.count + 1,
-                  edge: strip.edge,
-                  visibleFrame: screen.visibleFrame
-              ) else { return }
+              let resting = restingFrame(for: strip, on: screen) else { return }
         strip.isHidden = hidden
         // 出す位置が変わるので、タブも新しい枠に合わせて置き直す。
         layoutTabs(in: strip, within: resting)
@@ -652,6 +666,65 @@ final class EdgeTabsController {
             guard let id = screen.displayID, let strip = strips[id] else { continue }
             slide(strip, on: screen, hidden: true)
         }
+    }
+
+    /// 縁に手を振り切ったら、隠れている帯をカーソルの高さに出す。
+    ///
+    /// 隠れた帯は4ptの取っ手しか画面に残らず、ホバーだけで出すには取っ手の高さを
+    /// 狙うことになる。取っ手がモニタの継ぎ目に来ると、カーソルは止まらず隣の
+    /// 画面へ抜けるので当たらない——3画面の実機で「左端に当てているのに出ない」
+    /// になった。当たり判定は`EdgeTabPlacement.triggerContains`（縁3pt、画面の
+    /// どの高さでも。隅だけはホットコーナーに譲る）。出す高さはカーソルに合わせる:
+    /// 手のある場所に出るので、画面の縦中央まで取りに戻らなくてよい。
+    func recallHiddenStrip(at mouse: CGPoint) {
+        guard isVisible, autoHide else { return }
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }),
+              let id = screen.displayID,
+              let strip = strips[id], strip.isHidden,
+              let current = restingFrame(for: strip, on: screen),
+              EdgeTabPlacement.triggerContains(
+                  mouse: mouse,
+                  stripFrame: current,
+                  edge: strip.edge,
+                  visibleFrame: screen.visibleFrame
+              ) else { return }
+        strip.preferredCenterY = mouse.y
+        // 取っ手を先に手の高さへ移してから滑り出す。元の高さから斜めに飛んでくる
+        // より、目の前から出てくるほうが「呼んだから出た」と分かる。
+        if let resting = restingFrame(for: strip, on: screen) {
+            strip.panel.setFrame(
+                EdgeTabPlacement.hiddenStripFrame(visible: resting, edge: strip.edge),
+                display: false
+            )
+        }
+        slide(strip, on: screen, hidden: false)
+    }
+
+    /// 出ている帯からカーソルが離れているなら、引っ込める番を仕掛ける。
+    ///
+    /// ホバーで出した帯は`mouseExited`で引っ込むが、呼び戻しで出した帯はカーソル
+    /// の下へ帯のほうが来るので、入った通知が無く、出た通知も来ないことがある。
+    /// 見張りの側でも離れたことを見ておく。
+    private func settleStrips() {
+        guard autoHide, !hideArmed, !isListPresented, !isDraggingFromPopover else { return }
+        guard strips.values.contains(where: { !$0.isHidden }) else { return }
+        guard !cursorIsOverPanels else { return }
+        scheduleHideStrips()
+    }
+
+    // MARK: - 試験用
+
+    func stripIsHiddenForTesting(on screen: NSScreen) -> Bool? {
+        screen.displayID.flatMap { strips[$0]?.isHidden }
+    }
+
+    func stripFrameForTesting(on screen: NSScreen) -> CGRect? {
+        screen.displayID.flatMap { strips[$0]?.panel.frame }
+    }
+
+    func stripRestingFrameForTesting(on screen: NSScreen) -> CGRect? {
+        guard let id = screen.displayID, let strip = strips[id] else { return nil }
+        return restingFrame(for: strip, on: screen)
     }
 
     // MARK: - 一覧の開閉
