@@ -546,37 +546,34 @@ final class EdgeTabsController {
         strip.panel.orderFrontRegardless()
     }
 
+    /// タブを縦に積む。横は縁の側に寄せる。
+    ///
+    /// 隠すときは帯そのものを取っ手の幅まで縮める（画面の外へは出さない）。タブは
+    /// 縁の側に留め具を付けておく——左の縁なら右端、右の縁なら左端。帯が縮む
+    /// アニメーションのあいだ、タブはその留め具に引かれて縁の向こうへ滑り、画面の
+    /// 縁で切り落とされる。帯とタブを別々に動かさないので、ずれて見えることがない。
     private func layoutTabs(in strip: Strip, within resting: CGRect) {
+        let x = EdgeTabPlacement.hiddenContentX(
+            stripWidth: strip.container.bounds.width,
+            contentWidth: EdgeTabPlacement.tabWidth,
+            edge: strip.edge
+        )
+        let anchor: NSView.AutoresizingMask = strip.edge == .left ? [.minXMargin] : [.maxXMargin]
         var y = resting.height
-        if let windowsTab = strip.windowsTab {
+        func place(_ view: NSView) {
             y -= EdgeTabPlacement.tabHeight
-            windowsTab.frame = NSRect(
-                x: 0,
+            view.autoresizingMask = anchor
+            view.frame = NSRect(
+                x: x,
                 y: y,
                 width: EdgeTabPlacement.tabWidth,
                 height: EdgeTabPlacement.tabHeight
             )
             y -= EdgeTabPlacement.tabSpacing
         }
-        for tab in strip.tabs {
-            y -= EdgeTabPlacement.tabHeight
-            tab.frame = NSRect(
-                x: 0,
-                y: y,
-                width: EdgeTabPlacement.tabWidth,
-                height: EdgeTabPlacement.tabHeight
-            )
-            y -= EdgeTabPlacement.tabSpacing
-        }
-        if let addTab = strip.addTab {
-            y -= EdgeTabPlacement.tabHeight
-            addTab.frame = NSRect(
-                x: 0,
-                y: y,
-                width: EdgeTabPlacement.tabWidth,
-                height: EdgeTabPlacement.tabHeight
-            )
-        }
+        if let windowsTab = strip.windowsTab { place(windowsTab) }
+        strip.tabs.forEach(place)
+        if let addTab = strip.addTab { place(addTab) }
     }
 
     /// ウインドウの配置を描き直す。増減や移動のたびに呼ばれる。
@@ -651,7 +648,9 @@ final class EdgeTabsController {
         strip.panel.orderFrontRegardless()
         NSAnimationContext.runAnimationGroup { context in
             context.duration = Self.slideDuration
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            // 出すときは減速して止まり、隠すときは加速して去る。同じ曲線で往復すると、
+            // 引っ込むときに縁の手前でもたついて見える。
+            context.timingFunction = CAMediaTimingFunction(name: hidden ? .easeIn : .easeOut)
             strip.panel.animator().setFrame(target, display: true)
         }
     }

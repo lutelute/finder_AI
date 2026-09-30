@@ -329,15 +329,32 @@ public enum EdgeTabPlacement {
     ///
     /// 4pt見えていれば狙える。狙えるなら、マウス座標の監視も追随もいらない——
     /// 取っ手に触れたかどうかは、ふつうのトラッキングで分かる。
+    ///
+    /// **帯は自分の画面から出さない。** 取っ手の幅まで縮めて縁に置き、中身（タブ）は
+    /// 幅を保ったまま縁の向こうへ押し出して切り落とす（`hiddenContentX`）。帯ごと
+    /// 画面の外へずらしていた頃は、縁の向こうに別のモニタがあると、隠れたはずの帯が
+    /// そちらに丸ごと見え、出し入れのたびに横切るのが見えた（3画面の実機、
+    /// 超ワイドの左端の継ぎ目で）。
     public static func hiddenStripFrame(
         visible: CGRect,
         edge: WorkspaceScreenEdge
     ) -> CGRect {
         var frame = visible
-        frame.origin.x = edge == .right
-            ? visible.maxX - handleWidth
-            : visible.minX - visible.width + handleWidth
+        frame.size.width = handleWidth
+        frame.origin.x = edge == .right ? visible.maxX - handleWidth : visible.minX
         return frame
+    }
+
+    /// 帯の中身を置く横の位置。縁の側に寄せて、帯が縮んだぶんだけ縁の向こうへ出す。
+    ///
+    /// 左の縁ではタブの右端が、右の縁では左端が取っ手として残る。出ているとき
+    /// （帯の幅＝タブの幅）はどちらも0。
+    public static func hiddenContentX(
+        stripWidth: CGFloat,
+        contentWidth: CGFloat,
+        edge: WorkspaceScreenEdge
+    ) -> CGFloat {
+        edge == .left ? stripWidth - contentWidth : 0
     }
 
     /// 隠れた帯を呼び戻す当たり判定。

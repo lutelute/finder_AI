@@ -214,10 +214,11 @@ struct EdgeTabPlacementTests {
             visibleFrame: screen
         ))
         let hiddenRight = EdgeTabPlacement.hiddenStripFrame(visible: right, edge: .right)
-        #expect(hiddenRight.size == right.size)
+        #expect(hiddenRight.height == right.height)
         #expect(hiddenRight.minY == right.minY)
         // 画面に残るのは取っ手のぶんだけ。
-        #expect(screen.maxX - hiddenRight.minX == EdgeTabPlacement.handleWidth)
+        #expect(hiddenRight.width == EdgeTabPlacement.handleWidth)
+        #expect(hiddenRight.maxX == screen.maxX)
 
         let left = try #require(EdgeTabPlacement.stripFrame(
             tabCount: 3,
@@ -225,7 +226,33 @@ struct EdgeTabPlacementTests {
             visibleFrame: screen
         ))
         let hiddenLeft = EdgeTabPlacement.hiddenStripFrame(visible: left, edge: .left)
-        #expect(hiddenLeft.maxX - screen.minX == EdgeTabPlacement.handleWidth)
+        #expect(hiddenLeft.width == EdgeTabPlacement.handleWidth)
+        #expect(hiddenLeft.minX == screen.minX)
+    }
+
+    /// 縁の向こうに別のモニタがあると、画面の外へずらした帯はそちらに見えてしまう。
+    /// 隠れた帯も、出し入れの途中も、自分の画面の中に収まっていること。
+    @Test("the hidden strip never leaves its own screen")
+    func hiddenStripStaysOnItsScreen() throws {
+        for edge in [WorkspaceScreenEdge.left, .right] {
+            let visible = try #require(EdgeTabPlacement.stripFrame(
+                tabCount: 3,
+                edge: edge,
+                visibleFrame: screen
+            ))
+            let hidden = EdgeTabPlacement.hiddenStripFrame(visible: visible, edge: edge)
+            #expect(hidden.minX >= screen.minX && hidden.maxX <= screen.maxX, "\(edge)")
+        }
+    }
+
+    /// 中身は縁の側に寄せる。左の縁ならタブの右端4ptが残り、出ているときは0。
+    @Test("tabs are pushed past the edge, leaving their inner side as the handle")
+    func hiddenContentPlacement() {
+        let tab = EdgeTabPlacement.tabWidth
+        let handle = EdgeTabPlacement.handleWidth
+        #expect(EdgeTabPlacement.hiddenContentX(stripWidth: handle, contentWidth: tab, edge: .left) == handle - tab)
+        #expect(EdgeTabPlacement.hiddenContentX(stripWidth: tab, contentWidth: tab, edge: .left) == 0)
+        #expect(EdgeTabPlacement.hiddenContentX(stripWidth: handle, contentWidth: tab, edge: .right) == 0)
     }
 
     /// 呼び出す高さを指定できる。指定しなければ画面の中央。
