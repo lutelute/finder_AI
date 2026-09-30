@@ -903,8 +903,11 @@ final class WorkspaceBrowserViewController: NSViewController {
     /// サイドバーで、そのフォルダが何行目か。
     func sidebarRowForTesting(named name: String) -> Int? {
         sidebarRows.indices.first { row in
-            if case .item(let item) = sidebarRows[row] { return item.url.lastPathComponent == name }
-            return false
+            switch sidebarRows[row] {
+            case .item(let item): return item.url.lastPathComponent == name
+            case .place(let place, _): return place.name == name
+            default: return false
+            }
         }
     }
     /// いま一覧に出ているもの。読み込みは非同期なので、待つ側が見るため。
@@ -2439,6 +2442,7 @@ final class WorkspaceBrowserViewController: NSViewController {
                 if mountPoint != navigator.currentDirectory { navigate(to: mountPoint) }
                 return
             }
+            let origin = navigator.currentDirectory
             NetworkPlaceConnector.shared.connect(place) { [weak self] connection in
                 guard let self else { return }
                 if let connection {
@@ -2451,6 +2455,8 @@ final class WorkspaceBrowserViewController: NSViewController {
                         }
                     }
                     self.loadSidebarSources()
+                    // 繋いでいるあいだに別の場所へ移っていたら、引き戻さない。
+                    guard self.navigator.currentDirectory == origin else { return }
                     self.navigate(to: connection.mountPoint)
                     return
                 }
@@ -2472,6 +2478,12 @@ final class WorkspaceBrowserViewController: NSViewController {
     }
 
     private func openServerView(_ place: NetworkPlace) {
+        // もうそのサーバーを見ているなら開き直さない。サイドバーは今いる場所の行を
+        // 選び直すので、それを「押した」と受け取ると、開く→移る→選び直す→開く…と
+        // 4秒おきに繰り返した（実機で起きた）。
+        let folder = NetworkServerFolder.folder(for: place).standardizedFileURL
+        guard navigator.currentDirectory.standardizedFileURL.path != folder.path else { return }
+        let origin = navigator.currentDirectory
         NetworkPlaceConnector.shared.openServer(place) { [weak self] view in
             guard let self else { return }
             guard let view else {
@@ -2492,6 +2504,8 @@ final class WorkspaceBrowserViewController: NSViewController {
             }
             if changed { self.preferences.networkPlaces = places }
             self.loadSidebarSources()
+            // つないでいるあいだに別の場所へ移っていたら、引き戻さない。
+            guard self.navigator.currentDirectory == origin else { return }
             self.navigate(to: view.folder)
         }
     }
@@ -2739,8 +2753,10 @@ final class WorkspaceBrowserViewController: NSViewController {
                     : finderFavorites,
                 cloud: cloud,
                 volumes: unregisteredVolumes,
-                frequent: log.frequent(limit: 5, excluding: claimed),
-                recent: log.recent(limit: 5, excluding: claimed)
+                // サーバーのフォルダはネットワークの行から開くもの。「よく使う」「最近」に
+                // 重ねない（名前も`<ID>`の下で読めない）。
+                frequent: log.frequent(limit: 5, excluding: claimed).filter { !Self.isServerFolder($0) },
+                recent: log.recent(limit: 5, excluding: claimed).filter { !Self.isServerFolder($0) }
             ),
             home: Self.homeDirectory
         )
@@ -2765,6 +2781,10 @@ final class WorkspaceBrowserViewController: NSViewController {
         sidebarRows = rows
         sidebarTable.reloadData()
         updateSidebarSelection()
+    }
+
+    private static func isServerFolder(_ url: URL) -> Bool {
+        url.standardizedFileURL.path.hasPrefix(NetworkServerFolder.defaultBase.standardizedFileURL.path + "/")
     }
 
     /// サーバーの行の状態。そのサーバーへのsshが開いていれば「繋がっている」。
