@@ -68,7 +68,8 @@ public enum TerminalLaunchPlanner {
         directoryPath: String,
         resumesConversation: ConversationResume? = nil,
         role: String? = nil,
-        target: String? = nil
+        target: String? = nil,
+        sshHostOverride: String? = nil
     ) -> Plan? {
         let base: Plan
         switch kind {
@@ -79,9 +80,12 @@ public enum TerminalLaunchPlanner {
                   let target = target.flatMap(NetworkPlaceAddress.normalizedServer) else { return nil }
             // 宛先とsshの場所はscriptに埋めず、位置引数で渡す。引用の誤りで
             // 宛先がシェルの文として読まれる余地を残さない。
+            // ふだんの住所に届かないときは、Tailscaleの住所へ繋ぐ先だけを差し替える
+            // （`-o HostName=`）。別名に書いたユーザー名・鍵・踏み台はそのまま効く。
+            let override = sshHostOverride.flatMap { TailscaleRoute.isUsableAddress($0) ? $0 : nil } ?? ""
             base = Plan(
                 executable: "/bin/sh",
-                arguments: ["-c", sshHoldScript, "finderai-ssh", commandURL.path, target]
+                arguments: ["-c", sshHoldScript, "finderai-ssh", commandURL.path, target, override]
             )
         case .codex, .claude:
             guard let commandURL else { return nil }
@@ -151,7 +155,9 @@ public enum TerminalLaunchPlanner {
     /// 名前が引けない・鍵が通らないといった失敗は、sshが1行言って即座に終わる。
     /// 終わったセッションはタブから片付くので、押した人には「タブが一瞬出て
     /// 消えた」としか見えず、理由が読めない。`exit`で抜けたとき（0）はそのまま閉じる。
-    public static let sshHoldScript = #""$1" "$2"; status=$?; "#
+    public static let sshHoldScript = #"if [ -n "$3" ]; then "#
+        + #"printf '[FinderAI] ふだんの経路に届かないので、Tailscale（%s）で繋ぎます。\n' "$3"; "#
+        + #""$1" -o "HostName=$3" "$2"; else "$1" "$2"; fi; status=$?; "#
         + #"if [ "$status" -ne 0 ]; then "#
         + #"printf '\n[FinderAI] sshが終了しました（終了コード %s）。Enterで閉じます。' "$status"; "#
         + #"read -r _; fi; exit "$status""#

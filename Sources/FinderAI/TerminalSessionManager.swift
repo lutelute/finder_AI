@@ -326,6 +326,7 @@ final class TerminalSessionManager: TerminalSessionManaging {
             kind: kind,
             directoryURL: directoryURL,
             target: nil,
+            routeHost: nil,
             resumingConversation: resumingConversation
         )
     }
@@ -334,11 +335,12 @@ final class TerminalSessionManager: TerminalSessionManaging {
     ///
     /// タブの名前は台帳に書かない。サイドバーで登録名を変えたらタブも変わって
     /// ほしいので、ドロワーが描くたびに登録から引く。
-    func openServerSession(target: String) throws -> any ManagedTerminalSession {
+    func openServerSession(target: String, routeHost: String?) throws -> any ManagedTerminalSession {
         try create(
             kind: .ssh,
             directoryURL: FileManager.default.homeDirectoryForCurrentUser,
             target: target,
+            routeHost: routeHost,
             resumingConversation: nil
         )
     }
@@ -351,6 +353,7 @@ final class TerminalSessionManager: TerminalSessionManaging {
         kind: TerminalSessionKind,
         directoryURL: URL,
         target: String?,
+        routeHost: String?,
         resumingConversation: ConversationResume?
     ) throws -> any ManagedTerminalSession {
         let key = TerminalSessionKey(directoryURL: directoryURL, kind: kind, target: target)
@@ -393,6 +396,7 @@ final class TerminalSessionManager: TerminalSessionManaging {
             directoryURL: directoryURL,
             kind: kind,
             target: target,
+            sshHostOverride: routeHost,
             executableURL: executableURL,
             persistence: persistence,
             resumesConversation: resumingConversation,

@@ -144,7 +144,8 @@ final class TerminalSession: NSObject, @preconcurrency LocalProcessTerminalViewD
         logsOutput: Bool,
         resumesConversation: ConversationResume? = nil,
         role: String? = nil,
-        target: String? = nil
+        target: String? = nil,
+        sshHostOverride: String? = nil
     ) throws {
         self.directoryURL = directoryURL.standardizedFileURL
         self.kind = kind
@@ -160,7 +161,8 @@ final class TerminalSession: NSObject, @preconcurrency LocalProcessTerminalViewD
             directoryPath: self.directoryURL.path,
             resumesConversation: resumesConversation,
             role: role,
-            target: target
+            target: target,
+            sshHostOverride: sshHostOverride
         ) else {
             throw SessionCreationError.executableNotFound(kind.displayName)
         }

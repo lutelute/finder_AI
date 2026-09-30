@@ -59,10 +59,12 @@ protocol TerminalSessionBuilding {
         role: String?
     ) throws -> any ManagedTerminalSession
     /// sshの宛先付き。宛先を持たないセッションはどちらを呼んでも同じ。
+    /// `sshHostOverride`は、ふだんの住所に届かないときに繋ぐTailscaleの住所。
     func makeSession(
         directoryURL: URL,
         kind: TerminalSessionKind,
         target: String?,
+        sshHostOverride: String?,
         executableURL: URL?,
         persistence: TerminalSessionPersistence?,
         resumesConversation: ConversationResume?,
@@ -76,6 +78,7 @@ extension TerminalSessionBuilding {
         directoryURL: URL,
         kind: TerminalSessionKind,
         target: String?,
+        sshHostOverride: String?,
         executableURL: URL?,
         persistence: TerminalSessionPersistence?,
         resumesConversation: ConversationResume?,
@@ -179,14 +182,19 @@ protocol TerminalSessionManaging: AnyObject {
     func forgetSessionRecord(id: UUID)
     func shutdownOwnedProcesses()
     /// 登録したサーバーへのssh。宛先ごとに1本で、あればそれを前に出す。
-    func openServerSession(target: String) throws -> any ManagedTerminalSession
+    /// `routeHost`があれば、繋ぐ先をそこへ差し替える（Tailscaleへの回り込み）。
+    func openServerSession(target: String, routeHost: String?) throws -> any ManagedTerminalSession
     /// その宛先へのsshセッション（表示・非表示を問わず）。
     func serverSession(target: String) -> (any ManagedTerminalSession)?
 }
 
 extension TerminalSessionManaging {
-    func openServerSession(target: String) throws -> any ManagedTerminalSession {
+    func openServerSession(target: String, routeHost: String?) throws -> any ManagedTerminalSession {
         throw SessionCreationError.executableNotFound(TerminalSessionKind.ssh.displayName)
+    }
+
+    func openServerSession(target: String) throws -> any ManagedTerminalSession {
+        try openServerSession(target: target, routeHost: nil)
     }
 
     func serverSession(target: String) -> (any ManagedTerminalSession)? { nil }
@@ -217,6 +225,7 @@ struct SwiftTermSessionBuilder: TerminalSessionBuilding {
             directoryURL: directoryURL,
             kind: kind,
             target: nil,
+            sshHostOverride: nil,
             executableURL: executableURL,
             persistence: persistence,
             resumesConversation: resumesConversation,
@@ -228,6 +237,7 @@ struct SwiftTermSessionBuilder: TerminalSessionBuilding {
         directoryURL: URL,
         kind: TerminalSessionKind,
         target: String?,
+        sshHostOverride: String?,
         executableURL: URL?,
         persistence: TerminalSessionPersistence?,
         resumesConversation: ConversationResume?,
@@ -242,7 +252,8 @@ struct SwiftTermSessionBuilder: TerminalSessionBuilding {
             logsOutput: preferences.sessionLogging,
             resumesConversation: resumesConversation,
             role: role,
-            target: target
+            target: target,
+            sshHostOverride: sshHostOverride
         )
     }
 }

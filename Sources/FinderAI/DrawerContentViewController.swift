@@ -1196,10 +1196,23 @@ final class DrawerContentViewController: NSViewController {
     }
 
     /// サイドバーのサーバーの行から。フォルダとは関係なく、宛先ごとに1本。
+    ///
+    /// まだ開いていなければ、先に繋ぐ先を見極める（ふだんの住所に届かなければ
+    /// Tailscaleへ回り込む）。開いていればそのタブへ移るだけで、当たり直さない。
     func startServerSession(_ place: NetworkPlace) {
         guard place.kind == .server else { return }
+        if sessionManager.serverSession(target: place.address) != nil {
+            openServerSession(place, routeHost: nil)
+            return
+        }
+        NetworkPlaceConnector.shared.sshRoute(for: place) { [weak self] routeHost in
+            self?.openServerSession(place, routeHost: routeHost)
+        }
+    }
+
+    private func openServerSession(_ place: NetworkPlace, routeHost: String?) {
         do {
-            let session = try sessionManager.openServerSession(target: place.address)
+            let session = try sessionManager.openServerSession(target: place.address, routeHost: routeHost)
             reloadSessions(prefer: session, takesOverMountedElsewhere: true)
             if !expanded { onToggle?() }
             view.window?.makeFirstResponder(session.contentView)

@@ -84,6 +84,7 @@ File Providerや保護フォルダのmetadata問い合わせがAppKit起動を�
 - **繋ぐのは`NetworkPlaceConnector`（アプリに1つ）。** まず相手のポート（SMBは445）へTCPで5秒だけ当たり、届いたら`NetFSMountURLAsync`にUIを許して渡します。認証ダイアログとキーチェーン保存はmacOSの別プロセスが出すので、FinderAIはパスワードに触りません。探りを入れているのは、届かない相手にNetFSが数十秒黙るからです。「繋いでいる最中」「届かなかった」はコネクタが持ち、`networkPlacesDidChange`で全部の窓のサイドバーへ配ります。
 - **SSHは`TerminalSessionKind.ssh`です。** 宛先は`TerminalSessionKey.target`に入り、同じホームで開く2台ぶんのsshが別のセッションになります。tmuxの名前は宛先があるときだけハッシュの材料に足します（無いセッションの名前を変えると、走っているtmuxへ繋ぎ直せなくなる）。`sessions(for:)`はsshを返しません——ホームへ移るたびにsshのタブが前へ出て、ホームに「動いている」の印が付くのを防ぐためです。cdの追従はもともとShellだけなので、sshには何も送りません。タブの名前は台帳に書かず、描くたびにサイドバーの登録名から引きます。
 - 宛先が`-`で始まるものは登録でも起動の組み立て（`TerminalLaunchPlanner`）でも断ります。sshのオプションとして読まれるためです。
+- **Tailscaleへの回り込み。** ふだんの住所に2.5秒当たって届かなければ、`tailscale status --json`の`Peer`から名前（`HostName`／`DNSName`の頭。`pws-nas03.local`→`pws-nas03`）で同じ機械を探します（`TailscaleRoute`）。IPでは照合しません——Tailscaleの一覧は相手のLANのIPを出さないからです。Tailscaleが「繋がっている」と言う相手には当たりに行かず、そのまま使います。中継（DERP）越しの最初の1回は応答まで数秒かかることがあり、5秒の探りが空振りした実測があるためです。共有はホストを差し替えたURLでマウントし、使った住所を登録（`tailscaleAddress`）に覚えます——マウントの戻り先がTailscaleの住所になるので、覚えないと登録と突き合わせられず「未接続」に見えます。SSHは`ssh -G`で別名の実際の繋ぎ先を読んでから当たり、回り込むときは`-o HostName=`で繋ぐ先だけを差し替えます。
 
 ## グループ
 

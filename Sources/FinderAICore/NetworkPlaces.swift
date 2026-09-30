@@ -18,12 +18,23 @@ public struct NetworkPlace: Codable, Equatable, Identifiable, Sendable {
     public var name: String
     /// 共有は正規化したURLの文字列、サーバーはsshへそのまま渡す宛先。
     public var address: String
+    /// ふだんの住所に届かずTailscaleで繋いだとき、使ったTailscaleの住所。
+    /// マウントの戻り先がこの住所になるので、突き合わせに要る。無かった頃の登録も
+    /// 読めるよう省略可能。
+    public var tailscaleAddress: String?
 
-    public init(id: UUID = UUID(), kind: Kind, name: String, address: String) {
+    public init(id: UUID = UUID(), kind: Kind, name: String, address: String, tailscaleAddress: String? = nil) {
         self.id = id
         self.kind = kind
         self.name = name
         self.address = address
+        self.tailscaleAddress = tailscaleAddress
+    }
+
+    /// Tailscaleの住所に差し替えた共有のURL。
+    public var tailscaleShareURL: URL? {
+        guard let url = shareURL, let tailscaleAddress else { return nil }
+        return NetworkPlaceAddress.replacingHost(of: url, with: tailscaleAddress)
     }
 
     /// 共有のURL。サーバーや壊れた値ではnil。
@@ -73,6 +84,15 @@ public struct NetworkPlaces: Equatable, Sendable {
     public mutating func remove(id: UUID) -> Bool {
         guard let index = all.firstIndex(where: { $0.id == id }) else { return false }
         all.remove(at: index)
+        return true
+    }
+
+    /// Tailscaleで繋いだ住所を覚える。同じなら何もしない。
+    @discardableResult
+    public mutating func setTailscaleAddress(id: UUID, to address: String?) -> Bool {
+        guard let index = all.firstIndex(where: { $0.id == id }),
+              all[index].tailscaleAddress != address else { return false }
+        all[index].tailscaleAddress = address
         return true
     }
 
@@ -192,13 +212,20 @@ public enum NetworkPlaceAddress {
         return "\(host)/\(share)"
     }
 
+    /// URLのホストだけを差し替える（`smb://pws-nas03.local/share`→`smb://100.102.148.23/share`）。
+    public static func replacingHost(of url: URL, with host: String) -> URL? {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        components.host = host
+        return components.url
+    }
+
     static func hostLabel(_ host: String) -> String {
         let trimmed = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
         if isIPAddress(trimmed) { return trimmed }
         return trimmed.split(separator: ".").first.map(String.init) ?? trimmed
     }
 
-    static func isIPAddress(_ host: String) -> Bool {
+    public static func isIPAddress(_ host: String) -> Bool {
         if host.contains(":") { return true }
         let parts = host.split(separator: ".", omittingEmptySubsequences: false)
         return parts.count == 4 && parts.allSatisfy { part in
@@ -253,10 +280,20 @@ public enum NetworkShareMatching {
         }
     }
 
-    /// 登録したものがマウントされていれば、そのマウント先。
+    /// 登録したものがマウントされていれば、そのマウント先。Tailscaleで繋いだ
+    /// もの（戻り先がTailscaleの住所）も同じ登録として拾う。
     public static func mountPoint(for place: NetworkPlace, in mounts: [MountedShare]) -> URL? {
-        guard let url = place.shareURL else { return nil }
-        return mounts.first { matches(registered: url, mounted: $0.remountURL) }?.mountPoint
+        let candidates = [place.shareURL, place.tailscaleShareURL].compactMap { $0 }
+        return mounts.first { mount in
+            candidates.contains { matches(registered: $0, mounted: mount.remountURL) }
+        }?.mountPoint
+    }
+
+    /// そのマウントがTailscaleの住所で繋がっているか。
+    public static func isViaTailscale(_ place: NetworkPlace, mountPoint: URL, in mounts: [MountedShare]) -> Bool {
+        guard let tailscale = place.tailscaleShareURL,
+              let mount = mounts.first(where: { $0.mountPoint.path == mountPoint.path }) else { return false }
+        return matches(registered: tailscale, mounted: mount.remountURL)
     }
 
     private static func sameScheme(_ lhs: URL, _ rhs: URL) -> Bool {
@@ -275,7 +312,7 @@ public enum NetworkShareMatching {
 
     /// `pws-nas03._smb._tcp.local`（Finderのネットワーク欄から繋ぐとこうなる）も
     /// `PWS-NAS03.local.`も`pws-nas03`に揃える。
-    static func canonicalHost(_ host: String) -> String {
+    public static func canonicalHost(_ host: String) -> String {
         var value = (host.removingPercentEncoding ?? host).lowercased()
         if let service = value.range(of: "._") {
             value = String(value[..<service.lowerBound])

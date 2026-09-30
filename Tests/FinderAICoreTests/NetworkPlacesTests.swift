@@ -214,3 +214,114 @@ struct SSHConfigHostsTests {
         #expect(SSHConfigHosts.aliases(at: URL(fileURLWithPath: "/nonexistent/ssh_config")).isEmpty)
     }
 }
+
+@Suite("Tailscale fallback")
+struct TailscaleRouteTests {
+    private let status = Data(#"""
+    {
+      "Self": {"HostName": "macbook-pro"},
+      "Peer": {
+        "a": {"HostName": "pws-nas03", "DNSName": "pws-nas03.taile5b55a.ts.net.",
+              "TailscaleIPs": ["100.102.148.23", "fd7a:115c:a1e0::c439:9417"], "Online": true},
+        "b": {"HostName": "pws-gpu3060", "DNSName": "pws-gpu3060.taile5b55a.ts.net.",
+              "TailscaleIPs": ["100.117.16.18"], "Online": true},
+        "c": {"HostName": "DESKTOP-5MB0GO4", "DNSName": "desktop-5mb0go4.taile5b55a.ts.net.",
+              "TailscaleIPs": ["100.77.235.82"], "Online": false},
+        "d": {"HostName": "funnel-ingress-node", "TailscaleIPs": ["fd7a:115c:a1e0::a801:26ab"], "Online": true}
+      }
+    }
+    """#.utf8)
+
+    @Test("tailscale status --json から相手を読む")
+    func parsesPeers() {
+        let peers = TailscaleRoute.peers(fromStatusJSON: status)
+        #expect(peers.count == 4)
+        let nas = peers.first { $0.hostName == "pws-nas03" }
+        #expect(nas?.preferredAddress == "100.102.148.23")
+        #expect(nas?.isOnline == true)
+        #expect(TailscaleRoute.peers(fromStatusJSON: Data("not json".utf8)).isEmpty)
+    }
+
+    @Test("ふだんの住所の名前（.local、sshの別名、user@host）から同じ機械を探す")
+    func matchesByName() {
+        let peers = TailscaleRoute.peers(fromStatusJSON: status)
+        #expect(TailscaleRoute.peer(matching: ["pws-nas03.local"], in: peers)?.preferredAddress == "100.102.148.23")
+        #expect(TailscaleRoute.peer(matching: ["PWS-NAS03._smb._tcp.local"], in: peers)?.hostName == "pws-nas03")
+        #expect(TailscaleRoute.peer(matching: ["pws-gpu3060", "10.0.70.81"], in: peers)?.preferredAddress == "100.117.16.18")
+        #expect(TailscaleRoute.peer(matching: ["ubuntu@pws-gpu3060"], in: peers)?.hostName == "pws-gpu3060")
+        #expect(TailscaleRoute.peer(matching: ["smb://pws-nas03.local/share"], in: peers)?.hostName == "pws-nas03")
+    }
+
+    /// IPアドレスは名前ではないので探せない。止まっている相手には回らない。
+    @Test("IPだけの登録と、止まっている相手には回らない")
+    func refusesIPsAndOfflinePeers() {
+        let peers = TailscaleRoute.peers(fromStatusJSON: status)
+        #expect(TailscaleRoute.peer(matching: ["10.0.70.189"], in: peers) == nil)
+        #expect(TailscaleRoute.peer(matching: ["desktop-5mb0go4"], in: peers) == nil)
+        #expect(TailscaleRoute.peer(matching: ["pws-nas04.local"], in: peers) == nil)
+    }
+
+    @Test("住所として差し込んでよい形か")
+    func usableAddress() {
+        #expect(TailscaleRoute.isUsableAddress("100.102.148.23"))
+        #expect(TailscaleRoute.isUsableAddress("fd7a:115c:a1e0::c439:9417"))
+        #expect(TailscaleRoute.isUsableAddress("pws-nas03.taile5b55a.ts.net"))
+        #expect(!TailscaleRoute.isUsableAddress("-oProxyCommand=x"))
+        #expect(!TailscaleRoute.isUsableAddress("1.2.3.4; rm"))
+        #expect(!TailscaleRoute.isUsableAddress(""))
+    }
+
+    @Test("ssh -G の出力から実際の繋ぎ先を読む")
+    func readsSSHG() {
+        let output = "user ubuntu\nhostname 10.0.70.81\nport 2222\nidentityfile ~/.ssh/id_ed25519\n"
+        let resolved = SSHResolvedConfig.hostAndPort(fromSSHG: output)
+        #expect(resolved?.host == "10.0.70.81")
+        #expect(resolved?.port == 2222)
+        #expect(SSHResolvedConfig.hostAndPort(fromSSHG: "hostname pws-pgx1\n")?.port == 22)
+        #expect(SSHResolvedConfig.hostAndPort(fromSSHG: "") == nil)
+    }
+
+    /// Tailscaleで繋ぐと、マウントの戻り先はTailscaleの住所になる。それも同じ登録。
+    @Test("Tailscaleで繋いだマウントも、登録と突き合わせられる")
+    func matchesMountsMadeViaTailscale() throws {
+        let place = NetworkPlace(
+            kind: .share, name: "nas03", address: "smb://pws-nas03.local/share",
+            tailscaleAddress: "100.102.148.23"
+        )
+        let mounts = [MountedShare(
+            mountPoint: URL(fileURLWithPath: "/Volumes/share", isDirectory: true),
+            remountURL: try #require(URL(string: "smb://pwslab@100.102.148.23/share"))
+        )]
+        #expect(place.tailscaleShareURL?.absoluteString == "smb://100.102.148.23/share")
+        let mountPoint = try #require(NetworkShareMatching.mountPoint(for: place, in: mounts))
+        #expect(NetworkShareMatching.isViaTailscale(place, mountPoint: mountPoint, in: mounts))
+
+        var unknown = place
+        unknown.tailscaleAddress = nil
+        #expect(NetworkShareMatching.mountPoint(for: unknown, in: mounts) == nil)
+    }
+
+    @Test("Tailscaleの住所を覚える。同じなら変えない。古い登録も読める")
+    func remembersTailscaleAddress() throws {
+        let place = NetworkPlace(kind: .share, name: "nas03", address: "smb://pws-nas03.local")
+        var places = NetworkPlaces([place])
+        do { let changed = places.setTailscaleAddress(id: place.id, to: "100.102.148.23"); #expect(changed) }
+        do { let changed = places.setTailscaleAddress(id: place.id, to: "100.102.148.23"); #expect(!changed) }
+        #expect(places.place(id: place.id)?.tailscaleAddress == "100.102.148.23")
+
+        let old = Data(#"[{"id":"A5140812-4FBA-4B67-96C0-9A7E6B0C4CCA","kind":"share","address":"smb://pws-nas03.local","name":"pws-nas03"}]"#.utf8)
+        let decoded = try JSONDecoder().decode([NetworkPlace].self, from: old)
+        #expect(decoded.first?.tailscaleAddress == nil)
+        #expect(decoded.first?.name == "pws-nas03")
+    }
+}
+
+@Suite("Tailscale fallback — stopped peers")
+struct TailscaleOfflinePeerTests {
+    @Test("止まっている相手は、言い分けるときだけ見つける")
+    func offlineOnlyWhenAsked() {
+        let peers = [TailscalePeer(hostName: "pws-gpu", dnsName: "", addresses: ["100.1.2.3"], isOnline: false)]
+        #expect(TailscaleRoute.peer(matching: ["pws-gpu"], in: peers) == nil)
+        #expect(TailscaleRoute.peer(matching: ["pws-gpu"], in: peers, includeOffline: true)?.hostName == "pws-gpu")
+    }
+}

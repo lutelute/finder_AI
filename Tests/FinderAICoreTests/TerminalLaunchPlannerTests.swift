@@ -278,7 +278,7 @@ struct SSHLaunchPlannerTests {
         )
         #expect(plan?.executable == "/bin/sh")
         #expect(plan?.arguments.first == "-c")
-        #expect(plan?.arguments.suffix(2) == ["/usr/bin/ssh", "ubuntu@100.117.16.18"])
+        #expect(plan?.arguments.suffix(3) == ["/usr/bin/ssh", "ubuntu@100.117.16.18", ""])
         #expect(plan?.arguments.dropFirst().first?.contains("100.117.16.18") == false)
     }
 
@@ -288,7 +288,7 @@ struct SSHLaunchPlannerTests {
         func run(_ command: String) throws -> (status: Int32, output: String) {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/sh")
-            process.arguments = ["-c", TerminalLaunchPlanner.sshHoldScript, "finderai-ssh", command, "target"]
+            process.arguments = ["-c", TerminalLaunchPlanner.sshHoldScript, "finderai-ssh", command, "target", ""]
             let output = Pipe()
             process.standardOutput = output
             process.standardInput = FileHandle.nullDevice
@@ -319,6 +319,38 @@ struct SSHLaunchPlannerTests {
             kind: .ssh, commandURL: nil, persistence: nil, directoryPath: "/tmp",
             target: "pws-gpu3060"
         ) == nil)
+    }
+
+    /// 別名の設定（ユーザー名・鍵）を残したまま、繋ぐ先だけTailscaleへ差し替える。
+    @Test("届かないときはTailscaleの住所へ繋ぐ先だけを差し替え、そう断る")
+    func overridesHostViaTailscale() throws {
+        let plan = try #require(TerminalLaunchPlanner.plan(
+            kind: .ssh, commandURL: ssh, persistence: nil, directoryPath: "/tmp",
+            target: "pws-gpu3060", sshHostOverride: "100.117.16.18"
+        ))
+        #expect(plan.arguments.suffix(3) == ["/usr/bin/ssh", "pws-gpu3060", "100.117.16.18"])
+
+        // sshの代わりにechoを渡して、実際に組まれる引数を見る。
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = Array(plan.arguments.prefix(3)) + ["/bin/echo", "pws-gpu3060", "100.117.16.18"]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardInput = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        let text = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        #expect(text.contains("Tailscale（100.117.16.18）で繋ぎます"))
+        #expect(text.contains("-o HostName=100.117.16.18 pws-gpu3060"))
+    }
+
+    @Test("差し込めない住所は捨てて、ふだんの宛先のまま繋ぐ")
+    func dropsUnsafeOverride() {
+        let plan = TerminalLaunchPlanner.plan(
+            kind: .ssh, commandURL: ssh, persistence: nil, directoryPath: "/tmp",
+            target: "pws-gpu3060", sshHostOverride: "-oProxyCommand=x"
+        )
+        #expect(plan?.arguments.last == "")
     }
 
     @Test("tmuxで包むときはsshをセッションのコマンドにする")

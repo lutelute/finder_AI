@@ -2433,11 +2433,19 @@ final class WorkspaceBrowserViewController: NSViewController {
                 if mountPoint != navigator.currentDirectory { navigate(to: mountPoint) }
                 return
             }
-            NetworkPlaceConnector.shared.connect(place) { [weak self] mountPoint in
+            NetworkPlaceConnector.shared.connect(place) { [weak self] connection in
                 guard let self else { return }
-                if let mountPoint {
+                if let connection {
+                    // Tailscaleで繋いだら、その住所を覚える。マウントの戻り先がその住所に
+                    // なるので、覚えておかないと登録と突き合わせられず「未接続」に見える。
+                    if let address = connection.tailscaleAddress {
+                        var places = self.preferences.networkPlaces
+                        if places.setTailscaleAddress(id: place.id, to: address) {
+                            self.preferences.networkPlaces = places
+                        }
+                    }
                     self.loadSidebarSources()
-                    self.navigate(to: mountPoint)
+                    self.navigate(to: connection.mountPoint)
                     return
                 }
                 self.updateSidebarSelection()
@@ -2602,21 +2610,30 @@ final class WorkspaceBrowserViewController: NSViewController {
         return NetworkPlaceAddress.normalizedShare(text)?.absoluteString ?? text
     }
 
-    private static func toolTip(for place: NetworkPlace, state: NetworkPlaceState) -> String {
+    private static func toolTip(
+        for place: NetworkPlace,
+        state: NetworkPlaceState,
+        mounts: [MountedShare]
+    ) -> String {
         let address = place.kind == .share ? place.address : "ssh \(place.address)"
         switch (place.kind, state) {
         case (.share, .connected(let mountPoint)):
-            return "\(address)\n接続中: \(mountPoint.path(percentEncoded: false))"
+            let route = NetworkShareMatching.isViaTailscale(place, mountPoint: mountPoint, in: mounts)
+                ? "（Tailscale経由 \(place.tailscaleAddress ?? "")）"
+                : ""
+            return "\(address)\n接続中\(route): \(mountPoint.path(percentEncoded: false))"
         case (.share, .connecting):
             return "\(address)\n接続しています…"
         case (.share, .unreachable(let reason)):
             return "\(address)\n\(reason)\nもう一度押すと繋ぎ直します。"
         case (.share, .disconnected):
-            return "\(address)\n押すと接続して開きます。"
+            return "\(address)\n押すと接続して開きます。届かなければTailscaleで繋ぎます。"
         case (.server, .connected):
             return "\(address)\nTerminalで接続中。押すとそのタブへ移ります。"
+        case (.server, .connecting):
+            return "\(address)\n繋ぐ先を確かめています…"
         case (.server, _):
-            return "\(address)\n押すと下のTerminalで接続します。"
+            return "\(address)\n押すと下のTerminalで接続します。届かなければTailscaleで繋ぎます。"
         }
     }
 
@@ -2710,10 +2727,11 @@ final class WorkspaceBrowserViewController: NSViewController {
     }
 
     /// サーバーの行の状態。そのサーバーへのsshが開いていれば「繋がっている」。
+    /// 繋ぐ先を見極めているあいだ（Tailscaleへ回るか）は回る印。
     private func serverState(for place: NetworkPlace) -> NetworkPlaceState {
-        hasOpenServerSession?(place.address) == true
-            ? .connected(Self.homeDirectory)
-            : .disconnected
+        if hasOpenServerSession?(place.address) == true { return .connected(Self.homeDirectory) }
+        if case .connecting? = NetworkPlaceConnector.shared.transientState(for: place.id) { return .connecting }
+        return .disconnected
     }
 
     /// Loads the two sources that touch the filesystem.
@@ -4553,7 +4571,7 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
                     symbol: place.kind == .share ? "server.rack" : "apple.terminal",
                     mark: state.indicatorMark
                 )
-                cell.toolTip = Self.toolTip(for: place, state: state)
+                cell.toolTip = Self.toolTip(for: place, state: state, mounts: networkMounts)
                 return cell
             }
         }
