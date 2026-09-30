@@ -254,3 +254,47 @@ struct DrawerSessionTabsTests {
         #expect(rows.map(\.compactTitle) == ["📌 ビルド番 ✳︎"])
     }
 }
+
+@Suite("Drawer tabs for ssh sessions")
+struct DrawerSSHTabsTests {
+    private let home = URL(fileURLWithPath: "/Users/x", isDirectory: true)
+    private let project = URL(fileURLWithPath: "/Users/x/projectA", isDirectory: true)
+
+    /// sshはホームで開くが、ホームで作業しているわけではない。ホームにいても
+    /// 「ここのもの」として先頭へ寄せず、フォルダ名（ユーザー名）も名乗らない。
+    @Test("sshのタブはサーバーの名前を名乗り、フォルダを添えない")
+    func sshTabNamesTheServer() {
+        let shellID = UUID()
+        let rows = DrawerSessionTabs.rows(
+            sources: [
+                DrawerSessionTabs.Source(
+                    id: UUID(), kind: .ssh, customName: "pws-gpu3060",
+                    directoryURL: home, isRunning: true, target: "ubuntu@100.117.16.18"
+                ),
+                DrawerSessionTabs.Source(id: shellID, kind: .shell, directoryURL: home, isRunning: true)
+            ],
+            currentDirectory: home,
+            activeID: nil
+        )
+        #expect(rows.first?.id == shellID)
+        let ssh = rows[1]
+        #expect(ssh.fullTitle == "pws-gpu3060")
+        #expect(ssh.compactTitle == "pws-gpu3060")
+        #expect(ssh.folderName == nil)
+        #expect(!ssh.belongsToCurrentFolder)
+        #expect(ssh.tooltip.contains("ubuntu@100.117.16.18"))
+        #expect(!ssh.tooltip.contains("ダブルクリック"))
+    }
+
+    @Test("登録名が引けなければ宛先を名乗る")
+    func fallsBackToTarget() {
+        let rows = DrawerSessionTabs.rows(
+            sources: [DrawerSessionTabs.Source(
+                id: UUID(), kind: .ssh, directoryURL: home, isRunning: true, target: "lute@pws-pgx1"
+            )],
+            currentDirectory: project,
+            activeID: nil
+        )
+        #expect(rows.map(\.fullTitle) == ["lute@pws-pgx1"])
+    }
+}

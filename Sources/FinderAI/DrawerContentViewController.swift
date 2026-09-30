@@ -694,7 +694,7 @@ final class DrawerContentViewController: NSViewController {
         button.title = title
         button.bezelStyle = .rounded
         button.controlSize = .small
-        button.tag = TerminalSessionKind.allCases.firstIndex(of: kind) ?? 0
+        button.tag = TerminalSessionKind.startable.firstIndex(of: kind) ?? 0
         button.target = self
         button.action = #selector(startSessionFromButton(_:))
     }
@@ -761,11 +761,12 @@ final class DrawerContentViewController: NSViewController {
                 DrawerSessionTabs.Source(
                     id: $0.id,
                     kind: $0.kind,
-                    customName: sessionManager.customName(for: $0),
+                    customName: displayName(for: $0),
                     role: sessionManager.role(for: $0),
                     directoryURL: $0.directoryURL,
                     isRunning: $0.isRunning,
-                    isAnchored: $0.isAnchored
+                    isAnchored: $0.isAnchored,
+                    target: $0.key.target
                 )
             },
             currentDirectory: directoryURL,
@@ -1181,6 +1182,32 @@ final class DrawerContentViewController: NSViewController {
         mountedSessionID = session.id
     }
 
+    /// タブが名乗る名前。付けた名前が無いsshは、サイドバーの登録名を名乗る
+    /// （登録名を変えればタブも変わる）。
+    private func displayName(for session: any ManagedTerminalSession) -> String? {
+        if let custom = sessionManager.customName(for: session) { return custom }
+        guard session.kind == .ssh, let target = session.key.target else { return nil }
+        return preferences.networkPlaces.servers.first { $0.address == target }?.name
+    }
+
+    /// その宛先へのsshが動いているか。サイドバーの丸の塗りになる。
+    func hasRunningServerSession(target: String) -> Bool {
+        sessionManager.serverSession(target: target)?.isRunning == true
+    }
+
+    /// サイドバーのサーバーの行から。フォルダとは関係なく、宛先ごとに1本。
+    func startServerSession(_ place: NetworkPlace) {
+        guard place.kind == .server else { return }
+        do {
+            let session = try sessionManager.openServerSession(target: place.address)
+            reloadSessions(prefer: session, takesOverMountedElsewhere: true)
+            if !expanded { onToggle?() }
+            view.window?.makeFirstResponder(session.contentView)
+        } catch {
+            presentError(title: "「\(place.name)」に接続できません", message: error.localizedDescription)
+        }
+    }
+
     private func startSession(kind: TerminalSessionKind, resumingConversation: ConversationResume? = nil) {
         guard let directoryURL else { return }
         do {
@@ -1230,7 +1257,7 @@ final class DrawerContentViewController: NSViewController {
 
     @objc private func showNewSessionMenu() {
         let menu = NSMenu(title: "新しいTerminalセッション")
-        for (index, kind) in TerminalSessionKind.allCases.enumerated() {
+        for (index, kind) in TerminalSessionKind.startable.enumerated() {
             // ボタン側が「前回の続き」になっているときだけ、こちらが新規だと
             // 明示する。同じ名前で挙動が違う2つの入り口を作らない。
             let resumes = directoryURL.map {
@@ -1252,13 +1279,13 @@ final class DrawerContentViewController: NSViewController {
     /// ＋メニューは常に新規。ボタン側が「前回の続き」を担うので、まっさらに
     /// 始め直す道はこちらに残す。
     @objc private func startSessionFromMenu(_ sender: NSMenuItem) {
-        guard TerminalSessionKind.allCases.indices.contains(sender.tag) else { return }
-        startSession(kind: TerminalSessionKind.allCases[sender.tag])
+        guard TerminalSessionKind.startable.indices.contains(sender.tag) else { return }
+        startSession(kind: TerminalSessionKind.startable[sender.tag])
     }
 
     @objc private func startSessionFromButton(_ sender: NSButton) {
-        guard TerminalSessionKind.allCases.indices.contains(sender.tag) else { return }
-        let kind = TerminalSessionKind.allCases[sender.tag]
+        guard TerminalSessionKind.startable.indices.contains(sender.tag) else { return }
+        let kind = TerminalSessionKind.startable[sender.tag]
         let resumes = directoryURL.map {
             sessionManager.hasResumableConversation(kind: kind, directoryURL: $0)
         } ?? false
@@ -1279,7 +1306,9 @@ final class DrawerContentViewController: NSViewController {
         // clickCountはマウスイベントにしか意味がない: Accessibility経由の
         // AXPressでは直前のキーイベントが残っていて偽の2を返し、押しただけで
         // ブラウザが飛ぶ（実測）。
-        if let event = NSApp.currentEvent,
+        // sshの現在地は相手のサーバーの上で、手元のブラウザでは開けない。
+        if session.kind != .ssh,
+           let event = NSApp.currentEvent,
            event.type == .leftMouseUp || event.type == .leftMouseDown,
            event.clickCount == 2 {
             onOpenDirectory?(currentLocationURL(of: session))
@@ -1324,10 +1353,12 @@ final class DrawerContentViewController: NSViewController {
             follow.state = session.isAnchored ? .off : .on
             menu.addItem(follow)
         }
-        menu.addItem(item(
-            "このセッションの場所をブラウザで表示",
-            action: #selector(openSessionDirectoryFromMenu(_:))
-        ))
+        if session.kind != .ssh {
+            menu.addItem(item(
+                "このセッションの場所をブラウザで表示",
+                action: #selector(openSessionDirectoryFromMenu(_:))
+            ))
+        }
         // 外の窓でも同じ画面を見たい・打ちたいとき。tmuxの上で動いている
         // セッションだけ。押せない理由はツールチップに書く（validateMenuItem）。
         let handOff = item(
@@ -1469,10 +1500,12 @@ final class DrawerContentViewController: NSViewController {
     }
 
     private func handOff(_ session: any ManagedTerminalSession) {
-        let title = [
-            sessionManager.customName(for: session) ?? session.kind.displayName,
-            session.directoryURL.lastPathComponent
-        ].joined(separator: " — ")
+        let title = session.kind == .ssh
+            ? "SSH — \(displayName(for: session) ?? session.key.target ?? "")"
+            : [
+                sessionManager.customName(for: session) ?? session.kind.displayName,
+                session.directoryURL.lastPathComponent
+            ].joined(separator: " — ")
         do {
             try TerminalHandoffLauncher().open(
                 persistence: session.persistence,

@@ -320,7 +320,7 @@ final class WorkspaceAppCoordinator {
             windowDirectoryPaths: open.map { $0.browser.currentDirectory.path },
             sessions: sessionManager.allSessions
                 .filter(\.isRunning)
-                .map { .init(directoryPath: $0.directoryURL.path, kind: $0.kind) },
+                .map { .init(directoryPath: $0.directoryURL.path, kind: $0.kind, target: $0.key.target) },
             windowTints: open.map { $0.tint?.rawValue ?? "" }
         )
         guard snapshot != lastCapturedSnapshot else { return }
@@ -403,6 +403,14 @@ final class WorkspaceAppCoordinator {
             for entry in snapshot.sessions {
                 let url = URL(fileURLWithPath: entry.directoryPath, isDirectory: true)
                     .standardizedFileURL
+                // sshは宛先で開き直す。tmuxで生きていればそこへ戻り、消えていれば
+                // 繋ぎ直す（鍵が無ければパスワードを聞かれる——黙って消えるよりいい）。
+                if entry.kind == .ssh {
+                    if let target = entry.target {
+                        _ = try? self.sessionManager.openServerSession(target: target)
+                    }
+                    continue
+                }
                 guard await Self.isReachableDirectory(url) else { continue }
                 // CLIが消えている等の失敗は個別に握る。復元は全部か無かではない。
                 _ = try? self.sessionManager.create(kind: entry.kind, directoryURL: url)
@@ -1042,6 +1050,14 @@ final class WorkspaceAppCoordinator {
         )
         finderHere.keyEquivalentModifierMask = [.command, .shift]
         goMenu.addItem(finderHere)
+        goMenu.addItem(.separator())
+        // Finderの「サーバへ接続」と同じ⌘K。ここでは繋ぐだけでなく、サイドバーに
+        // 残して次からは押すだけにする。
+        goMenu.addItem(item(
+            "ネットワークの場所を登録…",
+            action: #selector(WorkspaceBrowserViewController.registerNetworkPlace(_:)),
+            key: "k"
+        ))
         goItem.submenu = goMenu
         main.addItem(goItem)
 

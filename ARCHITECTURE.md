@@ -72,6 +72,15 @@ File Providerや保護フォルダのmetadata問い合わせがAppKit起動を�
 
 `FavoriteItems.sfl4`はApple非公開の`NSKeyedArchiver`形式です。`SFLListItem`を持たない以上グラフを正しく辿れないため、`$objects`からbookmark blobを走査しています。読めなければ組み込みの場所へ落ちるだけで、エラーにはしません。
 
+### ネットワークの場所（1.42.0）
+
+「ネットワーク」（共有）と「サーバー」（SSH）の2節を、よく使う項目と場所のあいだに差し込みます。登録は`NetworkPlaces`（UserDefaultsのJSON、最大30件）で、行は`SidebarRow.place`としてフォルダの行（`.item`）と分けています——未接続の共有やサーバーはファイルURLを持たないので、フォルダ前提の経路（選択の突き合わせ、ドロップ先、Finderで表示）に紛れ込ませないためです。
+
+- **印はマウントとの突き合わせだけで決めます。** `volumeURLForRemountingKey`（`smb://user@host/share`）を登録と比べ（`NetworkShareMatching`）、大文字小文字・`.local`の有無・Bonjourのサービス名（`host._smb._tcp.local`）の揺れだけ吸収します。名前解決はしません——`pws-nas03.local`と`10.0.70.189`が同じだと分かるには待ちが要り、サイドバーを描くたびに走るからです。マウントの読み取りはボリュームと同じくメインスレッド外です。
+- **繋ぐのは`NetworkPlaceConnector`（アプリに1つ）。** まず相手のポート（SMBは445）へTCPで5秒だけ当たり、届いたら`NetFSMountURLAsync`にUIを許して渡します。認証ダイアログとキーチェーン保存はmacOSの別プロセスが出すので、FinderAIはパスワードに触りません。探りを入れているのは、届かない相手にNetFSが数十秒黙るからです。「繋いでいる最中」「届かなかった」はコネクタが持ち、`networkPlacesDidChange`で全部の窓のサイドバーへ配ります。
+- **SSHは`TerminalSessionKind.ssh`です。** 宛先は`TerminalSessionKey.target`に入り、同じホームで開く2台ぶんのsshが別のセッションになります。tmuxの名前は宛先があるときだけハッシュの材料に足します（無いセッションの名前を変えると、走っているtmuxへ繋ぎ直せなくなる）。`sessions(for:)`はsshを返しません——ホームへ移るたびにsshのタブが前へ出て、ホームに「動いている」の印が付くのを防ぐためです。cdの追従はもともとShellだけなので、sshには何も送りません。タブの名前は台帳に書かず、描くたびにサイドバーの登録名から引きます。
+- 宛先が`-`で始まるものは登録でも起動の組み立て（`TerminalLaunchPlanner`）でも断ります。sshのオプションとして読まれるためです。
+
 ## グループ
 
 一つのフォルダの中を、**実体を一つも動かさずに**まとめる仕組みです。フォルダを作って中へ移すとgitのパスもsymlinkもビルドスクリプトのパスも壊れるので、そのフォルダ自身に置いた一枚のJSON（`.finderai-groups.json`）が「どれとどれが同じか」だけを持ちます。ファイルシステムには何も起きません。使い方とJSONの形は[docs/GROUPS.md](docs/GROUPS.md)にあります。

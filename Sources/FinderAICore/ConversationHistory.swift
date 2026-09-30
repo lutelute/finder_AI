@@ -444,7 +444,7 @@ extension ConversationHistory {
         fileManager: FileManager = .default
     ) -> [ConversationDigest] {
         switch kind {
-        case .shell:
+        case .shell, .ssh:
             return []
         case .claude:
             return claudeDigests(

@@ -36,6 +36,8 @@ public struct TerminalSessionRecord: Codable, Equatable, Identifiable, Sendable 
     public var role: String?
     public var isPinned: Bool
     public var lastTranscriptPath: String?
+    /// sshの宛先。ssh以外はnil。古い台帳には無いので省略可能で読む。
+    public var target: String?
 
     public init(
         id: UUID = UUID(),
@@ -52,7 +54,8 @@ public struct TerminalSessionRecord: Codable, Equatable, Identifiable, Sendable 
         customName: String? = nil,
         role: String? = nil,
         isPinned: Bool = false,
-        lastTranscriptPath: String? = nil
+        lastTranscriptPath: String? = nil,
+        target: String? = nil
     ) {
         self.id = id
         self.directoryPath = directoryPath
@@ -69,12 +72,14 @@ public struct TerminalSessionRecord: Codable, Equatable, Identifiable, Sendable 
         self.role = role
         self.isPinned = isPinned
         self.lastTranscriptPath = lastTranscriptPath
+        self.target = target
     }
 
     public var key: TerminalSessionKey {
         TerminalSessionKey(
             directoryURL: URL(fileURLWithPath: directoryPath, isDirectory: true),
-            kind: kind
+            kind: kind,
+            target: target
         )
     }
 }

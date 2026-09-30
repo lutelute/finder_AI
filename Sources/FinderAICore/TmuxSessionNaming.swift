@@ -9,7 +9,11 @@ public enum TmuxSessionNaming {
     public static let namePrefix = "finderai-"
 
     public static func sessionName(for key: TerminalSessionKey) -> String {
-        let digest = SHA256.hash(data: Data(key.directoryKey.utf8))
+        // 宛先はsshにしか無い。無いときにハッシュの材料を変えると、走っている
+        // シェルやAIのtmuxセッションが別名になって繋ぎ直せなくなるので、
+        // あるときだけ足す。
+        let material = key.target.map { "\(key.directoryKey)\u{0}\($0)" } ?? key.directoryKey
+        let digest = SHA256.hash(data: Data(material.utf8))
         let hex = digest.prefix(6).map { String(format: "%02x", $0) }.joined()
         return "\(namePrefix)\(key.kind.rawValue)-\(hex)"
     }

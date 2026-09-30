@@ -80,6 +80,8 @@ enum DrawerSessionTabs {
         let directoryURL: URL
         let isRunning: Bool
         let isAnchored: Bool
+        /// sshの宛先。sshのタブはフォルダではなくこれを名乗る。
+        let target: String?
 
         init(
             id: UUID,
@@ -88,7 +90,8 @@ enum DrawerSessionTabs {
             role: String? = nil,
             directoryURL: URL,
             isRunning: Bool,
-            isAnchored: Bool = false
+            isAnchored: Bool = false,
+            target: String? = nil
         ) {
             self.id = id
             self.kind = kind
@@ -97,6 +100,7 @@ enum DrawerSessionTabs {
             self.directoryURL = directoryURL
             self.isRunning = isRunning
             self.isAnchored = isAnchored
+            self.target = target
         }
     }
 
@@ -134,6 +138,9 @@ enum DrawerSessionTabs {
     ) -> [DrawerSessionTab] {
         let current = currentDirectory?.standardizedFileURL
         let tabs = sources.map { source -> DrawerSessionTab in
+            if source.kind == .ssh {
+                return sshTab(source, activeID: activeID)
+            }
             let directory = source.directoryURL.standardizedFileURL
             let belongsToCurrentFolder = directory == current
             let folder = directory.lastPathComponent.isEmpty
@@ -172,5 +179,26 @@ enum DrawerSessionTabs {
                 return lhs.offset < rhs.offset
             }
             .map(\.element)
+    }
+
+    /// sshのタブ。フォルダに属さないので「よその場所」の印は付けず、サーバーの
+    /// 名前（サイドバーの登録名）を名乗る。ホームで開いていても「ここのもの」
+    /// として先頭へは寄せない——手元のフォルダとは無関係だから。
+    private static func sshTab(_ source: Source, activeID: UUID?) -> DrawerSessionTab {
+        let target = source.target ?? ""
+        let name = source.customName ?? (target.isEmpty ? source.kind.displayName : target)
+        return DrawerSessionTab(
+            id: source.id,
+            kind: source.kind,
+            name: name,
+            folderName: nil,
+            isRunning: source.isRunning,
+            isActive: source.id == activeID,
+            belongsToCurrentFolder: false,
+            isAnchored: false,
+            hasRole: false,
+            hasCustomName: true,
+            tooltip: "SSH — \(target)\nサーバーのシェルです。フォルダを移動しても付いてきません"
+        )
     }
 }

@@ -143,11 +143,12 @@ final class TerminalSession: NSObject, @preconcurrency LocalProcessTerminalViewD
         persistence: TerminalSessionPersistence?,
         logsOutput: Bool,
         resumesConversation: ConversationResume? = nil,
-        role: String? = nil
+        role: String? = nil,
+        target: String? = nil
     ) throws {
         self.directoryURL = directoryURL.standardizedFileURL
         self.kind = kind
-        self.key = TerminalSessionKey(directoryURL: directoryURL, kind: kind)
+        self.key = TerminalSessionKey(directoryURL: directoryURL, kind: kind, target: target)
         self.persistence = persistence
         let view = LoggingTerminalView(frame: .zero)
         self.terminalView = view
@@ -158,7 +159,8 @@ final class TerminalSession: NSObject, @preconcurrency LocalProcessTerminalViewD
             persistence: persistence,
             directoryPath: self.directoryURL.path,
             resumesConversation: resumesConversation,
-            role: role
+            role: role,
+            target: target
         ) else {
             throw SessionCreationError.executableNotFound(kind.displayName)
         }
@@ -169,8 +171,8 @@ final class TerminalSession: NSObject, @preconcurrency LocalProcessTerminalViewD
         if logsOutput {
             log = SessionOutputLog(
                 directory: SessionLogStore.directory,
-                fileName: SessionLogStore.fileName(kind: kind, directoryURL: self.directoryURL),
-                header: SessionLogStore.header(kind: kind, directoryURL: self.directoryURL)
+                fileName: SessionLogStore.fileName(kind: kind, directoryURL: self.directoryURL, target: target),
+                header: SessionLogStore.header(kind: kind, directoryURL: self.directoryURL, target: target)
             )
         } else {
             log = nil
@@ -257,7 +259,7 @@ final class TerminalSession: NSObject, @preconcurrency LocalProcessTerminalViewD
     /// key-indexed dictionaries; this only updates the session's own identity.
     func rebind(to url: URL) {
         directoryURL = url.standardizedFileURL
-        key = TerminalSessionKey(directoryURL: directoryURL, kind: kind)
+        key = TerminalSessionKey(directoryURL: directoryURL, kind: kind, target: key.target)
         onChange?()
     }
 

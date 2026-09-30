@@ -262,3 +262,89 @@ struct TerminalLaunchPlannerTests {
         ) == nil)
     }
 }
+
+@Suite("ssh launch planning")
+struct SSHLaunchPlannerTests {
+    private let ssh = URL(fileURLWithPath: "/usr/bin/ssh")
+
+    @Test("sshと宛先はscriptに埋めず、位置引数で渡す")
+    func plainSSH() {
+        let plan = TerminalLaunchPlanner.plan(
+            kind: .ssh,
+            commandURL: ssh,
+            persistence: nil,
+            directoryPath: "/Users/someone",
+            target: "ubuntu@100.117.16.18"
+        )
+        #expect(plan?.executable == "/bin/sh")
+        #expect(plan?.arguments.first == "-c")
+        #expect(plan?.arguments.suffix(2) == ["/usr/bin/ssh", "ubuntu@100.117.16.18"])
+        #expect(plan?.arguments.dropFirst().first?.contains("100.117.16.18") == false)
+    }
+
+    /// 失敗したsshは画面を残して待ち、`exit`で抜けたときはそのまま閉じる。
+    @Test("失敗したときだけ理由を残して待つ")
+    func holdsOnlyOnFailure() throws {
+        func run(_ command: String) throws -> (status: Int32, output: String) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", TerminalLaunchPlanner.sshHoldScript, "finderai-ssh", command, "target"]
+            let output = Pipe()
+            process.standardOutput = output
+            process.standardInput = FileHandle.nullDevice
+            try process.run()
+            process.waitUntilExit()
+            let text = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            return (process.terminationStatus, text)
+        }
+        let failed = try run("/usr/bin/false")
+        #expect(failed.status == 1)
+        #expect(failed.output.contains("sshが終了しました（終了コード 1）"))
+        let fine = try run("/usr/bin/true")
+        #expect(fine.status == 0)
+        #expect(fine.output.isEmpty)
+    }
+
+    /// 台帳やスナップショットから戻った値も通るので、ここでも断る。
+    @Test("宛先が無い・オプションに読まれる宛先では組まない")
+    func refusesMissingOrOptionLikeTargets() {
+        #expect(TerminalLaunchPlanner.plan(
+            kind: .ssh, commandURL: ssh, persistence: nil, directoryPath: "/tmp"
+        ) == nil)
+        #expect(TerminalLaunchPlanner.plan(
+            kind: .ssh, commandURL: ssh, persistence: nil, directoryPath: "/tmp",
+            target: "-oProxyCommand=touch /tmp/x"
+        ) == nil)
+        #expect(TerminalLaunchPlanner.plan(
+            kind: .ssh, commandURL: nil, persistence: nil, directoryPath: "/tmp",
+            target: "pws-gpu3060"
+        ) == nil)
+    }
+
+    @Test("tmuxで包むときはsshをセッションのコマンドにする")
+    func persistentSSH() {
+        let persistence = TerminalSessionPersistence(
+            tmuxExecutableURL: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
+            sessionName: "finderai-ssh-abcdef012345"
+        )
+        let plan = TerminalLaunchPlanner.plan(
+            kind: .ssh,
+            commandURL: ssh,
+            persistence: persistence,
+            directoryPath: "/Users/someone",
+            target: "pws-gpu3060"
+        )
+        #expect(plan?.executable == "/opt/homebrew/bin/tmux")
+        #expect(plan?.arguments.prefix(7) == [
+            "new-session", "-A", "-s", "finderai-ssh-abcdef012345",
+            "-c", "/Users/someone", "/bin/sh"
+        ])
+        #expect(plan?.arguments.contains("pws-gpu3060") == true)
+    }
+
+    @Test("sshの開始ボタンは作らない")
+    func notStartable() {
+        #expect(!TerminalSessionKind.startable.contains(.ssh))
+        #expect(!TerminalSessionKind.ssh.resumesConversations)
+    }
+}

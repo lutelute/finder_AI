@@ -159,6 +159,11 @@ final class WorkspaceWindowController: NSWindowController, NSWindowDelegate {
             self.window?.representedURL = url
         }
         pane.onToggleTerminal = { [weak self] in self?.toggleTerminal() }
+        // サイドバーのサーバーは、この窓のTerminalでsshを開く。
+        pane.onOpenServer = { [weak self] place in self?.terminal.startServerSession(place) }
+        pane.hasOpenServerSession = { [weak self] target in
+            self?.terminal.hasRunningServerSession(target: target) ?? false
+        }
         // 色はペインではなく窓の持ちもの。どちらのペインのボタンから選んでも
         // 窓ぜんぶに掛かる。
         pane.onSelectTint = { [weak self] tint in self?.setTint(tint) }

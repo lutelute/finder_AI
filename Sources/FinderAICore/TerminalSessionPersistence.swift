@@ -57,18 +57,32 @@ public enum TerminalLaunchPlanner {
     /// `role`はclaudeにだけ効く（`--append-system-prompt`）。codexには同等の
     /// 公開フラグが無い（0.146.0で確認、0.147.0でも変わらず）ので、渡されても
     /// 付けない——効かない指示を付けたふりをするより、付かないほうが正しい。
+    ///
+    /// `target`はsshの宛先で、sshにだけ効く。宛先の無いsshは組めない。宛先が
+    /// `-`で始まればsshのオプションとして読まれてしまうので、ここでも断る
+    /// （登録時に断っているが、台帳やスナップショットから戻る値もここを通る）。
     public static func plan(
         kind: TerminalSessionKind,
         commandURL: URL?,
         persistence: TerminalSessionPersistence?,
         directoryPath: String,
         resumesConversation: ConversationResume? = nil,
-        role: String? = nil
+        role: String? = nil,
+        target: String? = nil
     ) -> Plan? {
         let base: Plan
         switch kind {
         case .shell:
             base = Plan(executable: "/bin/zsh", arguments: ["-l"])
+        case .ssh:
+            guard let commandURL,
+                  let target = target.flatMap(NetworkPlaceAddress.normalizedServer) else { return nil }
+            // 宛先とsshの場所はscriptに埋めず、位置引数で渡す。引用の誤りで
+            // 宛先がシェルの文として読まれる余地を残さない。
+            base = Plan(
+                executable: "/bin/sh",
+                arguments: ["-c", sshHoldScript, "finderai-ssh", commandURL.path, target]
+            )
         case .codex, .claude:
             guard let commandURL else { return nil }
             var roleArguments: [String] = []
@@ -93,7 +107,7 @@ public enum TerminalLaunchPlanner {
                 resumeArguments = ["resume", "--last"]
             case let (.codex, .session(id)):
                 resumeArguments = ["resume", id]
-            case (.shell, _):
+            case (.shell, _), (.ssh, _):
                 resumeArguments = []
             }
             base = Plan(
@@ -131,6 +145,16 @@ public enum TerminalLaunchPlanner {
             arguments: arguments
         )
     }
+
+    /// sshが失敗で終わったときだけ、画面を残して待つ。
+    ///
+    /// 名前が引けない・鍵が通らないといった失敗は、sshが1行言って即座に終わる。
+    /// 終わったセッションはタブから片付くので、押した人には「タブが一瞬出て
+    /// 消えた」としか見えず、理由が読めない。`exit`で抜けたとき（0）はそのまま閉じる。
+    public static let sshHoldScript = #""$1" "$2"; status=$?; "#
+        + #"if [ "$status" -ne 0 ]; then "#
+        + #"printf '\n[FinderAI] sshが終了しました（終了コード %s）。Enterで閉じます。' "$status"; "#
+        + #"read -r _; fi; exit "$status""#
 
     /// 「続きへ戻る、駄目なら新しく始める」をひと綴りにしたsh script。
     ///

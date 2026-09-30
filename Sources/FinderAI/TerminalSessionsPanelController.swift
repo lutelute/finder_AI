@@ -131,6 +131,8 @@ enum TerminalSessionsOverview {
         let isPresented: Bool
         let persistentName: String?
         let record: TerminalSessionRecord?
+        /// sshの宛先。場所の欄にはフォルダ（ホーム）ではなくこれを出す。
+        let target: String?
 
         init(
             id: UUID,
@@ -140,7 +142,8 @@ enum TerminalSessionsOverview {
             isRunning: Bool,
             isPresented: Bool,
             persistentName: String?,
-            record: TerminalSessionRecord? = nil
+            record: TerminalSessionRecord? = nil,
+            target: String? = nil
         ) {
             self.id = id
             self.kind = kind
@@ -150,6 +153,7 @@ enum TerminalSessionsOverview {
             self.isPresented = isPresented
             self.persistentName = persistentName
             self.record = record
+            self.target = target
         }
     }
 
@@ -169,7 +173,7 @@ enum TerminalSessionsOverview {
                 kind: summary.kind,
                 kindLabel: record?.customName ?? summary.kindLabel,
                 role: record?.role,
-                folderPath: summary.folderPath,
+                folderPath: summary.target ?? summary.folderPath,
                 stateLabel: summary.isRunning
                     ? stateLabel(
                         isPresented: summary.isPresented,
@@ -201,7 +205,7 @@ enum TerminalSessionsOverview {
                     kind: info.kind,
                     kindLabel: record?.customName ?? info.kind?.displayName ?? "？",
                     role: record?.role,
-                    folderPath: info.workingDirectoryPath,
+                    folderPath: record?.target ?? info.workingDirectoryPath,
                     // 外部=ユーザーが自分のターミナルからattachしている場合。
                     stateLabel: info.isAttached ? "接続中（外部）" : "待機中（未接続）",
                     category: info.isAttached ? .active : .recoverable,
@@ -213,7 +217,8 @@ enum TerminalSessionsOverview {
             guard let kind = summary.kind else { return nil }
             return TerminalSessionKey(
                 directoryURL: URL(fileURLWithPath: summary.folderPath, isDirectory: true),
-                kind: kind
+                kind: kind,
+                target: summary.target
             )
         })
         let tmuxNames = Set(detached.map(\.name))
@@ -230,7 +235,7 @@ enum TerminalSessionsOverview {
                     kind: record.kind,
                     kindLabel: record.customName ?? record.kind.displayName,
                     role: record.role,
-                    folderPath: record.directoryPath,
+                    folderPath: record.target ?? record.directoryPath,
                     stateLabel: historyStateLabel(record),
                     category: .history,
                     lastActivityAt: record.lastActivityAt,
@@ -501,7 +506,8 @@ final class TerminalSessionsPanelController: NSWindowController {
                 isRunning: session.isRunning,
                 isPresented: sessionManager.isPresented(session),
                 persistentName: session.persistence?.sessionName,
-                record: record
+                record: record,
+                target: session.key.target
             )
         }
         allRows = TerminalSessionsOverview.rows(
@@ -549,7 +555,7 @@ final class TerminalSessionsPanelController: NSWindowController {
     private func updateButtons() {
         let selection = tableView.selectedRowIndexes
         let selected = selectedRows()
-        openButton.isEnabled = selection.count == 1
+        openButton.isEnabled = selection.count == 1 && selected.first?.kind != .ssh
         revealButton.isEnabled = selection.count == 1
             && selectedRows().first.map(canReveal) == true
         saveButton.isEnabled = selection.count == 1
@@ -574,7 +580,8 @@ final class TerminalSessionsPanelController: NSWindowController {
     }
 
     @objc private func openFolder() {
-        guard let row = selectedRows().first else { return }
+        // sshの「場所」は相手のサーバーで、手元では開けない。
+        guard let row = selectedRows().first, row.kind != .ssh else { return }
         let url = URL(fileURLWithPath: row.folderPath, isDirectory: true)
         onOpenFolder?(url)
     }
@@ -604,6 +611,13 @@ final class TerminalSessionsPanelController: NSWindowController {
                 guard let session = sessionManager.allSessions.first(where: { $0.id == id })
                 else { return }
                 sessionManager.revealInTabs(session)
+            case .detachedTmux where row.kind == .ssh:
+                // 場所の欄に宛先が入っている（台帳から引けたときだけ）。引けなかった
+                // 行はホームのパスのままなので、宛先として読まない。
+                guard !row.folderPath.hasPrefix("/"),
+                      NetworkPlaceAddress.normalizedServer(row.folderPath) != nil else { return }
+                _ = try sessionManager.openServerSession(target: row.folderPath)
+                return
             case .detachedTmux:
                 guard let kind = row.kind else { return }
                 // 一覧の行が古く、tmux側の実体がもう無いこともある（Macの
@@ -620,6 +634,8 @@ final class TerminalSessionsPanelController: NSWindowController {
             case .record:
                 return
             }
+            // sshを前に出してもブラウザは動かさない。ホームへ飛ぶだけで意味が無い。
+            guard row.kind != .ssh else { return }
             onRevealFolder?(url)
         } catch {
             presentError(

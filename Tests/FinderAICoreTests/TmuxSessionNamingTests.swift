@@ -1,3 +1,4 @@
+import CryptoKit
 import FinderAICore
 import Foundation
 import Testing
@@ -72,5 +73,33 @@ struct TmuxSessionNamingTests {
         #expect(!name.contains("."))
         #expect(!name.contains(":"))
         #expect(!name.contains(" "))
+    }
+}
+
+@Suite("tmux session naming for ssh")
+struct TmuxSSHNamingTests {
+    private let home = URL(fileURLWithPath: "/Users/someone", isDirectory: true)
+
+    /// どちらもホームで開くので、宛先を名前に入れないと2台目が1台目のtmuxに
+    /// 繋がってしまう。
+    @Test("宛先が違えばtmuxの名前も違う")
+    func distinctPerTarget() {
+        let gpu = TmuxSessionNaming.sessionName(for: .init(directoryURL: home, kind: .ssh, target: "pws-gpu3060"))
+        let pgx = TmuxSessionNaming.sessionName(for: .init(directoryURL: home, kind: .ssh, target: "pws-pgx1"))
+        #expect(gpu != pgx)
+        #expect(TmuxSessionNaming.kind(fromSessionName: gpu) == .ssh)
+    }
+
+    /// 宛先の無いセッションの名前が変わると、走っているtmuxに繋ぎ直せなくなる。
+    @Test("宛先の無いセッションの名前は以前と同じ")
+    func unchangedWithoutTarget() {
+        let key = TerminalSessionKey(directoryURL: home, kind: .shell)
+        #expect(TmuxSessionNaming.sessionName(for: key) == "finderai-shell-" + expectedHash(for: key.directoryKey))
+        #expect(key == TerminalSessionKey(directoryURL: home, kind: .shell, target: nil))
+    }
+
+    private func expectedHash(for text: String) -> String {
+        // sessionName(for:)が使う形（SHA-256の先頭6バイト）を独立に計算する。
+        SHA256.hash(data: Data(text.utf8)).prefix(6).map { String(format: "%02x", $0) }.joined()
     }
 }
