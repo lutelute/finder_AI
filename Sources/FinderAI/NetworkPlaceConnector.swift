@@ -65,21 +65,12 @@ final class NetworkPlaceConnector {
         notifyChange()
 
         Task { @MainActor in
-            let host = url.host ?? ""
-            let port = UInt16(url.port ?? Self.defaultPort(for: url.scheme))
-            var target = url
-            var viaTailscale: String?
-            if await !Self.probe(host: host, port: port, timeout: Self.primaryProbeTimeout) {
-                let route = await Self.tailscaleRoute(names: [host], port: port)
-                guard case .reachable(let address) = route,
-                      let replaced = NetworkPlaceAddress.replacingHost(of: url, with: address) else {
-                    self.finish(place, failure: Self.unreachableMessage(host: host, route: route))
-                    completion(nil)
-                    return
-                }
-                target = replaced
-                viaTailscale = address
+            guard let route = await self.shareRoute(place, url: url) else {
+                completion(nil)
+                return
             }
+            let target = route.url
+            let viaTailscale = route.tailscaleAddress
             let result = await Self.mount(target)
             switch result {
             case .mounted(let mountPoint):
@@ -105,6 +96,174 @@ final class NetworkPlaceConnector {
                 completion(nil)
             }
         }
+    }
+
+    /// 共有へ繋ぐ経路。ふだんの住所に届けばそのまま、届かなければTailscaleの住所に
+    /// 差し替えたURL。どちらも駄目なら理由を残してnil。
+    private func shareRoute(_ place: NetworkPlace, url: URL) async -> (url: URL, tailscaleAddress: String?)? {
+        let host = url.host ?? ""
+        let port = UInt16(url.port ?? Self.defaultPort(for: url.scheme))
+        if await Self.probe(host: host, port: port, timeout: Self.primaryProbeTimeout) {
+            return (url, nil)
+        }
+        let route = await Self.tailscaleRoute(names: [host], port: port)
+        guard case .reachable(let address) = route,
+              let replaced = NetworkPlaceAddress.replacingHost(of: url, with: address) else {
+            finish(place, failure: Self.unreachableMessage(host: host, route: route))
+            return nil
+        }
+        return (replaced, address)
+    }
+
+    /// サーバーの共有を全部つないで並べたフォルダ。
+    struct ServerView {
+        let folder: URL
+        let tailscaleAddress: String?
+        /// つなげなかった共有（権限が無いなど）。
+        let skipped: [String]
+        /// 読めた共有の一覧。登録に覚えておく。
+        let shares: [String]
+    }
+
+    /// 共有名なしで登録したサーバーを開く。共有を全部つなぎ、それぞれへのリンクを
+    /// 並べたフォルダを返す（Finderでサーバーを開いたときの見え方）。
+    ///
+    /// 一覧は`smbutil view`で読む。まだ一度も認証していなければ読めないので、
+    /// そのときはmacOSの認証画面を一度出す（そこで共有を選ぶ画面も出る）。
+    /// 認証が済めば、残りの共有は画面を出さずにつながる。
+    func openServer(_ place: NetworkPlace, completion: @escaping @MainActor (ServerView?) -> Void) {
+        guard let url = place.shareURL, NetworkShareMatching.shareName(of: url) == nil else {
+            completion(nil)
+            return
+        }
+        if case .connecting? = transient[place.id] { return }
+        transient[place.id] = .connecting
+        notifyChange()
+
+        Task { @MainActor in
+            guard let route = await self.shareRoute(place, url: url) else {
+                completion(nil)
+                return
+            }
+            let hostURL = route.url
+            // 一覧が読めなければ（起動し直した後など、まだ認証していない）、前回
+            // 読めた一覧を使う。最初の1つだけ認証画面を許してつなぎ、キーチェーンの
+            // 名前とパスワードで入れば、画面は出ない。
+            var shares = await Self.listShares(hostURL)
+            var needsFirstAuth = false
+            if shares == nil, let known = place.knownShares, !known.isEmpty {
+                shares = known
+                needsFirstAuth = true
+            }
+            if shares == nil {
+                switch await Self.mount(hostURL) {
+                case .cancelled:
+                    self.finish(place, failure: nil)
+                    completion(nil)
+                    return
+                case .failed(let message):
+                    self.finish(place, failure: message)
+                    completion(nil)
+                    return
+                case .mounted, .alreadyMounted:
+                    shares = await Self.listShares(hostURL)
+                }
+            }
+            guard let shares, !shares.isEmpty else {
+                self.finish(place, failure: "共有の一覧を読めませんでした。名前とパスワードを確かめてください。")
+                completion(nil)
+                return
+            }
+
+            var known = place
+            known.tailscaleAddress = route.tailscaleAddress ?? place.tailscaleAddress
+            var mounts = await Task.detached(priority: .userInitiated) {
+                NetworkPlaceConnector.mountedShares()
+            }.value
+            var links: [(name: String, target: URL)] = []
+            var skipped: [String] = []
+            for share in shares {
+                guard let shareURL = Self.url(hostURL, share: share),
+                      let primaryURL = Self.url(url, share: share) else { continue }
+                let probe = NetworkPlace(
+                    kind: .share, name: share, address: primaryURL.absoluteString,
+                    tailscaleAddress: known.tailscaleAddress
+                )
+                if let existing = NetworkShareMatching.mountPoint(for: probe, in: mounts) {
+                    links.append((share, existing))
+                    continue
+                }
+                // 認証はもう済んでいる（一覧が読めた）。残りの共有は画面を出さずにつなぐ。
+                // 画面を許すと、権限の違う共有があるたびに認証画面が重なって出て、
+                // 答えるまで先へ進まない。つなげない共有は飛ばして、並べられる分を開く。
+                let allowsUI = needsFirstAuth
+                needsFirstAuth = false
+                switch await Self.mount(shareURL, allowsUI: allowsUI) {
+                case .mounted(let mountPoint):
+                    links.append((share, mountPoint))
+                case .alreadyMounted:
+                    mounts = await Task.detached(priority: .userInitiated) {
+                        NetworkPlaceConnector.mountedShares()
+                    }.value
+                    if let existing = NetworkShareMatching.mountPoint(for: probe, in: mounts) {
+                        links.append((share, existing))
+                    } else {
+                        skipped.append(share)
+                    }
+                case .cancelled:
+                    // 認証画面を閉じたなら、残りもつながらない。そこで止める。
+                    if allowsUI {
+                        self.finish(place, failure: nil)
+                        completion(nil)
+                        return
+                    }
+                    skipped.append(share)
+                case .failed:
+                    skipped.append(share)
+                }
+            }
+            guard !links.isEmpty else {
+                self.finish(place, failure: "どの共有にもつなげませんでした。")
+                completion(nil)
+                return
+            }
+            let folder = NetworkServerFolder.folder(for: place)
+            do {
+                try NetworkServerFolder.rebuild(folder, links: links)
+            } catch {
+                self.finish(place, failure: "共有を並べるフォルダを作れませんでした（\(error.localizedDescription)）。")
+                completion(nil)
+                return
+            }
+            self.finish(place, failure: nil)
+            completion(ServerView(
+                folder: folder,
+                tailscaleAddress: route.tailscaleAddress,
+                skipped: skipped,
+                shares: shares
+            ))
+        }
+    }
+
+    /// `smb://host`に共有名を足す。共有名の空白や日本語は符号化する。
+    private static func url(_ host: URL, share: String) -> URL? {
+        guard var components = URLComponents(url: host, resolvingAgainstBaseURL: false) else { return nil }
+        components.path = "/" + share
+        return components.url
+    }
+
+    /// サーバーのディスク共有の名前。まだ認証していなくて読めなければnil。
+    nonisolated private static func listShares(_ hostURL: URL) async -> [String]? {
+        await Task.detached(priority: .userInitiated) { () -> [String]? in
+            guard let host = hostURL.host, TailscaleRoute.isUsableAddress(host) || host.hasSuffix(".local") else {
+                return nil
+            }
+            let user = hostURL.user.map { "\($0)@" } ?? ""
+            guard let data = run("/usr/bin/smbutil", ["view", "-N", "//\(user)\(host)"], timeout: 10),
+                  let text = String(data: data, encoding: .utf8) else { return nil }
+            let shares = SMBShareList.diskShares(fromSmbutilView: text)
+            return shares.isEmpty ? nil : shares
+        }.value
     }
 
     /// sshで繋ぐ先。ふだんの住所に届けばnil（そのまま）、届かずTailscaleに同じ
@@ -316,12 +475,12 @@ final class NetworkPlaceConnector {
     }
 
     /// NetFSで繋ぐ。UIを許すので、パスワードが要れば標準のダイアログが出る。
-    nonisolated private static func mount(_ url: URL) async -> MountResult {
+    nonisolated private static func mount(_ url: URL, allowsUI: Bool = true) async -> MountResult {
         await withCheckedContinuation { continuation in
-            // `kNAUIOptionKey`/`kNAUIOptionAllowUI`はCFSTRのマクロで、Swiftへは
-            // 取り込まれない。中身の文字列を直接書く。
+            // `kNAUIOptionKey`/`kNAUIOptionAllowUI`/`kNAUIOptionNoUI`はCFSTRのマクロで、
+            // Swiftへは取り込まれない。中身の文字列を直接書く。
             let openOptions = NSMutableDictionary()
-            openOptions["UIOption"] = "AllowUI"
+            openOptions["UIOption"] = allowsUI ? "AllowUI" : "NoUI"
             let mountOptions = NSMutableDictionary()
             var requestID: AsyncRequestID?
             // 始める前に断られたときはコールバックが来ない、という約束に頼り切らない。

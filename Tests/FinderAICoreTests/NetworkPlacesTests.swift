@@ -325,3 +325,99 @@ struct TailscaleOfflinePeerTests {
         #expect(TailscaleRoute.peer(matching: ["pws-gpu"], in: peers, includeOffline: true)?.hostName == "pws-gpu")
     }
 }
+
+@Suite("Server view")
+struct NetworkServerViewTests {
+    @Test("smbutil view からディスクの共有だけを読む")
+    func parsesShares() {
+        let output = """
+        Share                                           Type    Comments
+        -------------------------------
+        pws-db                                          Disk    pws-db share directory
+        docker                                          Disk    docker share directory
+        PWS_DB                                          Disk    PWS_DB share directory
+        IPC$                                            Pipe    IPC Service (DXP4800PLUS-56D)
+        share                                           Disk    share share directory
+        研究 データ                                      Disk
+        Printer1                                        Printer
+        ADMIN$                                          Disk    Remote Admin
+
+        6 shares listed
+        """
+        #expect(SMBShareList.diskShares(fromSmbutilView: output) == ["pws-db", "docker", "PWS_DB", "share", "研究 データ"])
+        #expect(SMBShareList.diskShares(fromSmbutilView: "").isEmpty)
+    }
+
+    @Test("サーバーのフォルダは登録ごとに別。使えない文字は置き換える")
+    func folderPerPlace() {
+        let base = URL(fileURLWithPath: "/tmp/servers", isDirectory: true)
+        let a = NetworkPlace(kind: .share, name: "pws-nas03", address: "smb://pws-nas03.local")
+        let b = NetworkPlace(kind: .share, name: "pws-nas03", address: "smb://10.0.70.189")
+        let odd = NetworkPlace(kind: .share, name: "a/b:c", address: "smb://x")
+        #expect(NetworkServerFolder.folder(for: a, base: base) != NetworkServerFolder.folder(for: b, base: base))
+        #expect(NetworkServerFolder.folder(for: a, base: base).lastPathComponent.hasPrefix("pws-nas03 ("))
+        #expect(!NetworkServerFolder.folder(for: odd, base: base).lastPathComponent.contains("/"))
+        #expect(!NetworkServerFolder.folder(for: odd, base: base).lastPathComponent.contains(":"))
+    }
+
+    @Test("作り直しはリンクだけを入れ替え、置かれたものは消さない。リンクはフォルダとして並ぶ")
+    func rebuildsLinksOnly() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("server-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let share = root.appendingPathComponent("Volumes/share", isDirectory: true)
+        let db = root.appendingPathComponent("Volumes/PWS_DB", isDirectory: true)
+        try FileManager.default.createDirectory(at: share, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: db, withIntermediateDirectories: true)
+        let folder = root.appendingPathComponent("pws-nas03", isDirectory: true)
+
+        try NetworkServerFolder.rebuild(folder, links: [("share", share), ("old", db)])
+        try Data("memo".utf8).write(to: folder.appendingPathComponent("置いたメモ.txt"))
+        try NetworkServerFolder.rebuild(folder, links: [("share", share), ("PWS_DB", db)])
+
+        let names = try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted()
+        #expect(names == ["PWS_DB", "share", "置いたメモ.txt"])
+
+        let items = try WorkspaceDirectoryListing.contents(of: folder)
+        #expect(items.first { $0.name == "share" }?.isDirectory == true)
+        #expect(items.first { $0.name == "置いたメモ.txt" }?.isDirectory == false)
+    }
+}
+
+@Suite("Server view links")
+struct NetworkServerLinkTests {
+    @Test("リンクした共有の中も一覧できる。サーバーのフォルダ直下のリンクはリンク先へ移る")
+    func linksOpenAsTheirTargets() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("serverlink-\(UUID().uuidString)", isDirectory: true)
+            .resolvingSymlinksInPath()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let share = root.appendingPathComponent("Volumes/share", isDirectory: true)
+        try FileManager.default.createDirectory(at: share.appendingPathComponent("EnergyColoring"), withIntermediateDirectories: true)
+        let base = root.appendingPathComponent("Servers", isDirectory: true)
+        let folder = base.appendingPathComponent("pws-nas03 (ABCD)", isDirectory: true)
+        try NetworkServerFolder.rebuild(folder, links: [("share", share)])
+        let link = folder.appendingPathComponent("share", isDirectory: true)
+
+        #expect(try WorkspaceDirectoryListing.contents(of: link).map(\.name) == ["EnergyColoring"])
+        #expect(NetworkServerFolder.resolvingShareLink(link, base: base).path == share.standardizedFileURL.path)
+        // サーバーのフォルダの外は調べない。
+        let elsewhere = root.appendingPathComponent("Volumes", isDirectory: true)
+        #expect(NetworkServerFolder.resolvingShareLink(elsewhere, base: base) == elsewhere)
+    }
+}
+
+@Suite("Server view — remembered shares")
+struct KnownSharesTests {
+    @Test("読めた共有の一覧を覚える。同じなら変えない。古い登録も読める")
+    func remembersShares() throws {
+        let place = NetworkPlace(kind: .share, name: "nas04", address: "smb://pwslab@pws-nas04.local")
+        var places = NetworkPlaces([place])
+        do { let changed = places.setKnownShares(id: place.id, to: ["share", "nas03_backup"]); #expect(changed) }
+        do { let changed = places.setKnownShares(id: place.id, to: ["share", "nas03_backup"]); #expect(!changed) }
+        #expect(places.place(id: place.id)?.knownShares == ["share", "nas03_backup"])
+
+        let data = try JSONEncoder().encode(places.all)
+        #expect(try JSONDecoder().decode([NetworkPlace].self, from: data).first?.knownShares == ["share", "nas03_backup"])
+    }
+}

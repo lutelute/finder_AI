@@ -230,7 +230,7 @@ final class NetworkPlaceRegistrationForm: NSObject, NSTextFieldDelegate {
         switch kind {
         case .share:
             addressField.placeholderString = "smb://pws-nas03.local/share"
-            hintLabel.stringValue = "押すとマウントしてその中へ入ります。パスワードは聞かれたときにmacOSの画面で入れ、キーチェーンに保存できます。"
+            hintLabel.stringValue = "共有名まで入れる（…/share）と、押してすぐその中へ入ります。共有名を入れなければ、サーバーの共有を全部つないで並べて開きます。パスワードはmacOSの画面で入れ、キーチェーンに保存できます。"
         case .server:
             addressField.placeholderString = "ubuntu@100.117.16.18 または ~/.ssh/config の別名"
             hintLabel.stringValue = "押すと下のTerminalで ssh が始まります。鍵や踏み台は ~/.ssh/config の設定がそのまま効きます。"

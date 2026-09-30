@@ -2329,6 +2329,10 @@ final class WorkspaceBrowserViewController: NSViewController {
         switch clicked {
         case .place(let place, let state)?:
             switch place.kind {
+            case .share where Self.isServerPlace(place):
+                add(state == .connecting ? "接続しています…" : "サーバーの共有を並べて開く",
+                    #selector(openClickedPlace),
+                    enabled: state != .connecting)
             case .share:
                 if case .connected = state {
                     add("開く", #selector(openClickedPlace))
@@ -2428,6 +2432,8 @@ final class WorkspaceBrowserViewController: NSViewController {
             // 選ばれたままだと「いまここを見ている」と読めてしまう。
             updateSidebarSelection()
             onOpenServer?(place)
+        case .share where Self.isServerPlace(place):
+            openServerView(place)
         case .share:
             if case .connected(let mountPoint) = state {
                 if mountPoint != navigator.currentDirectory { navigate(to: mountPoint) }
@@ -2457,6 +2463,36 @@ final class WorkspaceBrowserViewController: NSViewController {
                     self.presentError(title: "「\(current.name)」に接続できません", message: reason)
                 }
             }
+        }
+    }
+
+    /// 共有名なしで登録した共有は「サーバー」として開く——共有を全部つないで並べる。
+    private static func isServerPlace(_ place: NetworkPlace) -> Bool {
+        place.kind == .share && place.shareURL.map { NetworkShareMatching.shareName(of: $0) == nil } == true
+    }
+
+    private func openServerView(_ place: NetworkPlace) {
+        NetworkPlaceConnector.shared.openServer(place) { [weak self] view in
+            guard let self else { return }
+            guard let view else {
+                self.updateSidebarSelection()
+                let current = self.preferences.networkPlaces.place(id: place.id) ?? place
+                if case .unreachable(let reason) = NetworkPlaceConnector.shared.state(
+                    for: current,
+                    mounts: self.networkMounts
+                ) {
+                    self.presentError(title: "「\(current.name)」に接続できません", message: reason)
+                }
+                return
+            }
+            var places = self.preferences.networkPlaces
+            var changed = places.setKnownShares(id: place.id, to: view.shares)
+            if let address = view.tailscaleAddress {
+                changed = places.setTailscaleAddress(id: place.id, to: address) || changed
+            }
+            if changed { self.preferences.networkPlaces = places }
+            self.loadSidebarSources()
+            self.navigate(to: view.folder)
         }
     }
 
@@ -2617,6 +2653,10 @@ final class WorkspaceBrowserViewController: NSViewController {
     ) -> String {
         let address = place.kind == .share ? place.address : "ssh \(place.address)"
         switch (place.kind, state) {
+        case (.share, .connected) where isServerPlace(place):
+            return "\(address)\nサーバーの共有を並べて開きます（つながっていない共有もつなぎます）。"
+        case (.share, .disconnected) where isServerPlace(place):
+            return "\(address)\n押すと、サーバーの共有を全部つないで並べて開きます。届かなければTailscaleで繋ぎます。"
         case (.share, .connected(let mountPoint)):
             let route = NetworkShareMatching.isViaTailscale(place, mountPoint: mountPoint, in: mounts)
                 ? "（Tailscale経由 \(place.tailscaleAddress ?? "")）"
@@ -2791,6 +2831,8 @@ final class WorkspaceBrowserViewController: NSViewController {
             switch row {
             case .item(let item):
                 return item.url.path == current
+            case .place(let place, _) where Self.isServerPlace(place):
+                return NetworkServerFolder.folder(for: place).standardizedFileURL.path == current
             case .place(let place, .connected(let mountPoint)):
                 return place.kind == .share && mountPoint.path == current
             default:
@@ -2806,7 +2848,7 @@ final class WorkspaceBrowserViewController: NSViewController {
 
     /// Moves to `url` as if the user had clicked it, history included.
     func navigate(to url: URL) {
-        navigate(to: url, addHistory: true)
+        navigate(to: NetworkServerFolder.resolvingShareLink(url), addHistory: true)
     }
 
     /// 入れ物のフォルダを開いて、その1つを選んだ状態にする。外から

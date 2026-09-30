@@ -22,13 +22,25 @@ public struct NetworkPlace: Codable, Equatable, Identifiable, Sendable {
     /// マウントの戻り先がこの住所になるので、突き合わせに要る。無かった頃の登録も
     /// 読めるよう省略可能。
     public var tailscaleAddress: String?
+    /// 共有名なしで登録したサーバーの、前回読めた共有の一覧。一覧を読むには認証が
+    /// 要り、Macを起動し直した後は読めない。覚えておけば、共有を選ぶ画面を出さずに
+    /// そのままつなげる（認証はキーチェーンから）。
+    public var knownShares: [String]?
 
-    public init(id: UUID = UUID(), kind: Kind, name: String, address: String, tailscaleAddress: String? = nil) {
+    public init(
+        id: UUID = UUID(),
+        kind: Kind,
+        name: String,
+        address: String,
+        tailscaleAddress: String? = nil,
+        knownShares: [String]? = nil
+    ) {
         self.id = id
         self.kind = kind
         self.name = name
         self.address = address
         self.tailscaleAddress = tailscaleAddress
+        self.knownShares = knownShares
     }
 
     /// Tailscaleの住所に差し替えた共有のURL。
@@ -93,6 +105,15 @@ public struct NetworkPlaces: Equatable, Sendable {
         guard let index = all.firstIndex(where: { $0.id == id }),
               all[index].tailscaleAddress != address else { return false }
         all[index].tailscaleAddress = address
+        return true
+    }
+
+    /// サーバーの共有の一覧を覚える。同じなら何もしない。
+    @discardableResult
+    public mutating func setKnownShares(id: UUID, to shares: [String]) -> Bool {
+        guard let index = all.firstIndex(where: { $0.id == id }),
+              all[index].knownShares != shares else { return false }
+        all[index].knownShares = shares
         return true
     }
 
@@ -420,5 +441,88 @@ public enum SSHConfigHosts {
             }
         }
         return result
+    }
+}
+
+/// サーバーの共有の一覧（`smbutil view`の出力）を読む。
+///
+/// 並べるのはディスクの共有だけ。`IPC$`のような管理用（名前が`$`で終わる）と、
+/// プリンタは出さない。共有名は空白を含み得るので、列の幅ではなく種類の語
+/// （`Disk`）の手前までを名前とみなす。
+public enum SMBShareList {
+    public static func diskShares(fromSmbutilView output: String) -> [String] {
+        var names: [String] = []
+        for line in output.split(whereSeparator: \.isNewline) {
+            let text = String(line)
+            guard let range = text.range(of: #"\s+Disk(\s|$)"#, options: .regularExpression) else { continue }
+            let name = text[..<range.lowerBound].trimmingCharacters(in: .whitespaces)
+            guard !name.isEmpty, !name.hasSuffix("$"), !names.contains(name) else { continue }
+            names.append(name)
+        }
+        return names
+    }
+}
+
+/// サーバーの共有を並べたフォルダの置き場所。
+///
+/// 共有名なしで登録した「サーバー」を押すと、共有を全部つないで、それぞれへの
+/// リンクをこのフォルダに並べて開く（Finderでサーバーを開いたときの見え方）。
+/// 共有そのものは`/Volumes/<共有>`のまま——Terminalで打つ道も、Finderから見える
+/// 場所も変えない。
+public enum NetworkServerFolder {
+    public static var defaultBase: URL {
+        URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+            .appendingPathComponent("Library/Application Support/FinderAI/Servers", isDirectory: true)
+    }
+
+    /// 登録名をフォルダ名にする。`/`や`:`は使えないので置き換え、同じ名前の
+    /// 登録が2つあっても重ならないよう、IDの頭を添える。
+    public static func folder(for place: NetworkPlace, base: URL = defaultBase) -> URL {
+        let safe = place.name
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+            .trimmingCharacters(in: .whitespaces)
+        let name = (safe.isEmpty ? "server" : safe) + " (" + place.id.uuidString.prefix(4) + ")"
+        return base.appendingPathComponent(name, isDirectory: true)
+    }
+
+    /// サーバーのフォルダに並べたリンクなら、そのリンク先（`/Volumes/<共有>`）。
+    ///
+    /// 共有に入ったら、パスは`/Volumes/share`のほうを見せる。リンクのまま入ると
+    /// `~/Library/Application Support/…/share`と長く出て、Terminalで打つ場所とも
+    /// ずれる。調べるのはサーバーのフォルダの直下だけ——それ以外の場所で
+    /// リンクかどうかを確かめに行くと、つながりの悪いネットワークの上では
+    /// 移動のたびに待たされる。
+    public static func resolvingShareLink(_ url: URL, base: URL = defaultBase) -> URL {
+        let standardized = url.standardizedFileURL
+        let basePath = base.standardizedFileURL.path
+        guard standardized.deletingLastPathComponent().deletingLastPathComponent().path == basePath,
+              let destination = try? FileManager.default.destinationOfSymbolicLink(atPath: standardized.path)
+        else { return url }
+        return URL(fileURLWithPath: destination, isDirectory: true).standardizedFileURL
+    }
+
+    /// 共有名→マウント先のリンクで、フォルダを作り直す。
+    ///
+    /// フォルダの中の**リンクだけ**を入れ替える。ふつうのファイルやフォルダが
+    /// 紛れ込んでいても消さない（誰かが置いたものかもしれない）。
+    public static func rebuild(
+        _ folder: URL,
+        links: [(name: String, target: URL)],
+        fileManager: FileManager = .default
+    ) throws {
+        try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
+        for name in (try? fileManager.contentsOfDirectory(atPath: folder.path)) ?? [] {
+            let path = folder.appendingPathComponent(name).path
+            if (try? fileManager.destinationOfSymbolicLink(atPath: path)) != nil {
+                try? fileManager.removeItem(atPath: path)
+            }
+        }
+        for link in links {
+            let name = link.name.replacingOccurrences(of: "/", with: "-")
+            let path = folder.appendingPathComponent(name).path
+            guard !fileManager.fileExists(atPath: path) else { continue }
+            try fileManager.createSymbolicLink(atPath: path, withDestinationPath: link.target.path)
+        }
     }
 }
