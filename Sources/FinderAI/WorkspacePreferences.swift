@@ -39,6 +39,7 @@ struct WorkspacePreferences {
         static let lastDirectory = "workspace.lastDirectory"
         static let pins = "workspace.pins"
         static let networkPlaces = "workspace.networkPlaces"
+        static let hiddenCloudPaths = "workspace.hiddenCloudPaths"
         static let visits = "workspace.visits"
         static let columnView = "workspace.columnView"
         static let viewMode = "workspace.viewMode"
@@ -359,6 +360,13 @@ struct WorkspacePreferences {
             guard let data = try? JSONEncoder().encode(newValue.all) else { return }
             defaults.set(data, forKey: Key.networkPlaces)
         }
+    }
+
+    /// 「クラウド」節から隠したもの。クラウドは見つけた分を全部出すので、使わない
+    /// アカウントを消す手段はこれだけ。パスで持つ。
+    var hiddenCloudPaths: [String] {
+        get { defaults.stringArray(forKey: Key.hiddenCloudPaths) ?? [] }
+        nonmutating set { defaults.set(newValue, forKey: Key.hiddenCloudPaths) }
     }
 
     /// A corrupt log costs the user nothing to rebuild, so a decode failure starts

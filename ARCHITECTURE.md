@@ -72,6 +72,10 @@ File Providerや保護フォルダのmetadata問い合わせがAppKit起動を�
 
 `FavoriteItems.sfl4`はApple非公開の`NSKeyedArchiver`形式です。`SFLListItem`を持たない以上グラフを正しく辿れないため、`$objects`からbookmark blobを走査しています。読めなければ組み込みの場所へ落ちるだけで、エラーにはしません。
 
+### クラウド（1.42.0）
+
+`~/Library/CloudStorage/`の下のフォルダ（`GoogleDrive-<アカウント>`、`OneDrive-個人用`、`OneDrive-共有ライブラリ-<組織>`…）とiCloud Driveを、「クラウド」節に並べます（`CloudStorageLocations`）。File Providerに乗ったクラウドはどれもこの形で現れるので、マウントも登録も要りません。読むのは名前と「フォルダか」だけで、`ubiquitousItem*`は引きません（OneDrive配下で数十秒止まった実測があるため）。実機で5件を4msで読みます。`OneDriveCloudTemp`はOneDriveの作業用なので出しません。使わないものは右クリックで隠し、パスを`hiddenCloudPaths`に持ちます。
+
 ### ネットワークの場所（1.42.0）
 
 「ネットワーク」（共有）と「サーバー」（SSH）の2節を、よく使う項目と場所のあいだに差し込みます。登録は`NetworkPlaces`（UserDefaultsのJSON、最大30件）で、行は`SidebarRow.place`としてフォルダの行（`.item`）と分けています——未接続の共有やサーバーはファイルURLを持たないので、フォルダ前提の経路（選択の突き合わせ、ドロップ先、Finderで表示）に紛れ込ませないためです。

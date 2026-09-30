@@ -816,6 +816,8 @@ final class WorkspaceBrowserViewController: NSViewController {
     private var volumes: [URL] = []
     /// マウント済みのネットワーク共有。登録との突き合わせに使う。
     private var networkMounts: [MountedShare] = []
+    /// このMacに入っているクラウド（Google Drive、OneDrive、iCloud Drive）。
+    private var cloudLocations: [WorkspaceSidebarModel.Item] = []
     private nonisolated(unsafe) var networkPlacesObserver: (any NSObjectProtocol)?
     private nonisolated(unsafe) var sessionsObserver: (any NSObjectProtocol)?
     private var sidebarLoadTask: Task<Void, Never>?
@@ -2354,12 +2356,42 @@ final class WorkspaceBrowserViewController: NSViewController {
                 menu.addItem(.separator())
                 add("ネットワークの場所に登録", #selector(registerClickedVolume))
             }
+            if cloudLocations.contains(where: { $0.url.path == item.url.path }) {
+                menu.addItem(.separator())
+                add("「クラウド」から隠す", #selector(hideClickedCloudLocation))
+            }
         case .placesHeader(let kind)?:
             add(kind == .share ? "ネットワークの場所を登録…" : "サーバーを登録…",
                 kind == .share ? #selector(registerNetworkShareFromHeader) : #selector(registerServerFromHeader))
         case .header?, nil:
             add("ネットワークの場所を登録…", #selector(registerNetworkShareFromHeader))
         }
+        // 隠したクラウドは、節ごと消えていても戻せるように、見出しや余白の
+        // 右クリックにも出す。
+        let hidden = hiddenCloudLocations
+        if !hidden.isEmpty, clicked.map({ if case .item = $0 { return false } else { return true } }) ?? true {
+            menu.addItem(.separator())
+            add("隠したクラウドを再表示（\(hidden.count)）", #selector(showHiddenCloudLocations))
+        }
+    }
+
+    private var hiddenCloudLocations: [WorkspaceSidebarModel.Item] {
+        let hidden = Set(preferences.hiddenCloudPaths)
+        return cloudLocations.filter { hidden.contains($0.url.path) }
+    }
+
+    @objc private func hideClickedCloudLocation() {
+        guard let item = clickedSidebarItem else { return }
+        var hidden = preferences.hiddenCloudPaths
+        guard !hidden.contains(item.url.path) else { return }
+        hidden.append(item.url.path)
+        preferences.hiddenCloudPaths = hidden
+        NetworkPlaceConnector.shared.notifyChange()
+    }
+
+    @objc private func showHiddenCloudLocations() {
+        preferences.hiddenCloudPaths = []
+        NetworkPlaceConnector.shared.notifyChange()
     }
 
     private var clickedPlace: (NetworkPlace, NetworkPlaceState)? {
@@ -2632,9 +2664,12 @@ final class WorkspaceBrowserViewController: NSViewController {
             NetworkShareMatching.mountPoint(for: $0, in: networkMounts)?.path
         })
         let unregisteredVolumes = volumes.filter { !registeredMounts.contains($0.path) }
+        let hiddenCloud = Set(preferences.hiddenCloudPaths)
+        let cloud = cloudLocations.filter { !hiddenCloud.contains($0.url.path) }
         let claimed = Set(
             pins.storedPaths
                 + finderFavorites.map(\.path)
+                + cloud.map(\.url.path)
                 + volumes.map(\.path)
         )
 
@@ -2644,6 +2679,7 @@ final class WorkspaceBrowserViewController: NSViewController {
                 favorites: finderFavorites.isEmpty
                     ? WorkspaceSidebarModel.fallbackFavorites(home: Self.homeDirectory)
                     : finderFavorites,
+                cloud: cloud,
                 volumes: unregisteredVolumes,
                 frequent: log.frequent(limit: 5, excluding: claimed),
                 recent: log.recent(limit: 5, excluding: claimed)
@@ -2692,17 +2728,30 @@ final class WorkspaceBrowserViewController: NSViewController {
             let favorites = FinderFavorites.directories()
             let volumes = Self.mountedVolumes()
             let mounts = NetworkPlaceConnector.mountedShares()
+            let cloud = CloudStorageLocations.locations()
             guard !Task.isCancelled else { return }
-            await self?.applySidebarSources(favorites: favorites, volumes: volumes, mounts: mounts)
+            await self?.applySidebarSources(
+                favorites: favorites,
+                volumes: volumes,
+                mounts: mounts,
+                cloud: cloud
+            )
         }
     }
 
-    private func applySidebarSources(favorites: [URL], volumes: [URL], mounts: [MountedShare]) {
-        guard finderFavorites != favorites || self.volumes != volumes || networkMounts != mounts
+    private func applySidebarSources(
+        favorites: [URL],
+        volumes: [URL],
+        mounts: [MountedShare],
+        cloud: [WorkspaceSidebarModel.Item]
+    ) {
+        guard finderFavorites != favorites || self.volumes != volumes
+            || networkMounts != mounts || cloudLocations != cloud
         else { return }
         finderFavorites = favorites
         self.volumes = volumes
         networkMounts = mounts
+        cloudLocations = cloud
         rebuildSidebar()
     }
 
