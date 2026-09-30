@@ -286,16 +286,7 @@ struct SSHLaunchPlannerTests {
     @Test("失敗したときだけ理由を残して待つ")
     func holdsOnlyOnFailure() throws {
         func run(_ command: String) throws -> (status: Int32, output: String) {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/sh")
-            process.arguments = ["-c", TerminalLaunchPlanner.sshHoldScript, "finderai-ssh", command, "target", ""]
-            let output = Pipe()
-            process.standardOutput = output
-            process.standardInput = FileHandle.nullDevice
-            try process.run()
-            process.waitUntilExit()
-            let text = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            return (process.terminationStatus, text)
+            try runShell(["-c", TerminalLaunchPlanner.sshHoldScript, "finderai-ssh", command, "target", ""])
         }
         let failed = try run("/usr/bin/false")
         #expect(failed.status == 1)
@@ -331,15 +322,7 @@ struct SSHLaunchPlannerTests {
         #expect(plan.arguments.suffix(3) == ["/usr/bin/ssh", "pws-gpu3060", "100.117.16.18"])
 
         // sshの代わりにechoを渡して、実際に組まれる引数を見る。
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = Array(plan.arguments.prefix(3)) + ["/bin/echo", "pws-gpu3060", "100.117.16.18"]
-        let output = Pipe()
-        process.standardOutput = output
-        process.standardInput = FileHandle.nullDevice
-        try process.run()
-        process.waitUntilExit()
-        let text = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let text = try runShell(Array(plan.arguments.prefix(3)) + ["/bin/echo", "pws-gpu3060", "100.117.16.18"]).output
         #expect(text.contains("Tailscale（100.117.16.18）で繋ぎます"))
         #expect(text.contains("-o HostName=100.117.16.18 pws-gpu3060"))
     }
@@ -379,4 +362,28 @@ struct SSHLaunchPlannerTests {
         #expect(!TerminalSessionKind.startable.contains(.ssh))
         #expect(!TerminalSessionKind.ssh.resumesConversations)
     }
+}
+
+/// `/bin/sh`を動かして、終了コードと標準出力を返す。
+///
+/// 出力はパイプではなく一時ファイルで受ける。同じプロセスで本物のzshを`forkpty`
+/// する試験（ShellFollowIntegrationTests）が同時に走ると、パイプの書き口がzshへ
+/// 受け継がれ、読み切りが詰まって互いに待たせた（全件実行で何度も60秒待ちに
+/// なった。このヘルパーに替えてからは起きない）。
+func runShell(_ arguments: [String]) throws -> (status: Int32, output: String) {
+    let file = FileManager.default.temporaryDirectory
+        .appendingPathComponent("finderai-sh-\(UUID().uuidString).txt")
+    FileManager.default.createFile(atPath: file.path, contents: nil)
+    defer { try? FileManager.default.removeItem(at: file) }
+    let handle = try FileHandle(forWritingTo: file)
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/sh")
+    process.arguments = arguments
+    process.standardOutput = handle
+    process.standardInput = FileHandle.nullDevice
+    try process.run()
+    process.waitUntilExit()
+    try handle.close()
+    let text = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+    return (process.terminationStatus, text)
 }

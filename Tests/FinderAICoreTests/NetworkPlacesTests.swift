@@ -355,7 +355,8 @@ struct NetworkServerViewTests {
         let b = NetworkPlace(kind: .share, name: "pws-nas03", address: "smb://10.0.70.189")
         let odd = NetworkPlace(kind: .share, name: "a/b:c", address: "smb://x")
         #expect(NetworkServerFolder.folder(for: a, base: base) != NetworkServerFolder.folder(for: b, base: base))
-        #expect(NetworkServerFolder.folder(for: a, base: base).lastPathComponent.hasPrefix("pws-nas03 ("))
+        // 窓の名前になるので、登録名そのまま。
+        #expect(NetworkServerFolder.folder(for: a, base: base).lastPathComponent == "pws-nas03")
         #expect(!NetworkServerFolder.folder(for: odd, base: base).lastPathComponent.contains("/"))
         #expect(!NetworkServerFolder.folder(for: odd, base: base).lastPathComponent.contains(":"))
     }
@@ -395,7 +396,8 @@ struct NetworkServerLinkTests {
         let share = root.appendingPathComponent("Volumes/share", isDirectory: true)
         try FileManager.default.createDirectory(at: share.appendingPathComponent("EnergyColoring"), withIntermediateDirectories: true)
         let base = root.appendingPathComponent("Servers", isDirectory: true)
-        let folder = base.appendingPathComponent("pws-nas03 (ABCD)", isDirectory: true)
+        let place = NetworkPlace(kind: .share, name: "pws-nas03", address: "smb://pws-nas03.local")
+        let folder = NetworkServerFolder.folder(for: place, base: base)
         try NetworkServerFolder.rebuild(folder, links: [("share", share)])
         let link = folder.appendingPathComponent("share", isDirectory: true)
 
@@ -419,5 +421,29 @@ struct KnownSharesTests {
 
         let data = try JSONEncoder().encode(places.all)
         #expect(try JSONDecoder().decode([NetworkPlace].self, from: data).first?.knownShares == ["share", "nas03_backup"])
+    }
+}
+
+@Suite("Server view — Places section")
+struct ServerMountsTests {
+    @Test("サーバーとして登録したホストの共有は、全部が登録に当たる")
+    func serverClaimsAllItsShares() throws {
+        let server = NetworkPlace(
+            kind: .share, name: "pws-nas04", address: "smb://pwslab@pws-nas04.local",
+            tailscaleAddress: "100.121.140.79"
+        )
+        let single = NetworkPlace(kind: .share, name: "db", address: "smb://pws-nas03.local/PWS_DB")
+        let mounts = [
+            MountedShare(mountPoint: URL(fileURLWithPath: "/Volumes/share-1"),
+                         remountURL: try #require(URL(string: "smb://pwslab@100.121.140.79/share"))),
+            MountedShare(mountPoint: URL(fileURLWithPath: "/Volumes/nas03_backup"),
+                         remountURL: try #require(URL(string: "smb://pwslab@100.121.140.79/nas03_backup"))),
+            MountedShare(mountPoint: URL(fileURLWithPath: "/Volumes/PWS_DB"),
+                         remountURL: try #require(URL(string: "smb://pwslab@pws-nas03.local/PWS_DB"))),
+            MountedShare(mountPoint: URL(fileURLWithPath: "/Volumes/share"),
+                         remountURL: try #require(URL(string: "smb://pwslab@pws-nas03.local/share")))
+        ]
+        #expect(NetworkShareMatching.mountPoints(for: server, in: mounts).map(\.path) == ["/Volumes/share-1", "/Volumes/nas03_backup"])
+        #expect(NetworkShareMatching.mountPoints(for: single, in: mounts).map(\.path) == ["/Volumes/PWS_DB"])
     }
 }

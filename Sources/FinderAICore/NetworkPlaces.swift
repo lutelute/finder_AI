@@ -310,6 +310,15 @@ public enum NetworkShareMatching {
         }?.mountPoint
     }
 
+    /// 登録に当たるマウント先を全部。共有名なしで登録したサーバーなら、そのホストの
+    /// 共有が全部当たる（「場所」に重ねて出さないために使う）。
+    public static func mountPoints(for place: NetworkPlace, in mounts: [MountedShare]) -> [URL] {
+        let candidates = [place.shareURL, place.tailscaleShareURL].compactMap { $0 }
+        return mounts.filter { mount in
+            candidates.contains { matches(registered: $0, mounted: mount.remountURL) }
+        }.map(\.mountPoint)
+    }
+
     /// そのマウントがTailscaleの住所で繋がっているか。
     public static func isViaTailscale(_ place: NetworkPlace, mountPoint: URL, in mounts: [MountedShare]) -> Bool {
         guard let tailscale = place.tailscaleShareURL,
@@ -475,15 +484,19 @@ public enum NetworkServerFolder {
             .appendingPathComponent("Library/Application Support/FinderAI/Servers", isDirectory: true)
     }
 
-    /// 登録名をフォルダ名にする。`/`や`:`は使えないので置き換え、同じ名前の
-    /// 登録が2つあっても重ならないよう、IDの頭を添える。
+    /// 登録ごとのフォルダ。`<ID>/<登録名>`の形にする。
+    ///
+    /// 窓の名前はフォルダ名なので、登録名そのものにしたい（「pws-nas04」）。
+    /// 名前にIDを添えていた版は「pws-nas04 (7CB1)」と出て読みにくかった。
+    /// 同じ名前の登録が2つあっても重ならないよう、IDは一段上に置く。
     public static func folder(for place: NetworkPlace, base: URL = defaultBase) -> URL {
         let safe = place.name
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")
             .trimmingCharacters(in: .whitespaces)
-        let name = (safe.isEmpty ? "server" : safe) + " (" + place.id.uuidString.prefix(4) + ")"
-        return base.appendingPathComponent(name, isDirectory: true)
+        return base
+            .appendingPathComponent(place.id.uuidString, isDirectory: true)
+            .appendingPathComponent(safe.isEmpty ? "server" : safe, isDirectory: true)
     }
 
     /// サーバーのフォルダに並べたリンクなら、そのリンク先（`/Volumes/<共有>`）。
@@ -496,7 +509,9 @@ public enum NetworkServerFolder {
     public static func resolvingShareLink(_ url: URL, base: URL = defaultBase) -> URL {
         let standardized = url.standardizedFileURL
         let basePath = base.standardizedFileURL.path
-        guard standardized.deletingLastPathComponent().deletingLastPathComponent().path == basePath,
+        // `<base>/<ID>/<登録名>/<共有>`の最後の段だけを見る。
+        guard standardized.deletingLastPathComponent().deletingLastPathComponent()
+                .deletingLastPathComponent().path == basePath,
               let destination = try? FileManager.default.destinationOfSymbolicLink(atPath: standardized.path)
         else { return url }
         return URL(fileURLWithPath: destination, isDirectory: true).standardizedFileURL

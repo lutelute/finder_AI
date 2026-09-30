@@ -2717,8 +2717,9 @@ final class WorkspaceBrowserViewController: NSViewController {
         }
         // 登録した共有のマウント先は「場所」に重ねて出さない。同じものが2か所に
         // あると、どちらを押せばいいのか迷う。
-        let registeredMounts = Set(places.shares.compactMap {
-            NetworkShareMatching.mountPoint(for: $0, in: networkMounts)?.path
+        // サーバーとして登録したホストの共有は、全部サーバーのフォルダに並ぶ。
+        let registeredMounts = Set(places.shares.flatMap {
+            NetworkShareMatching.mountPoints(for: $0, in: networkMounts).map(\.path)
         })
         let unregisteredVolumes = volumes.filter { !registeredMounts.contains($0.path) }
         let hiddenCloud = Set(preferences.hiddenCloudPaths)
