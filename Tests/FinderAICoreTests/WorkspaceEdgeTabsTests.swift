@@ -214,10 +214,11 @@ struct EdgeTabPlacementTests {
             visibleFrame: screen
         ))
         let hiddenRight = EdgeTabPlacement.hiddenStripFrame(visible: right, edge: .right)
-        #expect(hiddenRight.size == right.size)
+        #expect(hiddenRight.height == right.height)
         #expect(hiddenRight.minY == right.minY)
         // 画面に残るのは取っ手のぶんだけ。
-        #expect(screen.maxX - hiddenRight.minX == EdgeTabPlacement.handleWidth)
+        #expect(hiddenRight.width == EdgeTabPlacement.handleWidth)
+        #expect(hiddenRight.maxX == screen.maxX)
 
         let left = try #require(EdgeTabPlacement.stripFrame(
             tabCount: 3,
@@ -225,7 +226,58 @@ struct EdgeTabPlacementTests {
             visibleFrame: screen
         ))
         let hiddenLeft = EdgeTabPlacement.hiddenStripFrame(visible: left, edge: .left)
-        #expect(hiddenLeft.maxX - screen.minX == EdgeTabPlacement.handleWidth)
+        #expect(hiddenLeft.width == EdgeTabPlacement.handleWidth)
+        #expect(hiddenLeft.minX == screen.minX)
+    }
+
+    /// 縁の向こうに別のモニタがあると、画面の外へずらした帯はそちらに見えてしまう。
+    /// 隠れた帯も、出し入れの途中も、自分の画面の中に収まっていること。
+    @Test("the hidden strip never leaves its own screen")
+    func hiddenStripStaysOnItsScreen() throws {
+        for edge in [WorkspaceScreenEdge.left, .right] {
+            let visible = try #require(EdgeTabPlacement.stripFrame(
+                tabCount: 3,
+                edge: edge,
+                visibleFrame: screen
+            ))
+            let hidden = EdgeTabPlacement.hiddenStripFrame(visible: visible, edge: edge)
+            #expect(hidden.minX >= screen.minX && hidden.maxX <= screen.maxX, "\(edge)")
+        }
+    }
+
+    /// 前の縁に取り残された帯を、そこから滑らせない。画面の端から端まで横切って見える。
+    @Test("a strip left behind on the other edge is moved before it slides, not dragged across the screen")
+    func slideStartsFromTheTargetEdge() throws {
+        let right = try #require(EdgeTabPlacement.stripFrame(tabCount: 3, edge: .right, visibleFrame: screen))
+        let left = try #require(EdgeTabPlacement.stripFrame(tabCount: 3, edge: .left, visibleFrame: screen))
+        let hiddenLeft = EdgeTabPlacement.hiddenStripFrame(visible: left, edge: .left)
+        let hiddenRight = EdgeTabPlacement.hiddenStripFrame(visible: right, edge: .right)
+
+        // 左の縁に隠れたまま右の縁へ移った帯を出す: 右の縁の隠れた位置から滑らせる。
+        #expect(EdgeTabPlacement.slideStart(
+            current: hiddenLeft, target: right, visible: right, edge: .right, hiding: false
+        ) == hiddenRight)
+        // 左に出たまま右の縁で隠す: 右の縁に出た位置から引っ込める。
+        #expect(EdgeTabPlacement.slideStart(
+            current: left, target: hiddenRight, visible: right, edge: .right, hiding: true
+        ) == right)
+        // ふつうの出し入れ（同じ縁の上）は置き直さない。
+        #expect(EdgeTabPlacement.slideStart(
+            current: hiddenRight, target: right, visible: right, edge: .right, hiding: false
+        ) == nil)
+        #expect(EdgeTabPlacement.slideStart(
+            current: left, target: hiddenLeft, visible: left, edge: .left, hiding: true
+        ) == nil)
+    }
+
+    /// 中身は縁の側に寄せる。左の縁ならタブの右端4ptが残り、出ているときは0。
+    @Test("tabs are pushed past the edge, leaving their inner side as the handle")
+    func hiddenContentPlacement() {
+        let tab = EdgeTabPlacement.tabWidth
+        let handle = EdgeTabPlacement.handleWidth
+        #expect(EdgeTabPlacement.hiddenContentX(stripWidth: handle, contentWidth: tab, edge: .left) == handle - tab)
+        #expect(EdgeTabPlacement.hiddenContentX(stripWidth: tab, contentWidth: tab, edge: .left) == 0)
+        #expect(EdgeTabPlacement.hiddenContentX(stripWidth: handle, contentWidth: tab, edge: .right) == 0)
     }
 
     /// 呼び出す高さを指定できる。指定しなければ画面の中央。

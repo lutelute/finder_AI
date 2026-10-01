@@ -33,8 +33,10 @@ struct EdgeTabsRecallTests {
         let reach = visible.height * EdgeTabPlacement.recallReach
         #expect(controller.stripIsHiddenForTesting(on: screen) == true)
         let hidden = try #require(controller.stripFrameForTesting(on: screen))
-        // 隠れているあいだは、ほぼ画面の外。
-        #expect(hidden.minX < visible.minX)
+        // 隠れているあいだは取っ手の幅だけで、画面の外には出ない。外へずらすと、
+        // 縁の向こうに別のモニタがあるときそちらに帯が見えてしまう。
+        #expect(hidden.width == EdgeTabPlacement.handleWidth)
+        #expect(hidden.minX >= screen.frame.minX)
 
         // 画面を横切るだけ（縁から40pt）では出ない。
         controller.recallHiddenStrip(at: CGPoint(x: visible.minX + 40, y: visible.maxY - 30))

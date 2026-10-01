@@ -536,47 +536,44 @@ final class EdgeTabsController {
             strip.panel.orderOut(nil)
             return
         }
-        strip.panel.setFrame(
-            strip.isHidden
+        place(
+            strip.panel,
+            at: strip.isHidden
                 ? EdgeTabPlacement.hiddenStripFrame(visible: resting, edge: strip.edge)
-                : resting,
-            display: true
+                : resting
         )
         layoutTabs(in: strip, within: resting)
         strip.panel.orderFrontRegardless()
     }
 
+    /// タブを縦に積む。横は縁の側に寄せる。
+    ///
+    /// 隠すときは帯そのものを取っ手の幅まで縮める（画面の外へは出さない）。タブは
+    /// 縁の側に留め具を付けておく——左の縁なら右端、右の縁なら左端。帯が縮む
+    /// アニメーションのあいだ、タブはその留め具に引かれて縁の向こうへ滑り、画面の
+    /// 縁で切り落とされる。帯とタブを別々に動かさないので、ずれて見えることがない。
     private func layoutTabs(in strip: Strip, within resting: CGRect) {
+        let x = EdgeTabPlacement.hiddenContentX(
+            stripWidth: strip.container.bounds.width,
+            contentWidth: EdgeTabPlacement.tabWidth,
+            edge: strip.edge
+        )
+        let anchor: NSView.AutoresizingMask = strip.edge == .left ? [.minXMargin] : [.maxXMargin]
         var y = resting.height
-        if let windowsTab = strip.windowsTab {
+        func place(_ view: NSView) {
             y -= EdgeTabPlacement.tabHeight
-            windowsTab.frame = NSRect(
-                x: 0,
+            view.autoresizingMask = anchor
+            view.frame = NSRect(
+                x: x,
                 y: y,
                 width: EdgeTabPlacement.tabWidth,
                 height: EdgeTabPlacement.tabHeight
             )
             y -= EdgeTabPlacement.tabSpacing
         }
-        for tab in strip.tabs {
-            y -= EdgeTabPlacement.tabHeight
-            tab.frame = NSRect(
-                x: 0,
-                y: y,
-                width: EdgeTabPlacement.tabWidth,
-                height: EdgeTabPlacement.tabHeight
-            )
-            y -= EdgeTabPlacement.tabSpacing
-        }
-        if let addTab = strip.addTab {
-            y -= EdgeTabPlacement.tabHeight
-            addTab.frame = NSRect(
-                x: 0,
-                y: y,
-                width: EdgeTabPlacement.tabWidth,
-                height: EdgeTabPlacement.tabHeight
-            )
-        }
+        if let windowsTab = strip.windowsTab { place(windowsTab) }
+        strip.tabs.forEach(place)
+        if let addTab = strip.addTab { place(addTab) }
     }
 
     /// ウインドウの配置を描き直す。増減や移動のたびに呼ばれる。
@@ -639,19 +636,44 @@ final class EdgeTabsController {
         }
     }
 
+    /// 帯をその場へ置く。走っている出し入れのアニメーションも打ち切る。
+    ///
+    /// ただ`setFrame`すると、走っているアニメーションがそのまま続いて前の縁へ
+    /// 戻してしまう。縁を移った帯が前の縁に取り残され、次に出すとき画面を横切った。
+    private func place(_ panel: NSPanel, at frame: CGRect) {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            panel.animator().setFrame(frame, display: true)
+        }
+        panel.setFrame(frame, display: true)
+    }
+
     private func slide(_ strip: Strip, on screen: NSScreen, hidden: Bool) {
         guard hidden != strip.isHidden,
               let resting = restingFrame(for: strip, on: screen) else { return }
         strip.isHidden = hidden
-        // 出す位置が変わるので、タブも新しい枠に合わせて置き直す。
-        layoutTabs(in: strip, within: resting)
         let target = hidden
             ? EdgeTabPlacement.hiddenStripFrame(visible: resting, edge: strip.edge)
             : resting
+        // 前の縁に取り残されていたら、出す縁の側へ先に置き直す。そこから滑らせると
+        // 画面の端から端まで横切って見える。
+        if let start = EdgeTabPlacement.slideStart(
+            current: strip.panel.frame,
+            target: target,
+            visible: resting,
+            edge: strip.edge,
+            hiding: hidden
+        ) {
+            place(strip.panel, at: start)
+        }
+        // 出す位置が変わるので、タブも新しい枠に合わせて置き直す。
+        layoutTabs(in: strip, within: resting)
         strip.panel.orderFrontRegardless()
         NSAnimationContext.runAnimationGroup { context in
             context.duration = Self.slideDuration
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            // 出すときは減速して止まり、隠すときは加速して去る。同じ曲線で往復すると、
+            // 引っ込むときに縁の手前でもたついて見える。
+            context.timingFunction = CAMediaTimingFunction(name: hidden ? .easeIn : .easeOut)
             strip.panel.animator().setFrame(target, display: true)
         }
     }
@@ -699,10 +721,7 @@ final class EdgeTabsController {
         // 取っ手を先に出す高さへ移してから滑り出す。元の高さから斜めに飛んでくる
         // より、真横から出てくるほうが「呼んだから出た」と分かる。
         if let resting = restingFrame(for: strip, on: screen) {
-            strip.panel.setFrame(
-                EdgeTabPlacement.hiddenStripFrame(visible: resting, edge: strip.edge),
-                display: false
-            )
+            place(strip.panel, at: EdgeTabPlacement.hiddenStripFrame(visible: resting, edge: strip.edge))
         }
         slide(strip, on: screen, hidden: false)
     }
