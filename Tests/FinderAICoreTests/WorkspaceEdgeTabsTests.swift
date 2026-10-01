@@ -245,6 +245,31 @@ struct EdgeTabPlacementTests {
         }
     }
 
+    /// 前の縁に取り残された帯を、そこから滑らせない。画面の端から端まで横切って見える。
+    @Test("a strip left behind on the other edge is moved before it slides, not dragged across the screen")
+    func slideStartsFromTheTargetEdge() throws {
+        let right = try #require(EdgeTabPlacement.stripFrame(tabCount: 3, edge: .right, visibleFrame: screen))
+        let left = try #require(EdgeTabPlacement.stripFrame(tabCount: 3, edge: .left, visibleFrame: screen))
+        let hiddenLeft = EdgeTabPlacement.hiddenStripFrame(visible: left, edge: .left)
+        let hiddenRight = EdgeTabPlacement.hiddenStripFrame(visible: right, edge: .right)
+
+        // 左の縁に隠れたまま右の縁へ移った帯を出す: 右の縁の隠れた位置から滑らせる。
+        #expect(EdgeTabPlacement.slideStart(
+            current: hiddenLeft, target: right, visible: right, edge: .right, hiding: false
+        ) == hiddenRight)
+        // 左に出たまま右の縁で隠す: 右の縁に出た位置から引っ込める。
+        #expect(EdgeTabPlacement.slideStart(
+            current: left, target: hiddenRight, visible: right, edge: .right, hiding: true
+        ) == right)
+        // ふつうの出し入れ（同じ縁の上）は置き直さない。
+        #expect(EdgeTabPlacement.slideStart(
+            current: hiddenRight, target: right, visible: right, edge: .right, hiding: false
+        ) == nil)
+        #expect(EdgeTabPlacement.slideStart(
+            current: left, target: hiddenLeft, visible: left, edge: .left, hiding: true
+        ) == nil)
+    }
+
     /// 中身は縁の側に寄せる。左の縁ならタブの右端4ptが残り、出ているときは0。
     @Test("tabs are pushed past the edge, leaving their inner side as the handle")
     func hiddenContentPlacement() {

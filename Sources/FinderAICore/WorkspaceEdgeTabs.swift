@@ -345,6 +345,28 @@ public enum EdgeTabPlacement {
         return frame
     }
 
+    /// 出し入れを始める前に、帯を一度置き直すべき場所。置き直さなくてよければnil。
+    ///
+    /// 帯は縁を移る（カーソルのいる側へ、継ぎ目でぶつかれば反対側へ）。出し入れの
+    /// アニメーションの途中で縁が入れ替わると、帯は前の縁に取り残され、次に出すとき
+    /// そこから新しい縁まで——画面の端から端まで——滑っていった（3440ptの画面で、
+    /// 「画面を行ったり来たりするたびに帯が全体を横切る」）。滑らせるのは、出す縁の
+    /// すぐそばからだけにする。
+    public static func slideStart(
+        current: CGRect,
+        target: CGRect,
+        visible: CGRect,
+        edge: WorkspaceScreenEdge,
+        hiding: Bool
+    ) -> CGRect? {
+        // 出す縁の側の端（左の縁なら左端、右の縁なら右端）どうしを比べる。帯の幅
+        // 一つ分より離れていたら、どこか別の場所から来ている。
+        let anchor = edge == .left ? target.minX : target.maxX
+        let currentAnchor = edge == .left ? current.minX : current.maxX
+        guard abs(currentAnchor - anchor) > visible.width + handleWidth else { return nil }
+        return hiding ? visible : hiddenStripFrame(visible: visible, edge: edge)
+    }
+
     /// 帯の中身を置く横の位置。縁の側に寄せて、帯が縮んだぶんだけ縁の向こうへ出す。
     ///
     /// 左の縁ではタブの右端が、右の縁では左端が取っ手として残る。出ているとき
