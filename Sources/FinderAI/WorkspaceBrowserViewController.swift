@@ -191,15 +191,18 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
         }
         let indicatorWidth = indicator.widthAnchor.constraint(equalToConstant: 0)
         self.indicatorWidth = indicatorWidth
+        // 印は名前のすぐ右に置く。行の右端に置くと、サイドバーを横に送れるように
+        // したとき、長い名前の行に引っ張られて画面の外へ出てしまう。
+        label.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         NSLayoutConstraint.activate([
             iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
             iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
             iconView.widthAnchor.constraint(equalToConstant: 14),
             iconView.heightAnchor.constraint(equalToConstant: 14),
             label.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 6),
-            label.trailingAnchor.constraint(equalTo: indicator.leadingAnchor, constant: -4),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
-            indicator.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            indicator.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 5),
+            indicator.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -6),
             indicator.centerYAnchor.constraint(equalTo: centerYAnchor),
             indicator.heightAnchor.constraint(equalToConstant: 14),
             indicatorWidth
@@ -248,9 +251,10 @@ private final class WorkspaceSidebarHeaderView: NSTableCellView {
         addSubview(addButton)
         NSLayoutConstraint.activate([
             label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: addButton.leadingAnchor, constant: -4),
             label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -3),
-            addButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            // ＋は見出しのすぐ右。行の右端に置くと、横に送れる幅のときに見えなくなる。
+            addButton.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 4),
+            addButton.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -4),
             addButton.centerYAnchor.constraint(equalTo: label.centerYAnchor),
             addButton.widthAnchor.constraint(equalToConstant: 18),
             addButton.heightAnchor.constraint(equalToConstant: 16)
@@ -1203,6 +1207,13 @@ final class WorkspaceBrowserViewController: NSViewController {
         // 素の灰になっていた。
         scroll.contentView.drawsBackground = false
         scroll.hasVerticalScroller = true
+        // 名前がサイドバーの幅に収まらないときは、横にも送れる（トラックパッドの
+        // 横スワイプ、ホイールはShiftを押しながら）。中ほどを省いた名前では、
+        // 似た名前の見分けが付かないことがある。列の最小幅を中身に合わせるので、
+        // 収まっているあいだは横のスクロールバーは出ない。
+        scroll.hasHorizontalScroller = true
+        scroll.autohidesScrollers = true
+        sidebarTable.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         sidebarTable.headerView = nil
         sidebarTable.backgroundColor = .clear
         // `.sourceList`はvibrancyの地を自分で描くので、下に敷いた色が透けない。
@@ -2780,7 +2791,38 @@ final class WorkspaceBrowserViewController: NSViewController {
 
         sidebarRows = rows
         sidebarTable.reloadData()
+        fitSidebarColumnToContent()
         updateSidebarSelection()
+    }
+
+    /// 列の最小幅を、いちばん長い名前が省かれずに入る幅にする。サイドバーより
+    /// 狭ければ列はサイドバーいっぱいに広がり、広ければ横に送れるようになる。
+    private func fitSidebarColumnToContent() {
+        guard let column = sidebarTable.tableColumns.first else { return }
+        let itemFont = NSFont.systemFont(ofSize: 11.5, weight: .medium)
+        let headerFont = NSFont.systemFont(ofSize: 10, weight: .semibold)
+        func width(_ text: String, _ font: NSFont) -> CGFloat {
+            (text as NSString).size(withAttributes: [.font: font]).width
+        }
+        var widest: CGFloat = 0
+        for row in sidebarRows {
+            switch row {
+            case .header(let title):
+                widest = max(widest, 10 + width(title.uppercased(), headerFont) + 8)
+            case .placesHeader(let kind):
+                let title = kind == .share ? "ネットワーク" : "サーバー"
+                widest = max(widest, 10 + width(title, headerFont) + 4 + 18 + 4)
+            case .item(let item):
+                widest = max(widest, 10 + 14 + 6 + width(item.title, itemFont) + 8)
+            case .place(let place, _):
+                widest = max(widest, 10 + 14 + 6 + width(place.name, itemFont) + 5 + 12 + 6)
+            }
+        }
+        let needed = ceil(widest) + 4
+        guard abs(column.minWidth - needed) > 0.5 else { return }
+        column.minWidth = needed
+        if column.width < needed { column.width = needed }
+        sidebarTable.sizeLastColumnToFit()
     }
 
     private static func isServerFolder(_ url: URL) -> Bool {
