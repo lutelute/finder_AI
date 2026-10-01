@@ -66,15 +66,17 @@ enum SessionLogStore {
             .appendingPathComponent("session-logs", isDirectory: true)
     }
 
+    /// sshはフォルダでなく宛先で名乗る。全部ホームの名前になると見分けが付かない。
     static func fileName(
         kind: TerminalSessionKind,
         directoryURL: URL,
+        target: String? = nil,
         date: Date = Date()
     ) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyyMMdd-HHmmss"
-        let folder = sanitized(directoryURL.lastPathComponent)
+        let folder = sanitized(target ?? directoryURL.lastPathComponent)
         let suffix = UUID().uuidString.prefix(4)
         return "\(formatter.string(from: date))-\(kind.rawValue)-\(folder)-\(suffix).log"
     }
@@ -82,12 +84,15 @@ enum SessionLogStore {
     static func header(
         kind: TerminalSessionKind,
         directoryURL: URL,
+        target: String? = nil,
         date: Date = Date()
     ) -> String {
-        """
+        let place = target.map { "# target: \($0)" }
+            ?? "# folder: \(directoryURL.path(percentEncoded: false))"
+        return """
         # FinderAI session log
         # kind: \(kind.displayName)
-        # folder: \(directoryURL.path(percentEncoded: false))
+        \(place)
         # started: \(ISO8601DateFormatter().string(from: date))
 
         """

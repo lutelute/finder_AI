@@ -139,7 +139,7 @@ final class TerminalSessionManager: TerminalSessionManaging {
         // --last。どちらもそのフォルダに絞られる）。台帳の記録は「ここで
         // 動かしたことがある」の証拠で、会話の実体はCLI側にある。実体が
         // 消えていても、CLIが「続きは無い」と穏当に伝えるだけで壊れはしない。
-        guard kind != .shell else { return false }
+        guard kind.resumesConversations else { return false }
         let path = directoryURL.standardizedFileURL.path
         return sessionRecords.contains { $0.kind == kind && $0.directoryPath == path }
     }
@@ -194,6 +194,12 @@ final class TerminalSessionManager: TerminalSessionManaging {
 
         for info in infos {
             guard let kind = info.kind else { continue }
+            // sshの宛先はtmuxの名前（ハッシュ）からもセッションの場所（ホーム）からも
+            // 戻せない。台帳に名前で残っていなければ、繋ぎ直す手掛かりが無いので
+            // 拾わない——宛先の無い行を作ると、押しても開けない行になる。
+            if kind == .ssh, !registry.records.contains(where: { $0.persistentName == info.name }) {
+                continue
+            }
             let key = TerminalSessionKey(
                 directoryURL: URL(
                     fileURLWithPath: info.workingDirectoryPath,
@@ -269,10 +275,14 @@ final class TerminalSessionManager: TerminalSessionManaging {
         return locate(command) != nil
     }
 
+    /// sshは入らない。ホームで開いているが、ホームで作業しているわけではない——
+    /// 入れるとホームへ移るたびにsshのタブが前へ出て、ホームのフォルダにも
+    /// 「ここで何か動いている」の印が付いてしまう。
     func sessions(for directoryURL: URL) -> [any ManagedTerminalSession] {
         let directoryKey = FinderDocumentURLParser.canonicalKey(for: directoryURL)
         return insertionOrder.compactMap { key in
-            guard key.directoryKey == directoryKey,
+            guard key.kind != .ssh,
+                  key.directoryKey == directoryKey,
                   let session = sessionsByKey[key],
                   !hiddenSessionIDs.contains(session.id) else { return nil }
             return session
@@ -312,7 +322,41 @@ final class TerminalSessionManager: TerminalSessionManaging {
         directoryURL: URL,
         resumingConversation: ConversationResume?
     ) throws -> any ManagedTerminalSession {
-        let key = TerminalSessionKey(directoryURL: directoryURL, kind: kind)
+        try create(
+            kind: kind,
+            directoryURL: directoryURL,
+            target: nil,
+            routeHost: nil,
+            resumingConversation: resumingConversation
+        )
+    }
+
+    /// sshはホームで開く。どのフォルダから押しても同じサーバーには同じ1本。
+    ///
+    /// タブの名前は台帳に書かない。サイドバーで登録名を変えたらタブも変わって
+    /// ほしいので、ドロワーが描くたびに登録から引く。
+    func openServerSession(target: String, routeHost: String?) throws -> any ManagedTerminalSession {
+        try create(
+            kind: .ssh,
+            directoryURL: FileManager.default.homeDirectoryForCurrentUser,
+            target: target,
+            routeHost: routeHost,
+            resumingConversation: nil
+        )
+    }
+
+    func serverSession(target: String) -> (any ManagedTerminalSession)? {
+        sessionsByKey.first { $0.key.kind == .ssh && $0.key.target == target }?.value
+    }
+
+    private func create(
+        kind: TerminalSessionKind,
+        directoryURL: URL,
+        target: String?,
+        routeHost: String?,
+        resumingConversation: ConversationResume?
+    ) throws -> any ManagedTerminalSession {
+        let key = TerminalSessionKey(directoryURL: directoryURL, kind: kind, target: target)
         if let existing = sessionsByKey[key] {
             revealInTabs(existing)
             return existing
@@ -351,6 +395,8 @@ final class TerminalSessionManager: TerminalSessionManaging {
         let session = try builder.makeSession(
             directoryURL: directoryURL,
             kind: kind,
+            target: target,
+            sshHostOverride: routeHost,
             executableURL: executableURL,
             persistence: persistence,
             resumesConversation: resumingConversation,
@@ -364,7 +410,8 @@ final class TerminalSessionManager: TerminalSessionManaging {
             persistentName: persistence?.sessionName,
             createdAt: now,
             lastActivityAt: now,
-            lastPresentedAt: now
+            lastPresentedAt: now,
+            target: target
         )
         record.directoryPath = directoryURL.standardizedFileURL.path
         record.backend = persistence == nil ? .ephemeral : .tmux

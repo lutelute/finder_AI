@@ -169,6 +169,9 @@ private final class WorkspaceNameCellView: NSTableCellView {
 private final class WorkspaceSidebarCellView: NSTableCellView {
     private let iconView = NSImageView()
     private let label = NSTextField(labelWithString: "")
+    /// ネットワークの場所の状態。普通のフォルダでは幅0で隠れる。
+    private let indicator = NetworkStateIndicatorView()
+    private var indicatorWidth: NSLayoutConstraint?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -182,18 +185,27 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
         label.cell?.truncatesLastVisibleLine = true
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         iconView.contentTintColor = IntegratedPanelTheme.secondaryText
-        [iconView, label].forEach {
+        [iconView, label, indicator].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             addSubview($0)
         }
+        let indicatorWidth = indicator.widthAnchor.constraint(equalToConstant: 0)
+        self.indicatorWidth = indicatorWidth
+        // 印は名前のすぐ右に置く。行の右端に置くと、サイドバーを横に送れるように
+        // したとき、長い名前の行に引っ張られて画面の外へ出てしまう。
+        label.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         NSLayoutConstraint.activate([
             iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
             iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
             iconView.widthAnchor.constraint(equalToConstant: 14),
             iconView.heightAnchor.constraint(equalToConstant: 14),
             label.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 6),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            label.centerYAnchor.constraint(equalTo: centerYAnchor)
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            indicator.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 5),
+            indicator.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -6),
+            indicator.centerYAnchor.constraint(equalTo: centerYAnchor),
+            indicator.heightAnchor.constraint(equalToConstant: 14),
+            indicatorWidth
         ])
         imageView = iconView
         textField = label
@@ -203,15 +215,24 @@ private final class WorkspaceSidebarCellView: NSTableCellView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func configure(title: String, symbol: String) {
+    func configure(title: String, symbol: String, mark: NetworkStateIndicatorView.Mark? = nil) {
         label.stringValue = title
         iconView.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
+        indicator.mark = mark
+        indicatorWidth?.constant = mark == nil ? 0 : 12
+        // 繋がっていない場所は名前も一段沈める。丸だけでなく文字の濃さでも分かる。
+        label.textColor = mark == .disconnected || mark == .unreachable
+            ? IntegratedPanelTheme.secondaryText
+            : IntegratedPanelTheme.text
     }
 }
 
 @MainActor
 private final class WorkspaceSidebarHeaderView: NSTableCellView {
     private let label = NSTextField(labelWithString: "")
+    /// 見出しの右端の＋。ネットワークとサーバーの見出しにだけ出す。登録が
+    /// 右クリックの奥にしか無いと、空のときに入口が見つからない。
+    let addButton = NSButton()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -220,10 +241,23 @@ private final class WorkspaceSidebarHeaderView: NSTableCellView {
         label.textColor = IntegratedPanelTheme.secondaryText
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
+        addButton.isBordered = false
+        addButton.bezelStyle = .accessoryBarAction
+        addButton.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "登録")?
+            .withSymbolConfiguration(.init(pointSize: 10, weight: .semibold))
+        addButton.contentTintColor = IntegratedPanelTheme.secondaryText
+        addButton.isHidden = true
+        addButton.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(addButton)
         NSLayoutConstraint.activate([
             label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
-            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -3)
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -3),
+            // ＋は見出しのすぐ右。行の右端に置くと、横に送れる幅のときに見えなくなる。
+            addButton.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 4),
+            addButton.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -4),
+            addButton.centerYAnchor.constraint(equalTo: label.centerYAnchor),
+            addButton.widthAnchor.constraint(equalToConstant: 18),
+            addButton.heightAnchor.constraint(equalToConstant: 16)
         ])
         textField = label
     }
@@ -232,8 +266,12 @@ private final class WorkspaceSidebarHeaderView: NSTableCellView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func configure(title: String) {
+    func configure(title: String, addToolTip: String? = nil, target: AnyObject? = nil, action: Selector? = nil) {
         label.stringValue = title.uppercased()
+        addButton.isHidden = action == nil
+        addButton.target = target
+        addButton.action = action
+        addButton.toolTip = addToolTip
     }
 }
 
@@ -686,7 +724,11 @@ final class WorkspaceBrowserViewController: NSViewController {
     /// items share one row space and `isGroupRow` tells them apart.
     private enum SidebarRow: Equatable {
         case header(String)
+        /// ＋の付いた見出し。押すとその種類で登録シートが開く。
+        case placesHeader(NetworkPlace.Kind)
         case item(WorkspaceSidebarModel.Item)
+        /// 登録したネットワークの場所。共有は繋がっていればマウント先を持つ。
+        case place(NetworkPlace, NetworkPlaceState)
     }
 
     private enum Column {
@@ -776,6 +818,12 @@ final class WorkspaceBrowserViewController: NSViewController {
     private var sidebarRows: [SidebarRow] = []
     private var finderFavorites: [URL] = []
     private var volumes: [URL] = []
+    /// マウント済みのネットワーク共有。登録との突き合わせに使う。
+    private var networkMounts: [MountedShare] = []
+    /// このMacに入っているクラウド（Google Drive、OneDrive、iCloud Drive）。
+    private var cloudLocations: [WorkspaceSidebarModel.Item] = []
+    private nonisolated(unsafe) var networkPlacesObserver: (any NSObjectProtocol)?
+    private nonisolated(unsafe) var sessionsObserver: (any NSObjectProtocol)?
     private var sidebarLoadTask: Task<Void, Never>?
     private nonisolated(unsafe) var volumeObservers: [any NSObjectProtocol] = []
     private nonisolated(unsafe) var focusObserver: (any NSObjectProtocol)?
@@ -845,6 +893,8 @@ final class WorkspaceBrowserViewController: NSViewController {
         let center = NSWorkspace.shared.notificationCenter
         volumeObservers.forEach(center.removeObserver)
         if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }
+        if let networkPlacesObserver { NotificationCenter.default.removeObserver(networkPlacesObserver) }
+        if let sessionsObserver { NotificationCenter.default.removeObserver(sessionsObserver) }
     }
 
     var currentDirectory: URL { navigator.currentDirectory }
@@ -857,8 +907,11 @@ final class WorkspaceBrowserViewController: NSViewController {
     /// サイドバーで、そのフォルダが何行目か。
     func sidebarRowForTesting(named name: String) -> Int? {
         sidebarRows.indices.first { row in
-            if case .item(let item) = sidebarRows[row] { return item.url.lastPathComponent == name }
-            return false
+            switch sidebarRows[row] {
+            case .item(let item): return item.url.lastPathComponent == name
+            case .place(let place, _): return place.name == name
+            default: return false
+            }
         }
     }
     /// いま一覧に出ているもの。読み込みは非同期なので、待つ側が見るため。
@@ -1093,6 +1146,22 @@ final class WorkspaceBrowserViewController: NSViewController {
             }
             volumeObservers.append(observer)
         }
+        // 登録の増減と「繋いでいる最中」は、どの窓で起きても全部の窓に出す。
+        // ファイルシステムには触らないので、読み直さずに描き直すだけ。
+        networkPlacesObserver = NotificationCenter.default.addObserver(
+            forName: .networkPlacesDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.rebuildSidebar() }
+        }
+        sessionsObserver = NotificationCenter.default.addObserver(
+            forName: .terminalSessionsDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshServerStates() }
+        }
     }
 
     override func viewDidLayout() {
@@ -1138,6 +1207,13 @@ final class WorkspaceBrowserViewController: NSViewController {
         // 素の灰になっていた。
         scroll.contentView.drawsBackground = false
         scroll.hasVerticalScroller = true
+        // 名前がサイドバーの幅に収まらないときは、横にも送れる（トラックパッドの
+        // 横スワイプ、ホイールはShiftを押しながら）。中ほどを省いた名前では、
+        // 似た名前の見分けが付かないことがある。列の最小幅を中身に合わせるので、
+        // 収まっているあいだは横のスクロールバーは出ない。
+        scroll.hasHorizontalScroller = true
+        scroll.autohidesScrollers = true
+        sidebarTable.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         sidebarTable.headerView = nil
         sidebarTable.backgroundColor = .clear
         // `.sourceList`はvibrancyの地を自分で描くので、下に敷いた色が透けない。
@@ -2243,24 +2319,387 @@ final class WorkspaceBrowserViewController: NSViewController {
         service.perform(withItems: shareURLs)
     }
 
+    /// 中身は開くたびに組む（`populateSidebarMenu`）。フォルダと共有とサーバーで
+    /// できることが違い、効かない項目を灰色で並べるより出さないほうが読める。
     private func configureSidebarContextMenu() {
         let menu = NSMenu(title: "サイドバー")
         menu.delegate = self
-        let unpin = NSMenuItem(
-            title: "ピン留めを解除",
-            action: #selector(unpinClickedSidebarRow),
-            keyEquivalent: ""
-        )
-        unpin.target = self
-        menu.addItem(unpin)
-        let reveal = NSMenuItem(
-            title: "Finderで表示",
-            action: #selector(revealClickedSidebarRow),
-            keyEquivalent: ""
-        )
-        reveal.target = self
-        menu.addItem(reveal)
+        // 空のメニューは開かれないことがあるので、差し替える前提の一項目を置く。
+        menu.addItem(NSMenuItem(title: "Finderで表示", action: nil, keyEquivalent: ""))
         sidebarTable.menu = menu
+    }
+
+    private func populateSidebarMenu(_ menu: NSMenu) {
+        menu.removeAllItems()
+        func add(_ title: String, _ action: Selector, enabled: Bool = true) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.isEnabled = enabled
+            menu.addItem(item)
+        }
+        let row = sidebarTable.clickedRow
+        let clicked = sidebarRows.indices.contains(row) ? sidebarRows[row] : nil
+
+        switch clicked {
+        case .place(let place, let state)?:
+            switch place.kind {
+            case .share where Self.isServerPlace(place):
+                add(state == .connecting ? "接続しています…" : "サーバーの共有を並べて開く",
+                    #selector(openClickedPlace),
+                    enabled: state != .connecting)
+            case .share:
+                if case .connected = state {
+                    add("開く", #selector(openClickedPlace))
+                    add("接続を切る", #selector(disconnectClickedPlace))
+                } else {
+                    add(state == .connecting ? "接続しています…" : "接続して開く",
+                        #selector(openClickedPlace),
+                        enabled: state != .connecting)
+                }
+            case .server:
+                add(serverState(for: place) == .disconnected ? "SSHで接続" : "SSHのタブへ移る",
+                    #selector(openClickedPlace))
+            }
+            menu.addItem(.separator())
+            add("名前を変更…", #selector(renameClickedPlace))
+            add("アドレスをコピー", #selector(copyClickedPlaceAddress))
+            add("登録を外す", #selector(removeClickedPlace))
+        case .item(let item)?:
+            if preferences.pins.contains(item.url) {
+                add("ピン留めを解除", #selector(unpinClickedSidebarRow))
+            }
+            add("Finderで表示", #selector(revealClickedSidebarRow))
+            // Finderなどで繋いだ共有を、その場でネットワークへ登録できる。
+            if networkMounts.contains(where: { $0.mountPoint.path == item.url.path }) {
+                menu.addItem(.separator())
+                add("ネットワークの場所に登録", #selector(registerClickedVolume))
+            }
+            if cloudLocations.contains(where: { $0.url.path == item.url.path }) {
+                menu.addItem(.separator())
+                add("「クラウド」から隠す", #selector(hideClickedCloudLocation))
+            }
+        case .placesHeader(let kind)?:
+            add(kind == .share ? "ネットワークの場所を登録…" : "サーバーを登録…",
+                kind == .share ? #selector(registerNetworkShareFromHeader) : #selector(registerServerFromHeader))
+        case .header?, nil:
+            add("ネットワークの場所を登録…", #selector(registerNetworkShareFromHeader))
+        }
+        // 隠したクラウドは、節ごと消えていても戻せるように、見出しや余白の
+        // 右クリックにも出す。
+        let hidden = hiddenCloudLocations
+        if !hidden.isEmpty, clicked.map({ if case .item = $0 { return false } else { return true } }) ?? true {
+            menu.addItem(.separator())
+            add("隠したクラウドを再表示（\(hidden.count)）", #selector(showHiddenCloudLocations))
+        }
+    }
+
+    private var hiddenCloudLocations: [WorkspaceSidebarModel.Item] {
+        let hidden = Set(preferences.hiddenCloudPaths)
+        return cloudLocations.filter { hidden.contains($0.url.path) }
+    }
+
+    @objc private func hideClickedCloudLocation() {
+        guard let item = clickedSidebarItem else { return }
+        var hidden = preferences.hiddenCloudPaths
+        guard !hidden.contains(item.url.path) else { return }
+        hidden.append(item.url.path)
+        preferences.hiddenCloudPaths = hidden
+        NetworkPlaceConnector.shared.notifyChange()
+    }
+
+    @objc private func showHiddenCloudLocations() {
+        preferences.hiddenCloudPaths = []
+        NetworkPlaceConnector.shared.notifyChange()
+    }
+
+    private var clickedPlace: (NetworkPlace, NetworkPlaceState)? {
+        let row = sidebarTable.clickedRow
+        guard sidebarRows.indices.contains(row),
+              case .place(let place, let state) = sidebarRows[row] else { return nil }
+        return (place, state)
+    }
+
+    // MARK: - ネットワークの場所
+
+    /// サイドバーの外（別の窓や分割の右側）から開くときのための入口。
+    /// サーバーはTerminalを持つ窓に任せる（窓が繋ぐ）。
+    var onOpenServer: ((NetworkPlace) -> Void)?
+    /// そのsshの宛先へのセッションが開いているか。丸の塗りに使う。
+    var hasOpenServerSession: ((String) -> Bool)?
+
+    /// サーバーの丸を塗り直す。sshのタブが開いた・閉じたときに呼ばれる。
+    /// セッションの変化はしょっちゅう来るので、丸が変わるときだけ描き直す。
+    func refreshServerStates() {
+        let shown = sidebarRows.compactMap { row -> NetworkPlaceState? in
+            guard case .place(let place, let state) = row, place.kind == .server else { return nil }
+            return state
+        }
+        let fresh = preferences.networkPlaces.servers.map(serverState(for:))
+        guard shown != fresh else { return }
+        rebuildSidebar()
+    }
+
+    private func open(_ place: NetworkPlace, state: NetworkPlaceState) {
+        switch place.kind {
+        case .server:
+            // サーバーの行は選んだままにしない。ファイル一覧はそこへ移らないので、
+            // 選ばれたままだと「いまここを見ている」と読めてしまう。
+            updateSidebarSelection()
+            onOpenServer?(place)
+        case .share where Self.isServerPlace(place):
+            openServerView(place)
+        case .share:
+            if case .connected(let mountPoint) = state {
+                if mountPoint != navigator.currentDirectory { navigate(to: mountPoint) }
+                return
+            }
+            let origin = navigator.currentDirectory
+            NetworkPlaceConnector.shared.connect(place) { [weak self] connection in
+                guard let self else { return }
+                if let connection {
+                    // Tailscaleで繋いだら、その住所を覚える。マウントの戻り先がその住所に
+                    // なるので、覚えておかないと登録と突き合わせられず「未接続」に見える。
+                    if let address = connection.tailscaleAddress {
+                        var places = self.preferences.networkPlaces
+                        if places.setTailscaleAddress(id: place.id, to: address) {
+                            self.preferences.networkPlaces = places
+                        }
+                    }
+                    self.loadSidebarSources()
+                    // 繋いでいるあいだに別の場所へ移っていたら、引き戻さない。
+                    guard self.navigator.currentDirectory == origin else { return }
+                    self.navigate(to: connection.mountPoint)
+                    return
+                }
+                self.updateSidebarSelection()
+                let current = self.preferences.networkPlaces.place(id: place.id) ?? place
+                if case .unreachable(let reason) = NetworkPlaceConnector.shared.state(
+                    for: current,
+                    mounts: self.networkMounts
+                ) {
+                    self.presentError(title: "「\(current.name)」に接続できません", message: reason)
+                }
+            }
+        }
+    }
+
+    /// 共有名なしで登録した共有は「サーバー」として開く——共有を全部つないで並べる。
+    private static func isServerPlace(_ place: NetworkPlace) -> Bool {
+        place.kind == .share && place.shareURL.map { NetworkShareMatching.shareName(of: $0) == nil } == true
+    }
+
+    private func openServerView(_ place: NetworkPlace) {
+        // もうそのサーバーを見ているなら開き直さない。サイドバーは今いる場所の行を
+        // 選び直すので、それを「押した」と受け取ると、開く→移る→選び直す→開く…と
+        // 4秒おきに繰り返した（実機で起きた）。
+        let folder = NetworkServerFolder.folder(for: place).standardizedFileURL
+        guard navigator.currentDirectory.standardizedFileURL.path != folder.path else { return }
+        let origin = navigator.currentDirectory
+        NetworkPlaceConnector.shared.openServer(place) { [weak self] view in
+            guard let self else { return }
+            guard let view else {
+                self.updateSidebarSelection()
+                let current = self.preferences.networkPlaces.place(id: place.id) ?? place
+                if case .unreachable(let reason) = NetworkPlaceConnector.shared.state(
+                    for: current,
+                    mounts: self.networkMounts
+                ) {
+                    self.presentError(title: "「\(current.name)」に接続できません", message: reason)
+                }
+                return
+            }
+            var places = self.preferences.networkPlaces
+            var changed = places.setKnownShares(id: place.id, to: view.shares)
+            if let address = view.tailscaleAddress {
+                changed = places.setTailscaleAddress(id: place.id, to: address) || changed
+            }
+            if changed { self.preferences.networkPlaces = places }
+            self.loadSidebarSources()
+            // つないでいるあいだに別の場所へ移っていたら、引き戻さない。
+            guard self.navigator.currentDirectory == origin else { return }
+            self.navigate(to: view.folder)
+        }
+    }
+
+    @objc private func openClickedPlace() {
+        guard let (place, state) = clickedPlace else { return }
+        open(place, state: state)
+    }
+
+    @objc private func disconnectClickedPlace() {
+        guard let (place, state) = clickedPlace,
+              case .connected(let mountPoint) = state else { return }
+        // 見ている場所が消えるので、先に外へ出ておく。残っていると一覧が
+        // 「読めないフォルダ」の表示になる。
+        let current = navigator.currentDirectory.path
+        if current == mountPoint.path || current.hasPrefix(mountPoint.path + "/") {
+            navigate(to: Self.homeDirectory)
+        }
+        NetworkPlaceConnector.shared.disconnect(mountPoint: mountPoint) { [weak self] message in
+            guard let self, let message else { return }
+            self.presentError(title: "「\(place.name)」の接続を切れません", message: message)
+        }
+    }
+
+    @objc private func renameClickedPlace() {
+        guard let (place, _) = clickedPlace else { return }
+        let alert = NSAlert()
+        alert.messageText = "名前を変更"
+        alert.informativeText = NetworkPlaceAddress.displayAddress(for: place)
+        alert.addButton(withTitle: "変更")
+        alert.addButton(withTitle: "キャンセル")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.stringValue = place.name
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        var places = preferences.networkPlaces
+        guard places.rename(id: place.id, to: field.stringValue) else { return }
+        preferences.networkPlaces = places
+        NetworkPlaceConnector.shared.notifyChange()
+    }
+
+    @objc private func copyClickedPlaceAddress() {
+        guard let (place, _) = clickedPlace else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(place.address, forType: .string)
+    }
+
+    /// 登録を外すだけで、接続は切らない。Finderで繋いだ共有と同じ扱いに戻り、
+    /// 「場所」に出る。
+    @objc private func removeClickedPlace() {
+        guard let (place, _) = clickedPlace else { return }
+        var places = preferences.networkPlaces
+        guard places.remove(id: place.id) else { return }
+        preferences.networkPlaces = places
+        NetworkPlaceConnector.shared.forget(place.id)
+        NetworkPlaceConnector.shared.notifyChange()
+    }
+
+    @objc private func registerClickedVolume() {
+        guard let item = clickedSidebarItem,
+              let mount = networkMounts.first(where: { $0.mountPoint.path == item.url.path }) else { return }
+        presentRegistration(kind: .share, address: Self.addressWithoutUser(mount.remountURL))
+    }
+
+    /// ⌘K。Finderの「サーバへ接続」と同じ鍵。
+    @objc func registerNetworkPlace(_ sender: Any?) {
+        presentRegistration(kind: .share, address: nil)
+    }
+
+    @objc private func registerNetworkShareFromHeader() {
+        presentRegistration(kind: .share, address: nil)
+    }
+
+    @objc private func registerServerFromHeader() {
+        presentRegistration(kind: .server, address: nil)
+    }
+
+    private func presentRegistration(kind: NetworkPlace.Kind, address: String?) {
+        var places = preferences.networkPlaces
+        guard !places.isFull else {
+            presentError(
+                title: "これ以上登録できません",
+                message: "ネットワークの場所は\(NetworkPlaces.capacity)件までです。使わないものを右クリックから外してください。"
+            )
+            return
+        }
+        let form = NetworkPlaceRegistrationForm(
+            kind: kind,
+            address: address,
+            candidates: registrationCandidates(excluding: places)
+        )
+        let alert = NSAlert()
+        alert.messageText = "ネットワークの場所を登録"
+        alert.addButton(withTitle: "登録")
+        alert.addButton(withTitle: "キャンセル")
+        alert.accessoryView = form.makeAccessoryView()
+        alert.window.initialFirstResponder = form.initialFirstResponder
+
+        // 読めない・重複しているときは、閉じずに理由を出して聞き直す。
+        while alert.runModal() == .alertFirstButtonReturn {
+            switch form.makePlace() {
+            case .failure(let error):
+                form.show(error: error.message)
+            case .success(let place):
+                if let existing = places.existing(matching: place) {
+                    form.show(error: "「\(existing.name)」として登録済みです。")
+                    continue
+                }
+                places.add(place)
+                preferences.networkPlaces = places
+                NetworkPlaceConnector.shared.notifyChange()
+                return
+            }
+            alert.layout()
+        }
+    }
+
+    /// 登録シートの候補。Finderの「よく使うサーバ」、いま繋がっている共有、
+    /// `~/.ssh/config`の別名。登録済みのものは出さない。
+    private func registrationCandidates(excluding places: NetworkPlaces) -> [NetworkPlaceRegistrationForm.Candidate] {
+        typealias Candidate = NetworkPlaceRegistrationForm.Candidate
+        var result: [Candidate] = []
+        func offer(_ kind: NetworkPlace.Kind, _ address: String, _ source: String) {
+            let probe = NetworkPlace(kind: kind, name: "", address: address)
+            guard places.existing(matching: probe) == nil,
+                  !result.contains(where: { $0.kind == kind && $0.address.lowercased() == address.lowercased() })
+            else { return }
+            result.append(Candidate(kind: kind, address: address, source: source))
+        }
+        for mount in networkMounts {
+            offer(.share, Self.addressWithoutUser(mount.remountURL), "いま接続中")
+        }
+        for url in FinderFavoriteServers.addresses() {
+            offer(.share, url.absoluteString, "Finderのよく使うサーバ")
+        }
+        for alias in SSHConfigHosts.aliases() {
+            offer(.server, alias, "~/.ssh/config")
+        }
+        return result
+    }
+
+    /// マウントの戻り先URLにはユーザー名が入っている（`smb://pwslab@host/share`）。
+    /// 登録には要らない——ユーザー名はキーチェーンの側が覚えている。
+    private static func addressWithoutUser(_ url: URL) -> String {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url.absoluteString
+        }
+        components.user = nil
+        components.password = nil
+        let text = components.url?.absoluteString ?? url.absoluteString
+        return NetworkPlaceAddress.normalizedShare(text)?.absoluteString ?? text
+    }
+
+    private static func toolTip(
+        for place: NetworkPlace,
+        state: NetworkPlaceState,
+        mounts: [MountedShare]
+    ) -> String {
+        let address = place.kind == .share ? place.address : "ssh \(place.address)"
+        switch (place.kind, state) {
+        case (.share, .connected) where isServerPlace(place):
+            return "\(address)\nサーバーの共有を並べて開きます（つながっていない共有もつなぎます）。"
+        case (.share, .disconnected) where isServerPlace(place):
+            return "\(address)\n押すと、サーバーの共有を全部つないで並べて開きます。届かなければTailscaleで繋ぎます。"
+        case (.share, .connected(let mountPoint)):
+            let route = NetworkShareMatching.isViaTailscale(place, mountPoint: mountPoint, in: mounts)
+                ? "（Tailscale経由 \(place.tailscaleAddress ?? "")）"
+                : ""
+            return "\(address)\n接続中\(route): \(mountPoint.path(percentEncoded: false))"
+        case (.share, .connecting):
+            return "\(address)\n接続しています…"
+        case (.share, .unreachable(let reason)):
+            return "\(address)\n\(reason)\nもう一度押すと繋ぎ直します。"
+        case (.share, .disconnected):
+            return "\(address)\n押すと接続して開きます。届かなければTailscaleで繋ぎます。"
+        case (.server, .connected):
+            return "\(address)\nTerminalで接続中。押すとそのタブへ移ります。"
+        case (.server, .connecting):
+            return "\(address)\n繋ぐ先を確かめています…"
+        case (.server, _):
+            return "\(address)\n押すと下のTerminalで接続します。届かなければTailscaleで繋ぎます。"
+        }
     }
 
     private var clickedSidebarItem: WorkspaceSidebarModel.Item? {
@@ -2293,9 +2732,27 @@ final class WorkspaceBrowserViewController: NSViewController {
     private func rebuildSidebar() {
         let pins = preferences.pins
         let log = preferences.visitLog
+        let places = preferences.networkPlaces
+        let connector = NetworkPlaceConnector.shared
+        let shareRows = places.shares.map { place in
+            SidebarRow.place(place, connector.state(for: place, mounts: networkMounts))
+        }
+        let serverRows = places.servers.map { place in
+            SidebarRow.place(place, serverState(for: place))
+        }
+        // 登録した共有のマウント先は「場所」に重ねて出さない。同じものが2か所に
+        // あると、どちらを押せばいいのか迷う。
+        // サーバーとして登録したホストの共有は、全部サーバーのフォルダに並ぶ。
+        let registeredMounts = Set(places.shares.flatMap {
+            NetworkShareMatching.mountPoints(for: $0, in: networkMounts).map(\.path)
+        })
+        let unregisteredVolumes = volumes.filter { !registeredMounts.contains($0.path) }
+        let hiddenCloud = Set(preferences.hiddenCloudPaths)
+        let cloud = cloudLocations.filter { !hiddenCloud.contains($0.url.path) }
         let claimed = Set(
             pins.storedPaths
                 + finderFavorites.map(\.path)
+                + cloud.map(\.url.path)
                 + volumes.map(\.path)
         )
 
@@ -2305,18 +2762,79 @@ final class WorkspaceBrowserViewController: NSViewController {
                 favorites: finderFavorites.isEmpty
                     ? WorkspaceSidebarModel.fallbackFavorites(home: Self.homeDirectory)
                     : finderFavorites,
-                volumes: volumes,
-                frequent: log.frequent(limit: 5, excluding: claimed),
-                recent: log.recent(limit: 5, excluding: claimed)
+                cloud: cloud,
+                volumes: unregisteredVolumes,
+                // サーバーのフォルダはネットワークの行から開くもの。「よく使う」「最近」に
+                // 重ねない（名前も`<ID>`の下で読めない）。
+                frequent: log.frequent(limit: 5, excluding: claimed).filter { !Self.isServerFolder($0) },
+                recent: log.recent(limit: 5, excluding: claimed).filter { !Self.isServerFolder($0) }
             ),
             home: Self.homeDirectory
         )
 
-        sidebarRows = sections.flatMap { section in
+        var rows = sections.flatMap { section in
             [SidebarRow.header(section.title)] + section.items.map(SidebarRow.item)
         }
+        // ネットワークの見出しは、何も登録していなくても出す。＋がここにしか
+        // 無いので、隠すと最初の一件を登録する入口が消える。サーバーの見出しは
+        // 一件目ができてから（最初の一件はネットワークの＋から種類を選べる）。
+        var networkRows = [SidebarRow.placesHeader(.share)] + shareRows
+        if !serverRows.isEmpty {
+            networkRows += [SidebarRow.placesHeader(.server)] + serverRows
+        }
+        let laterSections: Set<String> = ["場所", "よく使うフォルダ", "最近"]
+        let insertAt = rows.firstIndex { row in
+            if case .header(let title) = row { return laterSections.contains(title) }
+            return false
+        } ?? rows.endIndex
+        rows.insert(contentsOf: networkRows, at: insertAt)
+
+        sidebarRows = rows
         sidebarTable.reloadData()
+        fitSidebarColumnToContent()
         updateSidebarSelection()
+    }
+
+    /// 列の最小幅を、いちばん長い名前が省かれずに入る幅にする。サイドバーより
+    /// 狭ければ列はサイドバーいっぱいに広がり、広ければ横に送れるようになる。
+    private func fitSidebarColumnToContent() {
+        guard let column = sidebarTable.tableColumns.first else { return }
+        let itemFont = NSFont.systemFont(ofSize: 11.5, weight: .medium)
+        let headerFont = NSFont.systemFont(ofSize: 10, weight: .semibold)
+        func width(_ text: String, _ font: NSFont) -> CGFloat {
+            (text as NSString).size(withAttributes: [.font: font]).width
+        }
+        var widest: CGFloat = 0
+        for row in sidebarRows {
+            switch row {
+            case .header(let title):
+                widest = max(widest, 10 + width(title.uppercased(), headerFont) + 8)
+            case .placesHeader(let kind):
+                let title = kind == .share ? "ネットワーク" : "サーバー"
+                widest = max(widest, 10 + width(title, headerFont) + 4 + 18 + 4)
+            case .item(let item):
+                widest = max(widest, 10 + 14 + 6 + width(item.title, itemFont) + 8)
+            case .place(let place, _):
+                widest = max(widest, 10 + 14 + 6 + width(place.name, itemFont) + 5 + 12 + 6)
+            }
+        }
+        let needed = ceil(widest) + 4
+        guard abs(column.minWidth - needed) > 0.5 else { return }
+        column.minWidth = needed
+        if column.width < needed { column.width = needed }
+        sidebarTable.sizeLastColumnToFit()
+    }
+
+    private static func isServerFolder(_ url: URL) -> Bool {
+        url.standardizedFileURL.path.hasPrefix(NetworkServerFolder.defaultBase.standardizedFileURL.path + "/")
+    }
+
+    /// サーバーの行の状態。そのサーバーへのsshが開いていれば「繋がっている」。
+    /// 繋ぐ先を見極めているあいだ（Tailscaleへ回るか）は回る印。
+    private func serverState(for place: NetworkPlace) -> NetworkPlaceState {
+        if hasOpenServerSession?(place.address) == true { return .connected(Self.homeDirectory) }
+        if case .connecting? = NetworkPlaceConnector.shared.transientState(for: place.id) { return .connecting }
+        return .disconnected
     }
 
     /// Loads the two sources that touch the filesystem.
@@ -2330,15 +2848,31 @@ final class WorkspaceBrowserViewController: NSViewController {
         sidebarLoadTask = Task.detached(priority: .utility) { [weak self] in
             let favorites = FinderFavorites.directories()
             let volumes = Self.mountedVolumes()
+            let mounts = NetworkPlaceConnector.mountedShares()
+            let cloud = CloudStorageLocations.locations()
             guard !Task.isCancelled else { return }
-            await self?.applySidebarSources(favorites: favorites, volumes: volumes)
+            await self?.applySidebarSources(
+                favorites: favorites,
+                volumes: volumes,
+                mounts: mounts,
+                cloud: cloud
+            )
         }
     }
 
-    private func applySidebarSources(favorites: [URL], volumes: [URL]) {
-        guard finderFavorites != favorites || self.volumes != volumes else { return }
+    private func applySidebarSources(
+        favorites: [URL],
+        volumes: [URL],
+        mounts: [MountedShare],
+        cloud: [WorkspaceSidebarModel.Item]
+    ) {
+        guard finderFavorites != favorites || self.volumes != volumes
+            || networkMounts != mounts || cloudLocations != cloud
+        else { return }
         finderFavorites = favorites
         self.volumes = volumes
+        networkMounts = mounts
+        cloudLocations = cloud
         rebuildSidebar()
     }
 
@@ -2357,8 +2891,16 @@ final class WorkspaceBrowserViewController: NSViewController {
     private func updateSidebarSelection() {
         let current = navigator.currentDirectory.path
         let index = sidebarRows.firstIndex { row in
-            if case .item(let item) = row { return item.url.path == current }
-            return false
+            switch row {
+            case .item(let item):
+                return item.url.path == current
+            case .place(let place, _) where Self.isServerPlace(place):
+                return NetworkServerFolder.folder(for: place).standardizedFileURL.path == current
+            case .place(let place, .connected(let mountPoint)):
+                return place.kind == .share && mountPoint.path == current
+            default:
+                return false
+            }
         }
         if let index {
             sidebarTable.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
@@ -2369,7 +2911,7 @@ final class WorkspaceBrowserViewController: NSViewController {
 
     /// Moves to `url` as if the user had clicked it, history included.
     func navigate(to url: URL) {
-        navigate(to: url, addHistory: true)
+        navigate(to: NetworkServerFolder.resolvingShareLink(url), addHistory: true)
     }
 
     /// 入れ物のフォルダを開いて、その1つを選んだ状態にする。外から
@@ -4048,8 +4590,10 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
     func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool {
         guard tableView === sidebarTable else { return isHeaderRow(row) }
         guard sidebarRows.indices.contains(row) else { return false }
-        if case .header = sidebarRows[row] { return true }
-        return false
+        switch sidebarRows[row] {
+        case .header, .placesHeader: return true
+        case .item, .place: return false
+        }
     }
 
     /// Headers are labels, not destinations.
@@ -4098,6 +4642,22 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
                 ) as? WorkspaceSidebarHeaderView ?? WorkspaceSidebarHeaderView()
                 cell.configure(title: title)
                 return cell
+            case .placesHeader(let kind):
+                let cell = tableView.makeView(
+                    withIdentifier: NSUserInterfaceItemIdentifier("WorkspaceSidebarHeader"),
+                    owner: self
+                ) as? WorkspaceSidebarHeaderView ?? WorkspaceSidebarHeaderView()
+                cell.configure(
+                    title: kind == .share ? "ネットワーク" : "サーバー",
+                    addToolTip: kind == .share
+                        ? "NASの共有やサーバーを登録（⌘K）"
+                        : "SSHで入るサーバーを登録",
+                    target: self,
+                    action: kind == .share
+                        ? #selector(registerNetworkShareFromHeader)
+                        : #selector(registerServerFromHeader)
+                )
+                return cell
             case .item(let item):
                 let cell = tableView.makeView(
                     withIdentifier: NSUserInterfaceItemIdentifier("WorkspaceSidebarCell"),
@@ -4105,6 +4665,18 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
                 ) as? WorkspaceSidebarCellView ?? WorkspaceSidebarCellView()
                 cell.configure(title: item.title, symbol: item.symbol)
                 cell.toolTip = item.url.path(percentEncoded: false)
+                return cell
+            case .place(let place, let state):
+                let cell = tableView.makeView(
+                    withIdentifier: NSUserInterfaceItemIdentifier("WorkspaceSidebarCell"),
+                    owner: self
+                ) as? WorkspaceSidebarCellView ?? WorkspaceSidebarCellView()
+                cell.configure(
+                    title: place.name,
+                    symbol: place.kind == .share ? "server.rack" : "apple.terminal",
+                    mark: state.indicatorMark
+                )
+                cell.toolTip = Self.toolTip(for: place, state: state, mounts: networkMounts)
                 return cell
             }
         }
@@ -4200,8 +4772,12 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard notification.object as? NSTableView === fileTable else {
             guard let row = sidebarTable.selectedRowIndexes.first,
-                  sidebarRows.indices.contains(row),
-                  case .item(let item) = sidebarRows[row],
+                  sidebarRows.indices.contains(row) else { return }
+            if case .place(let place, let state) = sidebarRows[row] {
+                open(place, state: state)
+                return
+            }
+            guard case .item(let item) = sidebarRows[row],
                   item.url != navigator.currentDirectory else { return }
             navigate(to: item.url)
             return
@@ -4341,9 +4917,17 @@ extension WorkspaceBrowserViewController: NSTableViewDataSource, NSTableViewDele
     }
 
     private func sidebarDropDestination(at row: Int) -> URL? {
-        guard sidebarRows.indices.contains(row),
-              case .item(let item) = sidebarRows[row] else { return nil }
-        return item.url
+        guard sidebarRows.indices.contains(row) else { return nil }
+        switch sidebarRows[row] {
+        case .item(let item):
+            return item.url
+        // 繋がっている共有へは落とせる。繋がっていないものやサーバーは、
+        // 落とした先がまだ無い。
+        case .place(let place, .connected(let mountPoint)) where place.kind == .share:
+            return mountPoint
+        default:
+            return nil
+        }
     }
 
     private static let dateFormatter: DateFormatter = {
@@ -4497,20 +5081,19 @@ extension WorkspaceBrowserViewController: NSSearchFieldDelegate {
 }
 
 extension WorkspaceBrowserViewController: NSMenuDelegate {
+    /// サイドバーのメニューは、開く直前に押した行に合わせて組み直す。
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === sidebarTable.menu else { return }
+        populateSidebarMenu(menu)
+    }
+
     func menuWillOpen(_ menu: NSMenu) {
         if menu === fileTable.headerView?.menu {
             menu.item(withTitle: "グループ")?.state = preferences.showsGroupColumn ? .on : .off
             return
         }
 
-        if menu === sidebarTable.menu {
-            let item = clickedSidebarItem
-            let pins = preferences.pins
-            menu.item(withTitle: "ピン留めを解除")?.isEnabled =
-                item.map { pins.contains($0.url) } ?? false
-            menu.item(withTitle: "Finderで表示")?.isEnabled = item != nil
-            return
-        }
+        if menu === sidebarTable.menu { return }
 
         if effectiveViewMode == .list {
             let clickedRow = fileTable.clickedRow

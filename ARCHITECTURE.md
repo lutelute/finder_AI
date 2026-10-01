@@ -72,6 +72,21 @@ File Providerや保護フォルダのmetadata問い合わせがAppKit起動を�
 
 `FavoriteItems.sfl4`はApple非公開の`NSKeyedArchiver`形式です。`SFLListItem`を持たない以上グラフを正しく辿れないため、`$objects`からbookmark blobを走査しています。読めなければ組み込みの場所へ落ちるだけで、エラーにはしません。
 
+### クラウド（1.42.0）
+
+`~/Library/CloudStorage/`の下のフォルダ（`GoogleDrive-<アカウント>`、`OneDrive-個人用`、`OneDrive-共有ライブラリ-<組織>`…）とiCloud Driveを、「クラウド」節に並べます（`CloudStorageLocations`）。File Providerに乗ったクラウドはどれもこの形で現れるので、マウントも登録も要りません。読むのは名前と「フォルダか」だけで、`ubiquitousItem*`は引きません（OneDrive配下で数十秒止まった実測があるため）。実機で5件を4msで読みます。`OneDriveCloudTemp`はOneDriveの作業用なので出しません。使わないものは右クリックで隠し、パスを`hiddenCloudPaths`に持ちます。
+
+### ネットワークの場所（1.42.0）
+
+「ネットワーク」（共有）と「サーバー」（SSH）の2節を、よく使う項目と場所のあいだに差し込みます。登録は`NetworkPlaces`（UserDefaultsのJSON、最大30件）で、行は`SidebarRow.place`としてフォルダの行（`.item`）と分けています——未接続の共有やサーバーはファイルURLを持たないので、フォルダ前提の経路（選択の突き合わせ、ドロップ先、Finderで表示）に紛れ込ませないためです。
+
+- **印はマウントとの突き合わせだけで決めます。** `volumeURLForRemountingKey`（`smb://user@host/share`）を登録と比べ（`NetworkShareMatching`）、大文字小文字・`.local`の有無・Bonjourのサービス名（`host._smb._tcp.local`）の揺れだけ吸収します。名前解決はしません——`pws-nas03.local`と`10.0.70.189`が同じだと分かるには待ちが要り、サイドバーを描くたびに走るからです。マウントの読み取りはボリュームと同じくメインスレッド外です。
+- **繋ぐのは`NetworkPlaceConnector`（アプリに1つ）。** まず相手のポート（SMBは445）へTCPで5秒だけ当たり、届いたら`NetFSMountURLAsync`にUIを許して渡します。認証ダイアログとキーチェーン保存はmacOSの別プロセスが出すので、FinderAIはパスワードに触りません。探りを入れているのは、届かない相手にNetFSが数十秒黙るからです。「繋いでいる最中」「届かなかった」はコネクタが持ち、`networkPlacesDidChange`で全部の窓のサイドバーへ配ります。
+- **SSHは`TerminalSessionKind.ssh`です。** 宛先は`TerminalSessionKey.target`に入り、同じホームで開く2台ぶんのsshが別のセッションになります。tmuxの名前は宛先があるときだけハッシュの材料に足します（無いセッションの名前を変えると、走っているtmuxへ繋ぎ直せなくなる）。`sessions(for:)`はsshを返しません——ホームへ移るたびにsshのタブが前へ出て、ホームに「動いている」の印が付くのを防ぐためです。cdの追従はもともとShellだけなので、sshには何も送りません。タブの名前は台帳に書かず、描くたびにサイドバーの登録名から引きます。
+- 宛先が`-`で始まるものは登録でも起動の組み立て（`TerminalLaunchPlanner`）でも断ります。sshのオプションとして読まれるためです。
+- **サーバー全体の表示。** 共有名なしで登録した共有を押すと、`smbutil view -N`で共有の一覧を読み（`SMBShareList`、ディスク共有のみ・`$`で終わる管理用は除く）、全部をつないで、`~/Library/Application Support/FinderAI/Servers/<ID>/<登録名>/`（窓の名前が登録名になるよう、IDは一段上）に`/Volumes/<共有>`へのリンクを並べて開きます（`NetworkServerFolder`）。マウント先を`/Volumes`のままにしたのは、Terminalで打つ道とFinderから見える場所を変えないためです。一覧が読めない（まだ認証していない）ときは、前回覚えた一覧（`knownShares`）で最初の1つだけ認証画面を許してつなぎ、それも無ければNetFSにホストだけを渡して認証と共有の選択を一度してもらいます。2つ目以降は画面を出さずに（`NoUI`）つなぎます——画面を許すと、権限の違う共有があるたびに認証画面が重なり、答えるまで先へ進みませんでした。サーバーとして登録したホストの共有は、全部「場所」から外します（`NetworkShareMatching.mountPoints`）。リンクはフォルダとして並べ（`WorkspaceDirectoryListing.isDirectory`がリンク先を見る）、サーバーのフォルダ直下のリンクに入るときはリンク先へ移ります（`resolvingShareLink`）。
+- **Tailscaleへの回り込み。** ふだんの住所に2.5秒当たって届かなければ、`tailscale status --json`の`Peer`から名前（`HostName`／`DNSName`の頭。`pws-nas03.local`→`pws-nas03`）で同じ機械を探します（`TailscaleRoute`）。IPでは照合しません——Tailscaleの一覧は相手のLANのIPを出さないからです。Tailscaleが「繋がっている」と言う相手には当たりに行かず、そのまま使います。中継（DERP）越しの最初の1回は応答まで数秒かかることがあり、5秒の探りが空振りした実測があるためです。共有はホストを差し替えたURLでマウントし、使った住所を登録（`tailscaleAddress`）に覚えます——マウントの戻り先がTailscaleの住所になるので、覚えないと登録と突き合わせられず「未接続」に見えます。SSHは`ssh -G`で別名の実際の繋ぎ先を読んでから当たり、回り込むときは`-o HostName=`で繋ぐ先だけを差し替えます。
+
 ## グループ
 
 一つのフォルダの中を、**実体を一つも動かさずに**まとめる仕組みです。フォルダを作って中へ移すとgitのパスもsymlinkもビルドスクリプトのパスも壊れるので、そのフォルダ自身に置いた一枚のJSON（`.finderai-groups.json`）が「どれとどれが同じか」だけを持ちます。ファイルシステムには何も起きません。使い方とJSONの形は[docs/GROUPS.md](docs/GROUPS.md)にあります。

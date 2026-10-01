@@ -82,10 +82,25 @@ public enum WorkspaceDirectoryListing {
     /// see `cloudStatuses(for:)` for why they are resolved separately.
     private static let listingKeys: [URLResourceKey] = [
         .isDirectoryKey,
+        .isSymbolicLinkKey,
         .isHiddenKey,
         .fileSizeKey,
         .contentModificationDateKey
     ]
+
+    /// フォルダを指すシンボリックリンクはフォルダとして扱う（Finderと同じ）。
+    ///
+    /// `isDirectory`はリンクそのものを見るのでfalseになり、ファイルとして並んで
+    /// ダブルクリックで中へ入れなかった。サーバーの共有を並べたフォルダ
+    /// （`/Volumes/<共有>`へのリンク）がそのまま使えないので、ここで先を見る。
+    /// 先を見るのはリンクだけで、ふつうの項目には一手も増えない。
+    static func isDirectory(_ url: URL, values: URLResourceValues?) -> Bool {
+        if values?.isSymbolicLink == true {
+            let target = url.resolvingSymlinksInPath()
+            return (try? target.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+        }
+        return values?.isDirectory ?? url.hasDirectoryPath
+    }
 
     /// 配下を深さ優先で検索する。列挙・resource value取得の各段階でcancelを確認し、
     /// File Providerや大規模treeで古い検索が後からUIを上書きしないようにする。
@@ -143,7 +158,7 @@ public enum WorkspaceDirectoryListing {
                 break
             }
             let values = try? value.resourceValues(forKeys: keySet)
-            let isDirectory = values?.isDirectory ?? value.hasDirectoryPath
+            let isDirectory = Self.isDirectory(value, values: values)
             items.append(WorkspaceItem(
                 url: value,
                 name: value.lastPathComponent,
@@ -176,9 +191,14 @@ public enum WorkspaceDirectoryListing {
         showHiddenFiles: Bool = false,
         fileManager: FileManager = .default
     ) throws -> [WorkspaceItem] {
-        let directory = directory.standardizedFileURL
+        var directory = directory.standardizedFileURL
         guard directory.isFileURL else {
             throw CocoaError(.fileReadUnsupportedScheme)
+        }
+        // 開こうとしている場所そのものがリンクなら、リンク先を読む。
+        // `contentsOfDirectory`は最後のリンクをたどらず「フォルダではない」で失敗する。
+        if (try? directory.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true {
+            directory = directory.resolvingSymlinksInPath()
         }
 
         // Cloud status is *not* prefetched here; `cloudStatuses(for:)` resolves it
@@ -200,7 +220,7 @@ public enum WorkspaceDirectoryListing {
         for url in urls {
             try Task.checkCancellation()
             let values = try? url.resourceValues(forKeys: keySet)
-            let isDirectory = values?.isDirectory ?? url.hasDirectoryPath
+            let isDirectory = Self.isDirectory(url, values: values)
             items.append(
                 WorkspaceItem(
                     url: url,

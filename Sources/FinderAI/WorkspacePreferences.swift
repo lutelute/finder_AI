@@ -38,6 +38,8 @@ struct WorkspacePreferences {
         static let terminalExpanded = "workspace.terminalExpanded"
         static let lastDirectory = "workspace.lastDirectory"
         static let pins = "workspace.pins"
+        static let networkPlaces = "workspace.networkPlaces"
+        static let hiddenCloudPaths = "workspace.hiddenCloudPaths"
         static let visits = "workspace.visits"
         static let columnView = "workspace.columnView"
         static let viewMode = "workspace.viewMode"
@@ -343,6 +345,28 @@ struct WorkspacePreferences {
     var pins: WorkspacePins {
         get { WorkspacePins(paths: defaults.stringArray(forKey: Key.pins) ?? []) }
         nonmutating set { defaults.set(newValue.storedPaths, forKey: Key.pins) }
+    }
+
+    /// 登録したネットワークの場所。読めなければ空から——壊れた値のために
+    /// サイドバーが出なくなるより、登録し直すほうが軽い。
+    var networkPlaces: NetworkPlaces {
+        get {
+            guard let data = defaults.data(forKey: Key.networkPlaces),
+                  let places = try? JSONDecoder().decode([NetworkPlace].self, from: data)
+            else { return NetworkPlaces() }
+            return NetworkPlaces(places)
+        }
+        nonmutating set {
+            guard let data = try? JSONEncoder().encode(newValue.all) else { return }
+            defaults.set(data, forKey: Key.networkPlaces)
+        }
+    }
+
+    /// 「クラウド」節から隠したもの。クラウドは見つけた分を全部出すので、使わない
+    /// アカウントを消す手段はこれだけ。パスで持つ。
+    var hiddenCloudPaths: [String] {
+        get { defaults.stringArray(forKey: Key.hiddenCloudPaths) ?? [] }
+        nonmutating set { defaults.set(newValue, forKey: Key.hiddenCloudPaths) }
     }
 
     /// A corrupt log costs the user nothing to rebuild, so a decode failure starts

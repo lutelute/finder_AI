@@ -16,10 +16,10 @@ private final class MockManagedSession: ManagedTerminalSession {
     var onChange: (() -> Void)?
     private(set) var terminateCount = 0
 
-    init(directoryURL: URL, kind: TerminalSessionKind) {
+    init(directoryURL: URL, kind: TerminalSessionKind, target: String? = nil) {
         self.directoryURL = directoryURL
         self.kind = kind
-        key = TerminalSessionKey(directoryURL: directoryURL, kind: kind)
+        key = TerminalSessionKey(directoryURL: directoryURL, kind: kind, target: target)
     }
 
     func terminate() {
@@ -40,6 +40,7 @@ private final class MockSessionBuilder: TerminalSessionBuilding {
         let executableURL: URL?
         let persistence: TerminalSessionPersistence?
         let resumesConversation: ConversationResume?
+        var target: String?
     }
 
     private(set) var requests: [Request] = []
@@ -53,14 +54,37 @@ private final class MockSessionBuilder: TerminalSessionBuilding {
         resumesConversation: ConversationResume?,
         role: String?
     ) throws -> any ManagedTerminalSession {
+        try makeSession(
+            directoryURL: directoryURL,
+            kind: kind,
+            target: nil,
+            sshHostOverride: nil,
+            executableURL: executableURL,
+            persistence: persistence,
+            resumesConversation: resumesConversation,
+            role: role
+        )
+    }
+
+    func makeSession(
+        directoryURL: URL,
+        kind: TerminalSessionKind,
+        target: String?,
+        sshHostOverride: String?,
+        executableURL: URL?,
+        persistence: TerminalSessionPersistence?,
+        resumesConversation: ConversationResume?,
+        role: String?
+    ) throws -> any ManagedTerminalSession {
         requests.append(Request(
             directoryURL: directoryURL,
             kind: kind,
             executableURL: executableURL,
             persistence: persistence,
-            resumesConversation: resumesConversation
+            resumesConversation: resumesConversation,
+            target: target
         ))
-        let session = MockManagedSession(directoryURL: directoryURL, kind: kind)
+        let session = MockManagedSession(directoryURL: directoryURL, kind: kind, target: target)
         session.persistence = persistence
         sessions.append(session)
         return session
@@ -659,5 +683,72 @@ struct TerminalSessionManagerTests {
         let record = manager.sessionRecords.first { $0.key == key }
         #expect(record?.endedAt == nil)
         #expect(record?.endReason == nil)
+    }
+}
+
+@Suite("SSH sessions to registered servers")
+@MainActor
+struct ServerSessionTests {
+    private let ssh = URL(fileURLWithPath: "/usr/bin/ssh")
+    private var home: URL { FileManager.default.homeDirectoryForCurrentUser }
+
+    private func manager(
+        _ name: String,
+        builder: MockSessionBuilder,
+        commands: [String: URL]? = nil
+    ) -> TerminalSessionManager {
+        TerminalSessionManager(
+            builder: builder,
+            commandLocator: MockCommandLocator(commands: commands ?? ["ssh": ssh]),
+            preferences: isolatedPreferences(name),
+            registry: InMemorySessionRegistryStore()
+        )
+    }
+
+    @Test("宛先ごとに1本。同じ宛先を押し直しても増えない")
+    func onePerTarget() throws {
+        let builder = MockSessionBuilder()
+        let manager = manager("ssh-one-per-target", builder: builder)
+
+        let gpu = try manager.openServerSession(target: "ubuntu@100.117.16.18")
+        let pgx = try manager.openServerSession(target: "lute@100.116.168.15")
+        let again = try manager.openServerSession(target: "ubuntu@100.117.16.18")
+
+        #expect(gpu.id != pgx.id)
+        #expect(again.id == gpu.id)
+        #expect(builder.requests.map(\.target) == ["ubuntu@100.117.16.18", "lute@100.116.168.15"])
+        #expect(builder.requests.allSatisfy { $0.kind == .ssh && $0.executableURL == ssh })
+        #expect(manager.serverSession(target: "lute@100.116.168.15")?.id == pgx.id)
+        #expect(manager.serverSession(target: "nobody@nowhere") == nil)
+        #expect(Set(manager.sessionRecords.compactMap(\.target))
+            == ["ubuntu@100.117.16.18", "lute@100.116.168.15"])
+    }
+
+    /// ホームへ移るたびにsshのタブが前へ出たり、ホームに「何か動いている」の
+    /// 印が付いたりしないように。
+    @Test("sshはホームのフォルダのセッションとして数えない")
+    func notAHomeFolderSession() throws {
+        let manager = manager("ssh-not-home", builder: MockSessionBuilder())
+        _ = try manager.openServerSession(target: "pws-gpu3060")
+        #expect(manager.sessions(for: home).isEmpty)
+
+        let shell = try manager.create(kind: .shell, directoryURL: home)
+        #expect(manager.sessions(for: home).map(\.id) == [shell.id])
+        #expect(manager.allSessions.count == 2)
+    }
+
+    @Test("sshには「前回の続き」が無い")
+    func sshDoesNotResume() throws {
+        let manager = manager("ssh-no-resume", builder: MockSessionBuilder())
+        _ = try manager.openServerSession(target: "pws-gpu3060")
+        #expect(!manager.hasResumableConversation(kind: .ssh, directoryURL: home))
+    }
+
+    @Test("sshが見つからなければ開けない")
+    func requiresSSH() {
+        let manager = manager("ssh-missing", builder: MockSessionBuilder(), commands: [:])
+        #expect(throws: SessionCreationError.self) {
+            try manager.openServerSession(target: "pws-gpu3060")
+        }
     }
 }

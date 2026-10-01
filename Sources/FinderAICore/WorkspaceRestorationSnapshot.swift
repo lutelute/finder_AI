@@ -8,10 +8,13 @@ public struct WorkspaceRestorationSnapshot: Codable, Equatable, Sendable {
     public struct Session: Codable, Equatable, Sendable {
         public let directoryPath: String
         public let kind: TerminalSessionKind
+        /// sshの宛先。無かった頃のスナップショットも読めるよう省略可能。
+        public let target: String?
 
-        public init(directoryPath: String, kind: TerminalSessionKind) {
+        public init(directoryPath: String, kind: TerminalSessionKind, target: String? = nil) {
             self.directoryPath = directoryPath
             self.kind = kind
+            self.target = target
         }
     }
 

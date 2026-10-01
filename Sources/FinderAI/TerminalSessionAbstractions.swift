@@ -58,6 +58,41 @@ protocol TerminalSessionBuilding {
         resumesConversation: ConversationResume?,
         role: String?
     ) throws -> any ManagedTerminalSession
+    /// sshの宛先付き。宛先を持たないセッションはどちらを呼んでも同じ。
+    /// `sshHostOverride`は、ふだんの住所に届かないときに繋ぐTailscaleの住所。
+    func makeSession(
+        directoryURL: URL,
+        kind: TerminalSessionKind,
+        target: String?,
+        sshHostOverride: String?,
+        executableURL: URL?,
+        persistence: TerminalSessionPersistence?,
+        resumesConversation: ConversationResume?,
+        role: String?
+    ) throws -> any ManagedTerminalSession
+}
+
+extension TerminalSessionBuilding {
+    /// 宛先を扱わない実装（テストのフェイク等）の既定。宛先は捨てる。
+    func makeSession(
+        directoryURL: URL,
+        kind: TerminalSessionKind,
+        target: String?,
+        sshHostOverride: String?,
+        executableURL: URL?,
+        persistence: TerminalSessionPersistence?,
+        resumesConversation: ConversationResume?,
+        role: String?
+    ) throws -> any ManagedTerminalSession {
+        try makeSession(
+            directoryURL: directoryURL,
+            kind: kind,
+            executableURL: executableURL,
+            persistence: persistence,
+            resumesConversation: resumesConversation,
+            role: role
+        )
+    }
 }
 
 @MainActor
@@ -146,9 +181,24 @@ protocol TerminalSessionManaging: AnyObject {
     func setSessionRecordPinned(id: UUID, isPinned: Bool)
     func forgetSessionRecord(id: UUID)
     func shutdownOwnedProcesses()
+    /// 登録したサーバーへのssh。宛先ごとに1本で、あればそれを前に出す。
+    /// `routeHost`があれば、繋ぐ先をそこへ差し替える（Tailscaleへの回り込み）。
+    func openServerSession(target: String, routeHost: String?) throws -> any ManagedTerminalSession
+    /// その宛先へのsshセッション（表示・非表示を問わず）。
+    func serverSession(target: String) -> (any ManagedTerminalSession)?
 }
 
 extension TerminalSessionManaging {
+    func openServerSession(target: String, routeHost: String?) throws -> any ManagedTerminalSession {
+        throw SessionCreationError.executableNotFound(TerminalSessionKind.ssh.displayName)
+    }
+
+    func openServerSession(target: String) throws -> any ManagedTerminalSession {
+        try openServerSession(target: target, routeHost: nil)
+    }
+
+    func serverSession(target: String) -> (any ManagedTerminalSession)? { nil }
+
     /// 新規（前回の続きを求めない）作成。
     @discardableResult
     func create(
@@ -171,6 +221,28 @@ struct SwiftTermSessionBuilder: TerminalSessionBuilding {
         resumesConversation: ConversationResume?,
         role: String?
     ) throws -> any ManagedTerminalSession {
+        try makeSession(
+            directoryURL: directoryURL,
+            kind: kind,
+            target: nil,
+            sshHostOverride: nil,
+            executableURL: executableURL,
+            persistence: persistence,
+            resumesConversation: resumesConversation,
+            role: role
+        )
+    }
+
+    func makeSession(
+        directoryURL: URL,
+        kind: TerminalSessionKind,
+        target: String?,
+        sshHostOverride: String?,
+        executableURL: URL?,
+        persistence: TerminalSessionPersistence?,
+        resumesConversation: ConversationResume?,
+        role: String?
+    ) throws -> any ManagedTerminalSession {
         try TerminalSession(
             directoryURL: directoryURL,
             kind: kind,
@@ -179,7 +251,9 @@ struct SwiftTermSessionBuilder: TerminalSessionBuilding {
             // 起動時ではなく作成時に読む。トグルの変更が次のセッションから効く。
             logsOutput: preferences.sessionLogging,
             resumesConversation: resumesConversation,
-            role: role
+            role: role,
+            target: target,
+            sshHostOverride: sshHostOverride
         )
     }
 }

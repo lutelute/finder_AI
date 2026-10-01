@@ -112,3 +112,83 @@ struct WorkspaceSidebarModelTests {
         #expect(fallback.map(\.lastPathComponent) == ["someone", "Desktop", "Documents", "Downloads"])
     }
 }
+
+@Suite("Cloud storage in the sidebar")
+struct CloudStorageLocationsTests {
+    @Test("フォルダ名を読める名前にする。作業用の置き場とファイルは出さない")
+    func parsesFolderNames() {
+        func title(_ name: String) -> String? { CloudStorageLocations.parse(folderName: name)?.title }
+        #expect(title("GoogleDrive-lutebass@gmail.com") == "Google Drive")
+        #expect(title("OneDrive-個人用") == "OneDrive 個人用")
+        #expect(title("OneDrive-共有ライブラリ-国立大学法人福井大学") == "OneDrive 国立大学法人福井大学")
+        #expect(title("OneDrive-共有ライブラリ-u-fukui.ac.jp") == "OneDrive u-fukui.ac.jp")
+        #expect(title("OneDrive-SharedLibraries-Contoso") == "OneDrive Contoso")
+        #expect(title("OneDrive-共有ライブラリ-OneDriveCloudTemp") == nil)
+        #expect(title("Dropbox") == "Dropbox")
+        #expect(title("Box-Box") == "Box")
+        #expect(title("SynologyDrive-nas") == "Synology Drive nas")
+        #expect(title(".DS_Store") == nil)
+    }
+
+    @Test("見つけた分を並べる。Google Drive、OneDrive（個人用が先）、ほか、最後にiCloud Drive")
+    func listsLocationsInOrder() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cloud-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = root.appendingPathComponent("CloudStorage", isDirectory: true)
+        for name in [
+            "OneDrive-共有ライブラリ-国立大学法人福井大学",
+            "Dropbox",
+            "OneDrive-個人用",
+            "GoogleDrive-lutebass@gmail.com",
+            "OneDrive-共有ライブラリ-OneDriveCloudTemp"
+        ] {
+            try FileManager.default.createDirectory(
+                at: storage.appendingPathComponent(name), withIntermediateDirectories: true)
+        }
+        try Data().write(to: storage.appendingPathComponent("fy2025_v3.pdf"))
+        let iCloud = root.appendingPathComponent("CloudDocs", isDirectory: true)
+        try FileManager.default.createDirectory(at: iCloud, withIntermediateDirectories: true)
+
+        let items = CloudStorageLocations.locations(root: storage, iCloudDrive: iCloud)
+        #expect(items.map(\.title) == [
+            "Google Drive", "OneDrive 個人用", "OneDrive 国立大学法人福井大学", "Dropbox", "iCloud Drive"
+        ])
+        #expect(items.last?.symbol == "icloud.fill")
+        #expect(items.first?.url.lastPathComponent == "GoogleDrive-lutebass@gmail.com")
+    }
+
+    @Test("Google Driveが2つあればアカウントを添えて分ける")
+    func disambiguatesAccounts() throws {
+        let storage = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cloud-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: storage) }
+        for name in ["GoogleDrive-a@gmail.com", "GoogleDrive-b@u-fukui.ac.jp"] {
+            try FileManager.default.createDirectory(
+                at: storage.appendingPathComponent(name), withIntermediateDirectories: true)
+        }
+        let items = CloudStorageLocations.locations(
+            root: storage, iCloudDrive: storage.appendingPathComponent("none"))
+        #expect(items.map(\.title) == ["Google Drive a@gmail.com", "Google Drive b@u-fukui.ac.jp"])
+    }
+
+    @Test("クラウドの節はよく使う項目と場所のあいだ。よく使う項目と重なれば一度だけ")
+    func sectionPlacement() {
+        let home = URL(fileURLWithPath: "/Users/someone", isDirectory: true)
+        let drive = URL(fileURLWithPath: "/Users/someone/Library/CloudStorage/GoogleDrive-a", isDirectory: true)
+        let personal = URL(fileURLWithPath: "/Users/someone/Library/CloudStorage/OneDrive-個人用", isDirectory: true)
+        let sections = WorkspaceSidebarModel.sections(
+            .init(
+                favorites: [personal],
+                cloud: [
+                    .init(title: "Google Drive", url: drive, symbol: "cloud.fill"),
+                    .init(title: "OneDrive 個人用", url: personal, symbol: "cloud.fill")
+                ],
+                volumes: [URL(fileURLWithPath: "/", isDirectory: true)]
+            ),
+            home: home
+        )
+        #expect(sections.map(\.title) == ["よく使う項目", "クラウド", "場所"])
+        #expect(sections[1].items.map(\.title) == ["Google Drive"])
+    }
+}

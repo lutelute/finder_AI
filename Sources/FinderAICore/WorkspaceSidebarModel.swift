@@ -31,6 +31,9 @@ public enum WorkspaceSidebarModel {
     public struct Input: Sendable {
         public var pins: [URL]
         public var favorites: [URL]
+        /// Google Drive・OneDriveなど。名前はフォルダ名ではなく読める形で来る
+        /// （`CloudStorageLocations`）。
+        public var cloud: [Item]
         public var volumes: [URL]
         public var frequent: [URL]
         public var recent: [URL]
@@ -38,12 +41,14 @@ public enum WorkspaceSidebarModel {
         public init(
             pins: [URL] = [],
             favorites: [URL] = [],
+            cloud: [Item] = [],
             volumes: [URL] = [],
             frequent: [URL] = [],
             recent: [URL] = []
         ) {
             self.pins = pins
             self.favorites = favorites
+            self.cloud = cloud
             self.volumes = volumes
             self.frequent = frequent
             self.recent = recent
@@ -83,6 +88,7 @@ public enum WorkspaceSidebarModel {
 
         let pins = take(input.pins) { _ in "pin.fill" }
         let favorites = take(input.favorites) { symbol(for: $0, home: home) }
+        let cloud = input.cloud.filter { claimed.insert($0.url.path).inserted }
         let volumes = take(input.volumes) { $0.path == "/" ? "internaldrive.fill" : "externaldrive.fill" }
         let frequent = take(input.frequent) { _ in "clock.arrow.trianglehead.counterclockwise.rotate.90" }
         let recent = take(input.recent) { _ in "clock" }
@@ -90,6 +96,7 @@ public enum WorkspaceSidebarModel {
         return [
             Section(title: "ピン留め", items: pins),
             Section(title: "よく使う項目", items: favorites),
+            Section(title: "クラウド", items: cloud),
             Section(title: "場所", items: volumes),
             Section(title: "よく使うフォルダ", items: frequent),
             Section(title: "最近", items: recent)
