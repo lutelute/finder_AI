@@ -9,6 +9,12 @@ extension Notification.Name {
     static let terminalSessionsDidChange = Notification.Name(
         "FinderAI.terminalSessionsDidChange"
     )
+    /// ドロワーが他のウインドウに出ていた中身を取り寄せたとき、そのドロワーが送る。
+    /// 取られた側はそれまで何も知らされず、タブだけ残った空の区画のままだった。
+    /// セッションの増減ではないので、ドロワー以外は観測しない。
+    static let terminalSessionMountDidMove = Notification.Name(
+        "FinderAI.terminalSessionMountDidMove"
+    )
 }
 
 @MainActor

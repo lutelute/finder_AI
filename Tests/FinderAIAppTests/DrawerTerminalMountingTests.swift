@@ -160,8 +160,8 @@ struct DrawerTerminalMountingTests {
         try #require(tabButtons(in: drawerB.view).first).performClick(nil)
         #expect(rootView(of: session.contentView) === drawerB.view)
 
-        // Aはまだ「自分に出ている」と記録したまま。押せば実際の所在を見て
-        // 取り戻せること（IDの一致だけで早退しないこと）を確かめる。
+        // 取られたAは開始の画面に戻っている（取ったBが知らせる）。Aのタブを
+        // 押せば、実際の所在を見て取り戻せることを確かめる。
         try #require(tabButtons(in: drawerA.view).first).performClick(nil)
         #expect(rootView(of: session.contentView) === drawerA.view)
     }

@@ -68,11 +68,18 @@ final class DrawerContentViewController: NSViewController {
     private let appearanceButton = NSButton()
     /// The folder the browser is showing. There is no drawer-level "fixed"
     /// mode any more: whether a session moves with this is each session's own
-    /// story — shells follow (and actually `cd`), AI sessions stay put, and a
-    /// pinned (📌) shell stays put too. The tab strip shows all of it.
+    /// story — a shell the user put on screen follows (and actually `cd`s),
+    /// AI sessions stay put, and a pinned (📌) shell stays put too. The tab
+    /// strip shows all of it.
     private var directoryURL: URL?
     private var visibleSessions: [any ManagedTerminalSession] = []
     private var activeSession: (any ManagedTerminalSession)?
+    /// 出ている中身を、使う人が自分で選んだか（開始ボタン・＋・タブ・巡回）。
+    /// フォルダに着いて前へ出ただけのもの、復元で出ただけのものはfalse。
+    /// フォルダ移動でShellが付いてくる（cdする）のはtrueのときだけ——たまたま
+    /// 前に出たShellまで付いてくると、そのShellが元の場所から連れ出され、
+    /// どのフォルダへ行っても同じShellが居座って開始の画面が出なくなる。
+    private var activeChosenByUser = false
     private var expanded = false
     private var edge: TerminalPanelEdge = .bottom
     private var bodyLayoutConstraints: [NSLayoutConstraint] = []
@@ -145,6 +152,7 @@ final class DrawerContentViewController: NSViewController {
 
     // deinitでしか触らないため、managerのactivationObserverと同じ扱い。
     private nonisolated(unsafe) var sessionsObserver: (any NSObjectProtocol)?
+    private nonisolated(unsafe) var mountObserver: (any NSObjectProtocol)?
 
     init(sessionManager: any TerminalSessionManaging, preferences: WorkspacePreferences) {
         self.preferences = preferences
@@ -159,11 +167,21 @@ final class DrawerContentViewController: NSViewController {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.reloadSessions() }
         }
+        mountObserver = NotificationCenter.default.addObserver(
+            forName: .terminalSessionMountDidMove,
+            object: sessionManager,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reloadSessions() }
+        }
     }
 
     deinit {
         if let sessionsObserver {
             NotificationCenter.default.removeObserver(sessionsObserver)
+        }
+        if let mountObserver {
+            NotificationCenter.default.removeObserver(mountObserver)
         }
     }
 
@@ -388,20 +406,40 @@ final class DrawerContentViewController: NSViewController {
         guard directoryURL != standardized else { return }
         directoryURL = standardized
         updateDirectoryPresentation()
-        // Following, in order of what the user meant by "follow": an active
-        // un-pinned shell moves with the click — it actually `cd`s (only at an
-        // idle prompt; the session refuses otherwise). When it cannot — busy,
-        // pinned, an AI session, or the destination already has its own shell
-        // — the destination's session comes forward instead, and failing that
-        // whatever was on screen stays there. Nothing ever silently vanishes.
-        if let active = activeSession,
-           active.kind == .shell,
-           !active.isAnchored,
-           sessionManager.followSession(active, to: standardized) {
+        if let active = activeSession, staysOnScreen(active, movingTo: standardized) {
             reloadSessions(prefer: active)
-        } else {
-            reloadSessions(prefer: sessionManager.sessions(for: standardized).last)
+            return
         }
+        // 行き先のものでなければ前の中身は下ろす。行き先にセッションがあれば
+        // それが前へ出て、無ければ開始の画面（Shell・Codex・Claudeと会話の履歴）
+        // になる。下ろした中身はタブ帯に残っているので、黙って消えはしない。
+        // 1.42.0まではここで前の中身を残していたため、一度でも何かを出すと
+        // 新しいフォルダで開始の画面が二度と出ず、＋から始めるしかなかった。
+        activeSession = nil
+        reloadSessions(prefer: sessionManager.sessions(for: standardized).last)
+    }
+
+    /// フォルダを移っても、いま出ている中身をそのまま出しておくか。
+    private func staysOnScreen(
+        _ active: any ManagedTerminalSession,
+        movingTo destination: URL
+    ) -> Bool {
+        // sshはどのフォルダにも属さない（宛先ごとに1本）。手元のフォルダを
+        // 見て回っても、繋いでいるサーバーの画面は下ろさない。
+        if active.kind == .ssh { return true }
+        let belongsToDestination = sessionManager.sessions(for: destination)
+            .contains { $0.id == active.id }
+        // 自分で出したShellは付いてくる——実際に`cd`する（プロンプトで待機中の
+        // ときだけ。それ以外はセッションが断る）。行き先がそのShellの所属でも
+        // 呼ぶのは、手でcdしてずれた実cwdをそろえ直すため。
+        if active.kind == .shell,
+           !active.isAnchored,
+           activeChosenByUser || belongsToDestination,
+           sessionManager.followSession(active, to: destination) {
+            return true
+        }
+        // タブのダブルクリックでそのセッションの場所へ行ったときなど。
+        return belongsToDestination
     }
 
     func setExpanded(_ expanded: Bool) {
@@ -742,18 +780,22 @@ final class DrawerContentViewController: NSViewController {
         // DrawerSessionTab for why the strip never hides running work.
         visibleSessions = sessionManager.allSessions.filter { sessionManager.isPresented($0) }
 
+        let previousID = activeSession?.id
+        var tookOverFromAnotherDrawer = false
         if let preferred, visibleSessions.contains(where: { $0.id == preferred.id }),
            takesOverMountedElsewhere || !isMountedInAnotherDrawer(preferred) {
+            tookOverFromAnotherDrawer = isMountedInAnotherDrawer(preferred)
             activeSession = preferred
         } else if let activeSession, visibleSessions.contains(where: { $0.id == activeSession.id }),
                   !isMountedInAnotherDrawer(activeSession) {
             self.activeSession = activeSession
         } else {
-            // セッションのcontentViewは1つしかない。他のウインドウに出ている
-            // 中身を自動選択で取り上げると、向こうはタブだけ残して空になる。
-            // 自動では他所の中身を取らない——取るのはタブを押した（意思のある）
-            // ときだけ。全部が他所なら空のまま、タブは残る。
-            activeSession = visibleSessions.last { !isMountedInAnotherDrawer($0) }
+            activeSession = automaticSession()
+        }
+        if takesOverMountedElsewhere, let preferred, activeSession?.id == preferred.id {
+            activeChosenByUser = true
+        } else if activeSession?.id != previousID {
+            activeChosenByUser = false
         }
 
         let rows = DrawerSessionTabs.rows(
@@ -826,6 +868,30 @@ final class DrawerContentViewController: NSViewController {
         updateStartButtonTitles()
         refreshConversationHistory()
         showActiveTerminal()
+        // 取られた側に知らせる。知らせないと、向こうは「まだ自分に出ている」と
+        // 信じたまま、タブだけ残った空の区画になる（次に何か変わるまで直らない）。
+        if tookOverFromAnotherDrawer {
+            NotificationCenter.default.post(
+                name: .terminalSessionMountDidMove,
+                object: sessionManager
+            )
+        }
+    }
+
+    /// 選んだものが無いとき、自動で出してよい中身。
+    ///
+    /// 今いるフォルダのものだけ。この経路はフォルダ移動のほか、どこかの端末が
+    /// タイトルを書き換えるたび（Claude Codeは作業中ずっと書き換える）にも
+    /// 通る。1.42.0まではよその場所のものも拾っていたので、開始の画面を
+    /// 見ているあいだに別のウインドウで何かが起きると、無関係なフォルダの端末に
+    /// 入れ替わり、そのまま居座っていた。
+    ///
+    /// セッションのcontentViewは1つしかない。他のウインドウに出ている中身を
+    /// 自動で取り上げると、向こうはタブだけ残して空になる。他所に出ている中身を
+    /// 取るのはタブを押した（意思のある）ときだけ。
+    private func automaticSession() -> (any ManagedTerminalSession)? {
+        guard let directoryURL else { return nil }
+        return sessionManager.sessions(for: directoryURL).last { !isMountedInAnotherDrawer($0) }
     }
 
     /// tmux側に生き残りがあるフォルダでは、開始ボタンは新規起動ではなく再接続に
