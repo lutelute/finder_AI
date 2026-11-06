@@ -58,6 +58,9 @@ if [ "$MODE" = "distribution" ]; then
     spctl --assess --type execute --verbose=4 "$APP"
 
     VERIFY_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/finderai-distribution-verify.XXXXXX")
+    # Real path, not /var/… or /tmp/…: `ditto -x -k` cannot recreate Sparkle's
+    # symlinks below a symlinked destination (see build-workspace-app.sh).
+    VERIFY_ROOT=$(CDPATH='' cd -- "$VERIFY_ROOT" && pwd -P)
     cleanup() {
         chmod -R u+w "$VERIFY_ROOT" 2>/dev/null || true
         rm -rf "$VERIFY_ROOT"

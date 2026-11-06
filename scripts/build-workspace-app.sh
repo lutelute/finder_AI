@@ -8,6 +8,11 @@ DIST_APP="$ROOT/dist/$APP_NAME"
 ZIP="$ROOT/dist/FinderAI.zip"
 RELEASE_BUILD="${FINDERAI_RELEASE:-0}"
 STAGE_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/finderai-workspace-build.XXXXXX")
+# mktemp answers through /var or /tmp, which are symlinks into /private. On
+# macOS 26.7.2, `ditto -x -k` cannot recreate the framework's symlinks below a
+# destination reached through a symlink ("Operation not permitted"), so the
+# archive check further down fails. Work under the real path instead.
+STAGE_ROOT=$(CDPATH='' cd -- "$STAGE_ROOT" && pwd -P)
 APP="$STAGE_ROOT/$APP_NAME"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
