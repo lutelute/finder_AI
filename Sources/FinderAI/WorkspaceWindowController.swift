@@ -421,6 +421,12 @@ extension WorkspaceWindowController: NSSplitViewDelegate {
         terminal.handOffActiveSession()
     }
 
+    /// ⌃⌘B。いま見ているClaudeのセッションが開いたページの、Webブラウザのウインドウを
+    /// 前に出す（振り分けはweb-shitei）。
+    @objc func bringBrowserWindow() {
+        terminal.bringBrowserWindowOfActiveSession()
+    }
+
     @objc func selectPreviousSession() {
         terminal.selectAdjacentSession(offset: -1)
     }
@@ -718,8 +724,15 @@ extension WorkspaceWindowController: NSSplitViewDelegate {
 extension WorkspaceWindowController: NSMenuItemValidation {
     /// 「Terminal.appでも開く」は、tmuxで動いているセッションを見ているときだけ。
     /// 押せない理由はドロワーのボタンと右クリックのツールチップが言う。
+    /// 「Webブラウザのウインドウを前に出す」は、Claudeのセッションを見ているときだけ。
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        guard menuItem.action == #selector(handOffTerminalSession) else { return true }
-        return terminal.canHandOffActiveSession
+        switch menuItem.action {
+        case #selector(handOffTerminalSession):
+            return terminal.canHandOffActiveSession
+        case #selector(bringBrowserWindow):
+            return terminal.canBringBrowserWindowOfActiveSession
+        default:
+            return true
+        }
     }
 }

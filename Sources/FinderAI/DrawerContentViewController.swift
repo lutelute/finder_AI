@@ -1438,6 +1438,14 @@ final class DrawerContentViewController: NSViewController {
                 action: #selector(openSessionDirectoryFromMenu(_:))
             ))
         }
+        // Claudeが開いたアーティファクトや確認画面の窓。振り分けはweb-shiteiが
+        // していて、入っていなければ項目ごと出さない。
+        if canBringBrowserWindow(of: session) {
+            menu.addItem(item(
+                "Webブラウザのウインドウを前に出す",
+                action: #selector(bringBrowserWindowFromMenu(_:))
+            ))
+        }
         // 外の窓でも同じ画面を見たい・打ちたいとき。tmuxの上で動いている
         // セッションだけ。押せない理由はツールチップに書く（validateMenuItem）。
         let handOff = item(
@@ -1608,6 +1616,52 @@ final class DrawerContentViewController: NSViewController {
             alert.beginSheetModal(for: window)
         } else {
             alert.runModal()
+        }
+    }
+
+    // MARK: - Webブラウザのウインドウ（web-shitei）
+
+    /// Claudeのセッションだけ。web-shiteiが振り分けるのはClaude Codeが開くページで、
+    /// シェルやCodexから開いたページは振り分けの外にある。
+    private func canBringBrowserWindow(of session: any ManagedTerminalSession) -> Bool {
+        session.kind == .claude && BrowserWindowLauncher().isAvailable
+    }
+
+    var canBringBrowserWindowOfActiveSession: Bool {
+        guard let session = activeSession else { return false }
+        return canBringBrowserWindow(of: session)
+    }
+
+    /// ⌃⌘B。いま見ているClaudeのセッションが開いたページのウインドウを前に出す。
+    func bringBrowserWindowOfActiveSession() {
+        guard let session = activeSession, session.kind == .claude else {
+            presentHandOffFailure(
+                title: "Claudeのセッションを選んでください",
+                detail: "Webブラウザのウインドウはプロジェクトごとにあり、Claudeのセッションから引きます。"
+            )
+            return
+        }
+        bringBrowserWindow(of: session)
+    }
+
+    @objc private func bringBrowserWindowFromMenu(_ sender: NSMenuItem) {
+        guard let session = session(from: sender) else { return }
+        bringBrowserWindow(of: session)
+    }
+
+    /// うまくいけばブラウザが前に出るだけで、FinderAIは何も言わない。
+    private func bringBrowserWindow(of session: any ManagedTerminalSession) {
+        let directoryURL = session.directoryURL
+        Task { [weak self] in
+            do {
+                try await BrowserWindowLauncher().bringToFront(directoryURL: directoryURL)
+            } catch {
+                let error = error as? LocalizedError
+                self?.presentHandOffFailure(
+                    title: error?.errorDescription ?? "Webブラウザのウインドウを前に出せませんでした。",
+                    detail: error?.recoverySuggestion ?? ""
+                )
+            }
         }
     }
 
