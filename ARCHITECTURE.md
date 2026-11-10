@@ -250,6 +250,17 @@ tmuxの上で動いているセッションは、Terminal.appの窓にも出せ�
 - **`-t`には`=`を付けます。** tmuxの`-t`は前方一致で、別のセッションに繋がる失敗は静かに起きます。
 - **tmuxで動いていないセッションは出せません。** PTYはFinderAIが握っていて、外から繋ぐ口がありません。ボタンと右クリックは押せなくなり、ツールチップが「設定で永続化をオンに」と言います。
 
+#### Webブラウザのウインドウ（web-shitei）
+
+Claudeのセッションが開いたページのウインドウを前に出します（タブの右クリック、表示メニューの⌃⌘B）。振り分けは別の道具web-shiteiがClaude Codeの`BROWSER`として受け持っていて、FinderAIは`web-shitei front --dir <セッションのフォルダ>`を呼ぶだけです（`BrowserWindowLauncher`）。
+
+- **入っていなければ項目ごと出しません。** `ExecutableLocator`で`web-shitei`が見つかるときだけ、右クリックに足し、表示メニューの項目を見せます。
+- **Claudeのセッションだけです。** 振り分けの対象はClaude Codeが開くページで、シェルやCodexから開いたものは外です。
+- **どのウインドウかはweb-shiteiが決めます。** そのフォルダで動いているClaudeの記録（`web-shitei group`で名前を変えたものを含む）を先に見て、無ければフォルダから決まる名前です。FinderAIはプロジェクトの名前の決め方を持ちません。
+- **終了コードで分けます。** 0ならブラウザが前に出るだけで何も言わず、3は「まだ無い」（そのセッションが最初に何か開いたときに作られる）、それ以外は失敗で、web-shiteiの言葉をそのままシートに出します。
+- **Apple eventsを送るのはweb-shiteiのosascriptです。** TCCはFinderAIの名前で許可を求めます。FinderAIのTerminalで動くClaudeがページを開くときと同じ許可です。
+- **Dockから起動したアプリのPATHは短いので、`ExecutableLocator.augmentedPath()`を渡します。** web-shiteiはgitでプロジェクトの名前を決めます。
+
 ### 会話の再開（`--continue` / `resume --last`）
 
 何の続きなのかを押す前に読ませる仕組みは[docs/CONVERSATION_HISTORY.md](docs/CONVERSATION_HISTORY.md)にあります。claudeもcodexも自分の会話を既にディスクへ書いているので、FinderAIは集め直さず読むだけです。

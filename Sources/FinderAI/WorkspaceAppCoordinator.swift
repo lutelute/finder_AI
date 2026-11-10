@@ -1149,6 +1149,15 @@ final class WorkspaceAppCoordinator {
         )
         handOff.keyEquivalentModifierMask = [.command, .control]
         viewMenu.addItem(handOff)
+        // Claudeが開いたページの窓（web-shitei）。入っていない人には項目ごと見せない。
+        let browserWindow = item(
+            "このセッションのWebブラウザのウインドウを前に出す",
+            action: #selector(WorkspaceWindowController.bringBrowserWindow),
+            key: "b"
+        )
+        browserWindow.keyEquivalentModifierMask = [.command, .control]
+        browserWindow.isHidden = !BrowserWindowLauncher().isAvailable
+        viewMenu.addItem(browserWindow)
         // 永続化と出力ログのトグルは設定ウインドウ（⌘,）にある。メニューに残すのは
         // 動作だけで、状態の置き場にはしない。
         // ⌥⌘Tではなく⌘⇧T。⌥⌘TはmacOSが「ツールバーを表示/隠す」用に押さえて
