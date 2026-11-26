@@ -63,6 +63,7 @@ extension TerminalSessionKind {
         case .shell: "terminal.fill"
         case .codex: "chevron.left.forwardslash.chevron.right"
         case .claude: "sparkles"
+        case .agy: "atom"
         case .ssh: "network"
         }
     }
@@ -75,6 +76,7 @@ extension TerminalSessionKind {
         case .shell: NSColor(srgbRed: 0.55, green: 0.60, blue: 0.67, alpha: 1)
         case .codex: NSColor(srgbRed: 0.36, green: 0.72, blue: 0.51, alpha: 1)
         case .claude: NSColor(srgbRed: 0.85, green: 0.52, blue: 0.35, alpha: 1)
+        case .agy: NSColor(srgbRed: 0.84, green: 0.42, blue: 0.62, alpha: 1)
         case .ssh: NSColor(srgbRed: 0.56, green: 0.50, blue: 0.82, alpha: 1)
         }
     }

@@ -17,9 +17,9 @@ public struct TerminalSessionPersistence: Equatable, Sendable {
 /// 「直近へ」と「名指しの1本へ」を分けて持つ。ボタンは前者、履歴の行は後者を
 /// 使う——どちらも同じ「戻る」だが、戻り先の決め方が違う。
 public enum ConversationResume: Equatable, Sendable {
-    /// そのフォルダの直近の会話。claudeは`--continue`、codexは`resume --last`。
+    /// そのフォルダの直近の会話。claudeとagyは`--continue`、codexは`resume --last`。
     case latest
-    /// 名指しの1本。claudeは`--resume <id>`、codexは`resume <id>`。
+    /// 名指しの1本。claudeとagyは`--resume <id>`、codexは`resume <id>`。
     /// 消えていても、CLIが断ってから新しい会話へ落ちる。
     case session(id: String)
 }
@@ -36,7 +36,7 @@ public enum TerminalLaunchPlanner {
         }
     }
 
-    /// `commandURL`はCLI系（codex/claude）の実体。shellでは無視される。
+    /// `commandURL`はCLI系（codex/claude/agy）の実体。shellでは無視される。
     /// CLI系で見つかっていなければplanは組めない。
     ///
     /// 永続時は`new-session -A`を使う。作成と再アタッチが同じコマンドになるので、
@@ -44,18 +44,18 @@ public enum TerminalLaunchPlanner {
     /// 既存セッションへのアタッチでは無視される（それで正しい）。
     ///
     /// `resumesConversation`はAIにだけ効く。`.latest`は「そのフォルダの直近の
-    /// 会話」——claudeは`--continue`、codexは`resume --last`。`.session(id:)`は
-    /// 履歴から名指しで選んだ1本で、claudeは`--resume <id>`、codexは
-    /// `resume <id>`（どちらもUUIDを受ける。実測: claude 2.0系 / codex 0.147.0）。
-    /// codexの`--last`がcwdで絞られることは実測済み（0.147.0）: 全体の最新が
-    /// 別プロジェクトの会話でも、このリポジトリで実行すればこのリポジトリの
-    /// 会話が開いた。絞られていなければ、フォルダAで押した人に
+    /// 会話」——claudeとagyは`--continue`、codexは`resume --last`。`.session(id:)`は
+    /// 履歴から名指しで選んだ1本で、claudeとagyは`--resume <id>`、codexは
+    /// `resume <id>`（いずれもUUIDを受ける。実測: claude 2.0系 / codex 0.147.0 / agy 1.5.17）。
+    /// codexの`--last`とagyの`--continue`がcwdで絞られることは実測済み（codex 0.147.0 /
+    /// agy 1.5.17）: 全体の最新が別プロジェクトの会話でも、このリポジトリで実行すれば
+    /// このリポジトリの会話が開いた。絞られていなければ、フォルダAで押した人に
     /// フォルダBの会話を見せることになる。tmux併用時は
     /// セッションコマンドに含める：生きているtmuxへは-Aがアタッチするだけで
     /// コマンドは無視され、Macの再起動などでtmuxごと消えた後は、新しい
     /// セッションが会話を引き継いで立ち上がる。
-    /// `role`はclaudeにだけ効く（`--append-system-prompt`）。codexには同等の
-    /// 公開フラグが無い（0.146.0で確認、0.147.0でも変わらず）ので、渡されても
+    /// `role`はclaudeにだけ効く（`--append-system-prompt`）。codex（0.146.0・0.147.0で確認）
+    /// とagy（1.5.17で確認）には同等の公開フラグが無いので、渡されても
     /// 付けない——効かない指示を付けたふりをするより、付かないほうが正しい。
     ///
     /// `target`はsshの宛先で、sshにだけ効く。宛先の無いsshは組めない。宛先が
@@ -87,7 +87,7 @@ public enum TerminalLaunchPlanner {
                 executable: "/bin/sh",
                 arguments: ["-c", sshHoldScript, "finderai-ssh", commandURL.path, target, override]
             )
-        case .codex, .claude:
+        case .codex, .claude, .agy:
             guard let commandURL else { return nil }
             var roleArguments: [String] = []
             if kind == .claude, let role, !role.isEmpty {
@@ -111,6 +111,10 @@ public enum TerminalLaunchPlanner {
                 resumeArguments = ["resume", "--last"]
             case let (.codex, .session(id)):
                 resumeArguments = ["resume", id]
+            case (.agy, .latest):
+                resumeArguments = ["--continue"]
+            case let (.agy, .session(id)):
+                resumeArguments = ["--resume", id]
             case (.shell, _), (.ssh, _):
                 resumeArguments = []
             }

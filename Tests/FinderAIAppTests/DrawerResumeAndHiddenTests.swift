@@ -119,10 +119,17 @@ struct DrawerResumeAndHiddenTests {
                 kind: .codex,
                 backend: .ephemeral,
                 isPresented: false
+            ),
+            TerminalSessionRecord(
+                directoryPath: folder.path,
+                kind: .agy,
+                backend: .ephemeral,
+                isPresented: false
             )
         ])
         #expect(manager.hasResumableConversation(kind: .claude, directoryURL: folder))
         #expect(manager.hasResumableConversation(kind: .codex, directoryURL: folder))
+        #expect(manager.hasResumableConversation(kind: .agy, directoryURL: folder))
         #expect(!manager.hasResumableConversation(kind: .shell, directoryURL: folder))
         #expect(!manager.hasResumableConversation(
             kind: .claude,
@@ -193,6 +200,54 @@ struct DrawerResumeAndHiddenTests {
         row.performClick(nil)
         // 「前回の続き」（.latest）ではなく、指した回そのもの。
         #expect(builder.resumeFlags == [.session(id: "9a572b73-c94a-479b-908e-bd077445cf1c")])
+    }
+
+    @Test("台帳に無くてもログ履歴があれば「AGYで前回の続き」になり、押すと--continueで起動する")
+    func agyLogHistoryDrivesResumeButtonAndClearsOnEmptyFolder() async throws {
+        let builder = ResumeRecordingBuilder()
+        let drawer = makeDrawer(manager: makeManager(builder: builder), name: #function)
+        let folderWithAgy = folder.deletingLastPathComponent()
+            .appendingPathComponent("drawer-resume-agy", isDirectory: true)
+        let emptyFolder = folder.deletingLastPathComponent()
+            .appendingPathComponent("drawer-resume-empty", isDirectory: true)
+
+        drawer.conversationHistoryReader = { dir in
+            guard dir == folderWithAgy.standardizedFileURL else { return [] }
+            return [
+                ConversationDigest(
+                    sessionID: "aba6dadf-c589-416b-925c-2caee93c5f3f",
+                    kind: .agy,
+                    headline: "finderAIにagyも追加しておいて。",
+                    modifiedAt: Date(timeIntervalSince1970: 1_795_653_840)
+                )
+            ]
+        }
+
+        drawer.setDirectory(folderWithAgy)
+        var agyResumeButton: NSButton?
+        for _ in 0..<300 where agyResumeButton == nil {
+            agyResumeButton = buttons(in: drawer.view, action: "startSessionFromButton:")
+                .first { $0.title == "AGYで前回の続き" }
+            if agyResumeButton == nil { try await Task.sleep(for: .milliseconds(10)) }
+        }
+        let button = try #require(agyResumeButton, "AGYで前回の続きボタンが出ていない")
+
+        // 履歴の無いフォルダへ移ると、ボタンは素の「AGY」へ戻る。
+        drawer.setDirectory(emptyFolder)
+        let reset = try #require(
+            buttons(in: drawer.view, action: "startSessionFromButton:")
+                .first { $0.title == "AGY" }
+        )
+        #expect(reset === button)
+
+        // 再び履歴のあるフォルダへ戻して押すと、.latest（--continue）で起動する。
+        drawer.setDirectory(folderWithAgy)
+        for _ in 0..<300 where button.title != "AGYで前回の続き" {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(button.title == "AGYで前回の続き")
+        button.performClick(nil)
+        #expect(builder.resumeFlags == [.latest])
     }
 
     @Test("走っているセッションを名指しで改名でき、その名前が引ける")

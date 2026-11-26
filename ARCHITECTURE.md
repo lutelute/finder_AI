@@ -211,7 +211,7 @@ Info.plistで`public.folder`と`public.item`を受け、`application(_:open:)`�
 ## TerminalSessionManager
 
 - 閲覧とPTY生成を分離し、明示ボタンだけが`create`を呼びます。
-- `(canonical directory URL, Shell/Codex/Claude)`で一意管理します。
+- `(canonical directory URL, Shell/Codex/Claude/AGY)`で一意管理します。
 - フォルダ変更時に既存PTYへ入力しません。
 - `TerminalSessionManaging`、`TerminalSessionBuilding`、`CommandLocating`、`TmuxControlling`で状態・生成・CLI探索・tmux操作を分離します。
 - SwiftTermの`currentDirectory`へPOSIX pathを別引数として渡し、子プロセスの`chdir`後に`execve`します。
@@ -232,7 +232,7 @@ FinderAIが落ちるとPTYは道連れになります。それを3層で受け�
 
 ### 永続セッション（tmux、オプトイン）
 
-有効時はPTYの中身を`tmux new-session -A -s finderai-<kind>-<パスのSHA256先頭12hex> -c <dir>`にします。tmuxサーバーは独立デーモンなので、FinderAIが落ちてもシェルとその子（claude/codex）は生き続けます。`-A`がattach-or-createなので、作成と再接続が同じコード経路です。
+有効時はPTYの中身を`tmux new-session -A -s finderai-<kind>-<パスのSHA256先頭12hex> -c <dir>`にします。tmuxサーバーは独立デーモンなので、FinderAIが落ちてもシェルとその子（claude/codex/agy）は生き続けます。`-A`がattach-or-createなので、作成と再接続が同じコード経路です。
 
 - セッション名はCoreの`TmuxSessionNaming`が生成します。tmuxは`.`と`:`を拒否し、名前はパスを含みません（ハッシュのみ）。
 - 起動プランはCoreの`TerminalLaunchPlanner`が組みます。CLI系はtmuxセッション内でそのCLIを実行します。
@@ -263,9 +263,9 @@ Claudeのセッションが開いたページのウインドウを前に出し�
 
 ### 会話の再開（`--continue` / `resume --last`）
 
-何の続きなのかを押す前に読ませる仕組みは[docs/CONVERSATION_HISTORY.md](docs/CONVERSATION_HISTORY.md)にあります。claudeもcodexも自分の会話を既にディスクへ書いているので、FinderAIは集め直さず読むだけです。
+何の続きなのかを押す前に読ませる仕組みは[docs/CONVERSATION_HISTORY.md](docs/CONVERSATION_HISTORY.md)にあります。claude・codex・agyはいずれも自分の会話を既にディスクへ書いているので、FinderAIは集め直さず読むだけです。
 
-台帳にそのフォルダ×種類の記録があると、開始ボタンが「前回の続き」になります。Claudeは`--continue`、Codexは`resume --last`です（Codexのresume pickerはcwdで絞られ、`--last`がその中の直近を選びます）。
+台帳やログにそのフォルダ×種類の記録があると、開始ボタンが「前回の続き」になります。Claude・AGYは`--continue`、Codexは`resume --last`です（Codexの`--last`もAGYの`--continue`もcwdで絞られることを実測済み）。
 
 **再開を求める起動だけ`/bin/sh -c`越しにします。** claudeの`--continue`は戻れる会話が無いと即座に終了します（2.1.224で実測。`-p`で作った正規の履歴があるフォルダでも対話起動では終了しました）。tmuxで包んでいるとセッションごと消えるので、押した人には「タブが出て一瞬で死んだ」としか見えません。`<再開> || { 断りを1行; exec <素の起動>; }`という一綴りにして、失敗しても新しい会話へ落とします。役割は再開側にも落ちた先にも付けます。役割文の引用符はCoreの`ShellQuoting`で包みます。
 
@@ -273,7 +273,7 @@ Claudeのセッションが開いたページのウインドウを前に出し�
 
 `TerminalSessionRecord.role`はフォルダ×種類に紐づき、**起動の瞬間にだけ**システムプロンプトへ足されます。走っている最中に変えてもそのセッションは変わりません（`-A`での再接続はコマンドを渡さないため）。UIはそう明記します。
 
-Codexには`--append-system-prompt`に相当する公開フラグが無い（0.146.0で確認）ので、役割欄を出しません。効かない指示を書けるように見せるより、出さないほうが正しい失敗の仕方です。
+Codex（0.146.0で確認）とAGY（1.5.17で確認）には`--append-system-prompt`に相当する公開フラグが無いので、役割欄を出しません。効かない指示を書けるように見せるより、出さないほうが正しい失敗の仕方です。
 
 ### 永続セッション台帳
 
@@ -305,7 +305,7 @@ Codexには`--append-system-prompt`に相当する公開フラグが無い（0.1
 
 追従はセッション単位の性質です（ドロワー単位の固定モードは1.10.0で廃止）。表示中のプレーンShellのうち、使う人が自分で出したもの（開始ボタン・＋・タブ・巡回。`DrawerContentViewController.activeChosenByUser`）はフォルダ移動で自分も`cd`し、managerが`followSession`で索引・台帳ごと新しい所属へ付け替えます。フォルダに着いて前に出ただけのShellは付いてきません——付いてくると元の場所から連れ出され、どこへ行っても同じShellが居座ります。
 
-フォルダを移ったとき出しておくのは、付いてきたShell、行き先のセッション、ssh（どのフォルダにも属さない）だけです（`staysOnScreen`）。それ以外は下ろし、行き先にセッションがあればそれを、無ければ開始の画面を出します。下ろした中身はタブ帯に残ります。自動で選んでよい中身（`automaticSession`）も今いるフォルダのものに限ります。この経路はどこかの端末がタイトルを書き換えるたび（Claude Codeは作業中ずっと書き換える）に通るので、1.42.0まではよその場所のものも拾っていたせいで、開始の画面を見ているあいだに別のウインドウで何かが起きると無関係なフォルダの端末に入れ替わり、そのまま居座っていました。他のウインドウに出ている中身をタブで取り寄せたドロワーは`.terminalSessionMountDidMove`を送り、取られた側はタブだけ残った空の区画ではなく、自分のフォルダのセッションか開始の画面に戻ります。PTYへ文字を注入して良い条件は`TerminalSession.isShellIdleAtPrompt`が一手に持ちます: (1) kind==shell かつ 非tmux、(2) `tcgetpgrp`でフォアグラウンドがシェル自身、(3) `tcgetattr`でICANONが落ちている（ZLEがプロンプト描画中）。(3)が無いとfork直後のcooked端末を「待機中」と誤認し、SIGINTハンドラ未設置のzshに`^C`が刺さってシェルごと死にます（実測）。送信は`^C`+`cd '…'`+改行で、打ちかけの入力と連結して誤実行される経路を塞ぎます。AIセッション（claude/codex）とtmuxクライアントには何があっても送りません。タブ右クリックの「フォルダ移動に追従（cd）」をオフにしたShellは📌付きでその場に留まります。
+フォルダを移ったとき出しておくのは、付いてきたShell、行き先のセッション、ssh（どのフォルダにも属さない）だけです（`staysOnScreen`）。それ以外は下ろし、行き先にセッションがあればそれを、無ければ開始の画面を出します。下ろした中身はタブ帯に残ります。自動で選んでよい中身（`automaticSession`）も今いるフォルダのものに限ります。この経路はどこかの端末がタイトルを書き換えるたび（Claude Codeは作業中ずっと書き換える）に通るので、1.42.0まではよその場所のものも拾っていたせいで、開始の画面を見ているあいだに別のウインドウで何かが起きると無関係なフォルダの端末に入れ替わり、そのまま居座っていました。他のウインドウに出ている中身をタブで取り寄せたドロワーは`.terminalSessionMountDidMove`を送り、取られた側はタブだけ残った空の区画ではなく、自分のフォルダのセッションか開始の画面に戻ります。PTYへ文字を注入して良い条件は`TerminalSession.isShellIdleAtPrompt`が一手に持ちます: (1) kind==shell かつ 非tmux、(2) `tcgetpgrp`でフォアグラウンドがシェル自身、(3) `tcgetattr`でICANONが落ちている（ZLEがプロンプト描画中）。(3)が無いとfork直後のcooked端末を「待機中」と誤認し、SIGINTハンドラ未設置のzshに`^C`が刺さってシェルごと死にます（実測）。送信は`^C`+`cd '…'`+改行で、打ちかけの入力と連結して誤実行される経路を塞ぎます。AIセッション（claude/codex/agy）とtmuxクライアントには何があっても送りません。タブ右クリックの「フォルダ移動に追従（cd）」をオフにしたShellは📌付きでその場に留まります。
 
 パネル側は非表示・履歴・tmux残存まで含めた俯瞰と一括操作を担います。行の組み立ては`TerminalSessionsOverview.rows`（純関数）で、アプリ内セッション（開いた順）→tmux残存（パス順）→履歴（最終活動順）と並べ、ピン留めだけを安定して先頭へ上げます。`filteredRows`が名前・種類・フォルダ・状態の検索と状態categoryの絞り込みを担います。アプリ内で接続中の永続セッションは`tmux ls`にも載るので名前で重複排除します。フォルダはセッション名から戻せない（ハッシュ）ため、`#{session_path}`でtmux自身に答えさせます。一覧と終了は**永続化トグルに依存しません**。トグルを切った後に残ったセッションの掃除が、このパネルの主目的の一つだからです。終了対象はアプリ内セッションと`finderai-`名義のtmuxセッションに限定し、ユーザー自身のtmuxセッションには触れません。名前とピンは台帳metadataであり、プロセス寿命を変えません。
 
@@ -340,7 +340,7 @@ Codexには`--append-system-prompt`に相当する公開フラグが無い（0.1
 |---|---|
 | フォルダ一覧取得失敗 | 一覧を空にしてエラー表示。アプリとFinderは継続 |
 | 移動先衝突 | 上書きせず操作全体を開始前に拒否 |
-| Codex／Claudeなし | 対応ボタンを無効化し、自動導入しない |
+| Codex／Claude／AGYなし | 対応ボタンを無効化し、自動導入しない |
 | PTY開始失敗 | session registryへ残さずエラー表示 |
 | 実行中PTYありで終了 | 確認し、了承時だけ所有PTYを終了（永続セッションはデタッチ） |
 | 永続設定ONでtmux消失 | 黙って通常セッションとして起動 |

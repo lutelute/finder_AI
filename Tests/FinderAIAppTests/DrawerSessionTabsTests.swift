@@ -1,3 +1,4 @@
+import AppKit
 import FinderAICore
 import Foundation
 @testable import FinderAIApp
@@ -137,12 +138,24 @@ struct DrawerSessionTabsTests {
             sources: [
                 source(kind: .shell, in: home),
                 source(kind: .codex, in: home),
-                source(kind: .claude, in: home)
+                source(kind: .claude, in: home),
+                source(kind: .agy, in: home)
             ],
             currentDirectory: home,
             activeID: nil
         )
-        #expect(rows.map(\.kind) == [.shell, .codex, .claude])
+        #expect(rows.map(\.kind) == [.shell, .codex, .claude, .agy])
+    }
+
+    @Test("すべての種類のタブ記号がSF Symbolsに実在する")
+    @MainActor
+    func everySessionKindHasAValidSymbol() {
+        for kind in TerminalSessionKind.allCases {
+            #expect(
+                NSImage(systemSymbolName: kind.symbolName, accessibilityDescription: kind.displayName) != nil,
+                "Missing SF Symbol \(kind.symbolName) for \(kind)"
+            )
+        }
     }
 
     @Test("止まっているものは実行中として扱わない")

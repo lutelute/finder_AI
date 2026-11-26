@@ -138,7 +138,8 @@ final class DrawerContentViewController: NSViewController {
     private let shellButton = NSButton()
     private let codexButton = NSButton()
     private let claudeButton = NSButton()
-    /// このフォルダで過去にAIと何を話したか。溜めているのはclaudeとcodex自身で、
+    private let agyButton = NSButton()
+    /// このフォルダで過去にAIと何を話したか。溜めているのはclaude・codex・agy自身で、
     /// ここに出るのはその読み取り。
     private let historyStack = NSStackView()
     /// 押された行から会話を引くための控え。セッションIDで引く。
@@ -674,10 +675,21 @@ final class DrawerContentViewController: NSViewController {
         configureStartButton(shellButton, title: "Shell", kind: .shell)
         configureStartButton(codexButton, title: "Codex", kind: .codex)
         configureStartButton(claudeButton, title: "Claude", kind: .claude)
-        let actions = NSStackView(views: [shellButton, codexButton, claudeButton])
-        actions.orientation = .horizontal
-        actions.alignment = .centerY
-        actions.spacing = 8
+        configureStartButton(agyButton, title: "AGY", kind: .agy)
+        // 右辺の狭いパネル（最小280pt）で「〇〇で前回の続き」が複数並んでも
+        // 潰れないよう、開始ボタンは2行に分けて積む。
+        let topActions = NSStackView(views: [shellButton, codexButton])
+        topActions.orientation = .horizontal
+        topActions.alignment = .centerY
+        topActions.spacing = 8
+        let bottomActions = NSStackView(views: [claudeButton, agyButton])
+        bottomActions.orientation = .horizontal
+        bottomActions.alignment = .centerY
+        bottomActions.spacing = 8
+        let actions = NSStackView(views: [topActions, bottomActions])
+        actions.orientation = .vertical
+        actions.alignment = .centerX
+        actions.spacing = 6
 
         emptyState.orientation = .vertical
         emptyState.alignment = .centerX
@@ -865,6 +877,8 @@ final class DrawerContentViewController: NSViewController {
         codexButton.toolTip = codexButton.isEnabled ? nil : "codexコマンドが見つかりません"
         claudeButton.isEnabled = sessionManager.canStart(.claude)
         claudeButton.toolTip = claudeButton.isEnabled ? nil : "claudeコマンドが見つかりません"
+        agyButton.isEnabled = sessionManager.canStart(.agy)
+        agyButton.toolTip = agyButton.isEnabled ? nil : "agyコマンドが見つかりません"
         updateStartButtonTitles()
         refreshConversationHistory()
         showActiveTerminal()
@@ -896,34 +910,37 @@ final class DrawerContentViewController: NSViewController {
 
     /// tmux側に生き残りがあるフォルダでは、開始ボタンは新規起動ではなく再接続に
     /// なる（`new-session -A`が同じコマンドで両方を兼ねる）。tmuxも消えた後
-    /// （Macの再起動など）でも、ここでclaudeを動かした記録があれば「前回の
-    /// 続き」（`--continue`）として戻れる。表示だけ実態に合わせる。
+    /// （Macの再起動など）でも、ここでAIを動かした記録があれば「前回の続き」
+    /// として戻れる。表示だけ実態に合わせる。
     private func updateStartButtonTitles() {
         let buttons: [(NSButton, TerminalSessionKind)] = [
             (shellButton, .shell),
             (codexButton, .codex),
-            (claudeButton, .claude)
+            (claudeButton, .claude),
+            (agyButton, .agy)
         ]
         for (button, kind) in buttons {
             let reattaches = directoryURL.map {
                 sessionManager.hasDetachedPersistentSession(kind: kind, directoryURL: $0)
             } ?? false
-            // 会話の実体はclaudeとcodexのログにあって、台帳はそれを動かした控えに
-            // すぎない。控えは本数で古いものから落ちるが、実体は残っている——
-            // 読めた履歴があるなら、台帳に無くてもそちらを信じる。実測で、控えが
-            // 20箇所しか覚えていないのに対し、claudeのログは214フォルダにあった。
-            let resumes = !reattaches && (
-                historyDigests.values.contains { $0.kind == kind }
-                    || (directoryURL.map {
-                        sessionManager.hasResumableConversation(kind: kind, directoryURL: $0)
-                    } ?? false)
-            )
+            let resumes = !reattaches && hasResumableConversation(for: kind)
             button.title = reattaches
                 ? "\(kind.displayName)に再接続"
                 : resumes
                     ? "\(kind.displayName)で前回の続き"
                     : kind.displayName
         }
+    }
+
+    /// 会話の実体はclaude・codex・agyのログにあって、台帳はそれを動かした控えに
+    /// すぎない。控えは本数で古いものから落ちるし、FinderAIの外で動かした回は
+    /// そもそも載らない——読めた履歴があるなら、台帳に無くてもそちらを信じる。
+    private func hasResumableConversation(for kind: TerminalSessionKind) -> Bool {
+        guard kind.resumesConversations else { return false }
+        if historyDigests.values.contains(where: { $0.kind == kind }) { return true }
+        return directoryURL.map {
+            sessionManager.hasResumableConversation(kind: kind, directoryURL: $0)
+        } ?? false
     }
 
     // MARK: - このフォルダで何をしたか
@@ -960,6 +977,9 @@ final class DrawerContentViewController: NSViewController {
 
     private func applyConversationHistory(_ digests: [ConversationDigest]) {
         historyDigests = Dictionary(digests.map { ($0.sessionID, $0) }, uniquingKeysWith: { first, _ in first })
+        // 履歴が増えたときも空へ戻ったときも「前回の続き」の表示を付け直す。
+        // 空のときに戻さないと、前のフォルダの「前回の続き」が残る。
+        updateStartButtonTitles()
         for view in historyStack.arrangedSubviews {
             historyStack.removeArrangedSubview(view)
             view.removeFromSuperview()
@@ -969,9 +989,6 @@ final class DrawerContentViewController: NSViewController {
             return
         }
         historyStack.isHidden = false
-        // 履歴が読めた時点で「前回の続き」に変わりうる。読むのは裏なので、
-        // 出揃ってから名前を付け直す。
-        updateStartButtonTitles()
         let title = NSTextField(labelWithString: "このフォルダの履歴")
         title.font = .systemFont(ofSize: 10, weight: .semibold)
         title.textColor = IntegratedPanelTheme.secondaryText
@@ -1339,9 +1356,7 @@ final class DrawerContentViewController: NSViewController {
         for (index, kind) in TerminalSessionKind.startable.enumerated() {
             // ボタン側が「前回の続き」になっているときだけ、こちらが新規だと
             // 明示する。同じ名前で挙動が違う2つの入り口を作らない。
-            let resumes = directoryURL.map {
-                sessionManager.hasResumableConversation(kind: kind, directoryURL: $0)
-            } ?? false
+            let resumes = hasResumableConversation(for: kind)
             let item = NSMenuItem(
                 title: resumes ? "\(kind.displayName)（新規の会話）" : kind.displayName,
                 action: #selector(startSessionFromMenu(_:)),
@@ -1365,9 +1380,7 @@ final class DrawerContentViewController: NSViewController {
     @objc private func startSessionFromButton(_ sender: NSButton) {
         guard TerminalSessionKind.startable.indices.contains(sender.tag) else { return }
         let kind = TerminalSessionKind.startable[sender.tag]
-        let resumes = directoryURL.map {
-            sessionManager.hasResumableConversation(kind: kind, directoryURL: $0)
-        } ?? false
+        let resumes = hasResumableConversation(for: kind)
         startSession(kind: kind, resumingConversation: resumes ? .latest : nil)
     }
 

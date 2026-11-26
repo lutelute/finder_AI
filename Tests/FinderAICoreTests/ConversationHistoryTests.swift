@@ -1,5 +1,6 @@
 import FinderAICore
 import Foundation
+import SQLite3
 import Testing
 
 @Suite("このフォルダで何をしたか、AIのログから読む")
@@ -229,5 +230,217 @@ struct ConversationHistoryTests {
         )
         let digest = ConversationHistory.digest(from: entry, fallbackModifiedAt: .distantPast)
         #expect(digest?.headline == "Fix the sidebar")
+    }
+
+    // MARK: - agyのtranscript・索引
+
+    @Test("agyのworkspace_urisからfile URIをデコードして実パスへ戻す")
+    func agyWorkspaceURIsDecodePaths() {
+        #expect(
+            ConversationHistory.agyWorkspacePaths(
+                fromJSON: #"["file:///Users/me/dev/finder_AI","file:///Users/me/%E8%AB%96%E6%96%87%20test"]"#
+            ) == ["/Users/me/dev/finder_AI", "/Users/me/論文 test"]
+        )
+        #expect(ConversationHistory.agyWorkspacePaths(fromJSON: "") == [])
+        #expect(ConversationHistory.agyWorkspacePaths(fromJSON: "not-json") == [])
+    }
+
+    @Test("agyのtranscriptはUSER_REQUESTの中身だけを抜き出す")
+    func agyTranscriptExtractsUserRequest() {
+        let lines = [
+            #"{"step_index":0,"source":"SYSTEM","type":"USER_INPUT","content":"<USER_REQUEST>\n内部指示\n</USER_REQUEST>"}"#,
+            #"{"step_index":1,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"<USER_REQUEST>\nfinderAIにagyも追加しておいて。\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nnow\n</ADDITIONAL_METADATA>"}"#,
+            #"{"step_index":2,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"<USER_REQUEST>\n二つ目は要らない\n</USER_REQUEST>"}"#
+        ]
+        #expect(
+            ConversationHistory.headline(fromAgyTranscript: lines) == "finderAIにagyも追加しておいて。"
+        )
+    }
+
+    @Test("agyのマイクロ秒付きUTC日時をパースできる")
+    func agyTimestampsParseAcrossFractionalWidths() {
+        #expect(ConversationHistory.parseAgyTimestamp("2026-11-26 00:46:20.119858+00:00") != nil)
+        #expect(ConversationHistory.parseAgyTimestamp("2026-11-25 16:12:36.8188+00:00") != nil)
+        #expect(ConversationHistory.parseAgyTimestamp("2026-11-26 00:46:20+00:00") != nil)
+        #expect(ConversationHistory.parseAgyTimestamp("2026-11-26T00:44:00Z") != nil)
+        #expect(ConversationHistory.parseAgyTimestamp("") == nil)
+    }
+
+    @Test("agyのSQLite索引から対象フォルダのトップレベル会話だけを新しい順に拾う")
+    func agyDigestsReadsSummariesAndTranscripts() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("finderai-agy-history-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let targetDir = URL(fileURLWithPath: "/Users/me/dev/finder_AI", isDirectory: true)
+        let dbURL = root.appendingPathComponent(ConversationHistory.agySummaryDatabaseName)
+        try createAgySummaryDatabase(at: dbURL, rows: [
+            // transcriptがある最新回。本人の発話を優先する。
+            (
+                id: "conv-latest",
+                title: "Task Completion Check",
+                preview: "Task Completion Check",
+                modified: "2026-11-26 00:46:20.119858+00:00",
+                uris: #"["file:///Users/me/dev/finder_AI"]"#,
+                parentID: "",
+                depth: 0
+            ),
+            // transcriptが無い回はpreviewに落ちる。
+            (
+                id: "conv-preview",
+                title: "Summary Title",
+                preview: "sidebarの色を調整する",
+                modified: "2026-11-25 10:00:00.12+00:00",
+                uris: #"["file:///Users/me/dev/finder_AI"]"#,
+                parentID: "",
+                depth: 0
+            ),
+            // previewも空ならtitleに落ちる。
+            (
+                id: "conv-title-only",
+                title: "リリース前の確認",
+                preview: "",
+                modified: "2026-11-24 10:00:00+00:00",
+                uris: #"["file:///Users/me/dev/finder_AI"]"#,
+                parentID: "",
+                depth: 0
+            ),
+            // サブエージェントは除外する。
+            (
+                id: "conv-subagent",
+                title: "Subagent",
+                preview: "サブエージェントの作業",
+                modified: "2026-11-26 01:00:00+00:00",
+                uris: #"["file:///Users/me/dev/finder_AI"]"#,
+                parentID: "conv-latest",
+                depth: 1
+            ),
+            // 別フォルダは除外する。
+            (
+                id: "conv-other",
+                title: "Other Project",
+                preview: "別フォルダの作業",
+                modified: "2026-11-26 02:00:00+00:00",
+                uris: #"["file:///Users/me/dev/other"]"#,
+                parentID: "",
+                depth: 0
+            )
+        ])
+
+        let transcriptDir = root
+            .appendingPathComponent("brain/conv-latest/.system_generated/logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: transcriptDir, withIntermediateDirectories: true)
+        let transcript = """
+        {"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"<USER_REQUEST>\\nfinderAIにagyも追加しておいて。\\n</USER_REQUEST>"}
+        """
+        try transcript.write(
+            to: transcriptDir.appendingPathComponent("transcript.jsonl"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let digests = ConversationHistory.agyDigests(forDirectory: targetDir, dataRoot: root, limit: 5)
+        #expect(digests.map(\.sessionID) == ["conv-latest", "conv-preview", "conv-title-only"])
+        #expect(digests.allSatisfy { $0.kind == .agy })
+        #expect(digests.map(\.headline) == [
+            "finderAIにagyも追加しておいて。",
+            "sidebarの色を調整する",
+            "リリース前の確認"
+        ])
+
+        // limitが効く。
+        let limited = ConversationHistory.agyDigests(forDirectory: targetDir, dataRoot: root, limit: 2)
+        #expect(limited.map(\.sessionID) == ["conv-latest", "conv-preview"])
+    }
+
+    @Test("recentDigestsはclaude・codex・agyを混ぜて新しい順に並べる")
+    func recentDigestsMergesClaudeCodexAndAgy() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("finderai-recent-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let targetDir = URL(fileURLWithPath: "/Users/me/dev/merged", isDirectory: true)
+
+        // claude（中間の時刻）
+        let claudeDir = ConversationHistory.defaultClaudeProjectsRoot(homeDirectory: home)
+            .appendingPathComponent(
+                ConversationHistory.claudeProjectDirectoryName(forPath: targetDir.path),
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(at: claudeDir, withIntermediateDirectories: true)
+        let claudeIndex = """
+        {"version":1,"originalPath":"/Users/me/dev/merged","entries":[
+          {"sessionId":"claude-1","firstPrompt":"Claudeの作業","modified":"2026-11-25T12:00:00Z","projectPath":"/Users/me/dev/merged"}
+        ]}
+        """
+        try claudeIndex.write(
+            to: claudeDir.appendingPathComponent(ConversationHistory.claudeIndexFileName),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        // agy（最新）
+        let agyRoot = ConversationHistory.defaultAgyDataRoot(homeDirectory: home)
+        try FileManager.default.createDirectory(at: agyRoot, withIntermediateDirectories: true)
+        try createAgySummaryDatabase(
+            at: agyRoot.appendingPathComponent(ConversationHistory.agySummaryDatabaseName),
+            rows: [(
+                id: "agy-1",
+                title: "",
+                preview: "AGYの作業",
+                modified: "2026-11-26 09:00:00+00:00",
+                uris: #"["file:///Users/me/dev/merged"]"#,
+                parentID: "",
+                depth: 0
+            )]
+        )
+
+        let merged = ConversationHistory.recentDigests(forDirectory: targetDir, homeDirectory: home, limit: 5)
+        #expect(merged.map(\.kind) == [.agy, .claude])
+        #expect(merged.map(\.headline) == ["AGYの作業", "Claudeの作業"])
+    }
+
+    private func createAgySummaryDatabase(
+        at url: URL,
+        rows: [(id: String, title: String, preview: String, modified: String, uris: String, parentID: String, depth: Int)]
+    ) throws {
+        var db: OpaquePointer?
+        #expect(sqlite3_open(url.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        let createSQL = """
+        CREATE TABLE conversation_summaries (
+            conversation_id text PRIMARY KEY,
+            title text NOT NULL DEFAULT "",
+            preview text NOT NULL DEFAULT "",
+            last_modified_time datetime NOT NULL,
+            workspace_uris text NOT NULL,
+            parent_conversation_id text NOT NULL DEFAULT "",
+            nesting_depth integer NOT NULL DEFAULT 0
+        );
+        """
+        #expect(sqlite3_exec(db, createSQL, nil, nil, nil) == SQLITE_OK)
+
+        let insertSQL = """
+        INSERT INTO conversation_summaries
+            (conversation_id, title, preview, last_modified_time, workspace_uris, parent_conversation_id, nesting_depth)
+        VALUES (?, ?, ?, ?, ?, ?, ?);
+        """
+        var stmt: OpaquePointer?
+        #expect(sqlite3_prepare_v2(db, insertSQL, -1, &stmt, nil) == SQLITE_OK)
+        defer { sqlite3_finalize(stmt) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        for row in rows {
+            sqlite3_reset(stmt)
+            sqlite3_bind_text(stmt, 1, row.id, -1, transient)
+            sqlite3_bind_text(stmt, 2, row.title, -1, transient)
+            sqlite3_bind_text(stmt, 3, row.preview, -1, transient)
+            sqlite3_bind_text(stmt, 4, row.modified, -1, transient)
+            sqlite3_bind_text(stmt, 5, row.uris, -1, transient)
+            sqlite3_bind_text(stmt, 6, row.parentID, -1, transient)
+            sqlite3_bind_int(stmt, 7, Int32(row.depth))
+            #expect(sqlite3_step(stmt) == SQLITE_DONE)
+        }
     }
 }

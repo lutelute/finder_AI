@@ -4,18 +4,20 @@ public enum TerminalSessionKind: String, CaseIterable, Codable, Sendable {
     case shell
     case codex
     case claude
+    case agy
     /// サイドバーに登録したサーバーへのssh。フォルダに属さず、宛先ごとに1本。
     /// 開始ボタンは持たない——入口はサイドバーのサーバーの行だけ。
     case ssh
 
     /// ドロワーの開始ボタンと＋メニューに並べる種類。sshは宛先が要るので入らない。
-    public static let startable: [TerminalSessionKind] = [.shell, .codex, .claude]
+    public static let startable: [TerminalSessionKind] = [.shell, .codex, .claude, .agy]
 
     public var displayName: String {
         switch self {
         case .shell: "Shell"
         case .codex: "Codex"
         case .claude: "Claude"
+        case .agy: "AGY"
         case .ssh: "SSH"
         }
     }
@@ -25,13 +27,14 @@ public enum TerminalSessionKind: String, CaseIterable, Codable, Sendable {
         case .shell: nil
         case .codex: "codex"
         case .claude: "claude"
+        case .agy: "agy"
         case .ssh: "ssh"
         }
     }
 
-    /// 前回の会話へ戻る手段を持つか。AIだけ（claude=--continue、codex=resume）。
+    /// 前回の会話へ戻る手段を持つか。AIだけ（claude=--continue、codex=resume、agy=--continue）。
     public var resumesConversations: Bool {
-        self == .codex || self == .claude
+        self == .codex || self == .claude || self == .agy
     }
 }
 

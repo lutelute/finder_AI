@@ -24,7 +24,7 @@ File Providerやクラウド上の未download項目は、提供元の応答に�
 
 `⌘J`またはwindow最下部右の`TERMINAL`を押します。34ptのheaderだけが見える状態は正常な折りたたみです。展開後は上端の細いhandleをdragできます。
 
-## Codex／Claudeが無効
+## Codex／Claude／AGYが無効
 
 FinderAIはshellで`which`を実行せず、現在の`PATH`と次を直接探索します。
 

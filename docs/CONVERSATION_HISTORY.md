@@ -6,12 +6,13 @@
 
 ## FinderAIは何も溜めない
 
-claudeもcodexも、自分の会話を既に全部ディスクに書いている。FinderAIが同じものをもう一度集める理由はない。**読むだけ**にする。
+claude・codex・agyはいずれも、自分の会話を既に全部ディスクに書いている。FinderAIが同じものをもう一度集める理由はない。**読むだけ**にする。
 
 | | 置き場所 | 現在の量 |
 |---|---|---|
 | claude | `~/.claude/projects/<パスをハイフン化>/<sessionId>.jsonl` | このフォルダぶんで170MB / 全体3.1GB |
 | codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | 277本 / 全体323MB |
+| agy | `~/.gemini/antigravity-cli/conversation_summaries.db` + `brain/<id>/.system_generated/logs/transcript.jsonl` | SQLite索引 1.6MB |
 
 ターミナル出力を自前で持たない今の方針（`TerminalSessionRecord.swift`）は、そのまま変わらない。読む先が他人のファイルになるだけで、増えるものが無い。
 
@@ -141,11 +142,11 @@ public var lastSummaryAt: Date?      // その見出しを取った時刻
 
 出るのはセッションがまだ無いとき、つまり開始ボタンが並んでいる画面。押す前に読めることに意味があるので、そこでいい。
 
-claudeとcodexは混ぜて新しい順に並べる。ただし**どちらで話した回かは行の印に残す**（claudeは`sparkles`、codexは`< >`、色も種類ごとのもの）。ここが消えると、続きに戻る相手を間違える。
+claude・codex・agyは混ぜて新しい順に並べる。ただし**どれで話した回かは行の印に残す**（claudeは`sparkles`、codexは`< >`、agyは`atom`、色も種類ごとのもの）。ここが消えると、続きに戻る相手を間違える。
 
 ## 行を押したら戻る
 
-行はボタンで、押すとその回から再開する。claudeは `--resume <sessionId>`、codexは `resume <SESSION_ID>`（どちらもUUIDを受ける。実測: claude 2.0系 / codex 0.147.0）。
+行はボタンで、押すとその回から再開する。claudeとagyは `--resume <sessionId>`、codexは `resume <SESSION_ID>`（いずれもUUIDを受ける。実測: claude 2.0系 / codex 0.147.0 / agy 1.5.17）。
 
 戻り先の決め方は2通りあるので、型で分けた。
 

@@ -36,6 +36,21 @@ struct TerminalLaunchPlannerTests {
             persistence: nil,
             directoryPath: "/tmp/x"
         ) == nil)
+
+        let agy = URL(fileURLWithPath: "/mock/bin/agy")
+        let agyPlan = TerminalLaunchPlanner.plan(
+            kind: .agy,
+            commandURL: agy,
+            persistence: nil,
+            directoryPath: "/tmp/x"
+        )
+        #expect(agyPlan == .init(executable: agy.path, arguments: []))
+        #expect(TerminalLaunchPlanner.plan(
+            kind: .agy,
+            commandURL: nil,
+            persistence: nil,
+            directoryPath: "/tmp/x"
+        ) == nil)
     }
 
     /// ステータス行はドロワーのタブと重複し、狭い幅では切れ端にしかならない
@@ -90,6 +105,18 @@ struct TerminalLaunchPlannerTests {
             "'/mock/bin/codex' 'resume' '--last' || {"
         ) == true)
 
+        let agy = URL(fileURLWithPath: "/mock/bin/agy")
+        let agyResumed = TerminalLaunchPlanner.plan(
+            kind: .agy,
+            commandURL: agy,
+            persistence: nil,
+            directoryPath: "/tmp/x",
+            resumesConversation: .latest
+        )
+        let agyScript = agyResumed?.arguments.last ?? ""
+        #expect(agyScript.hasPrefix("'/mock/bin/agy' '--continue' || {"))
+        #expect(agyScript.contains("exec '/mock/bin/agy'"))
+
         // shellに会話は無い。求められても素のログインシェルのまま。
         let shell = TerminalLaunchPlanner.plan(
             kind: .shell,
@@ -128,6 +155,19 @@ struct TerminalLaunchPlannerTests {
         #expect(codex?.arguments.last?.hasPrefix(
             "'/mock/bin/codex' 'resume' '019fc650-edb4-7de3-83ba-b1d81f8203da' || {"
         ) == true)
+
+        let agy = TerminalLaunchPlanner.plan(
+            kind: .agy,
+            commandURL: URL(fileURLWithPath: "/mock/bin/agy"),
+            persistence: nil,
+            directoryPath: "/tmp/x",
+            resumesConversation: .session(id: "aba6dadf-c589-416b-925c-2caee93c5f3f")
+        )
+        let agyScript = agy?.arguments.last ?? ""
+        #expect(agyScript.hasPrefix(
+            "'/mock/bin/agy' '--resume' 'aba6dadf-c589-416b-925c-2caee93c5f3f' || {"
+        ))
+        #expect(agyScript.contains("exec '/mock/bin/agy'"))
     }
 
     @Test("名指しの回でも、役割はそのまま付いて回る")
@@ -192,7 +232,7 @@ struct TerminalLaunchPlannerTests {
             arguments: ["--append-system-prompt", "査読者として振る舞う"]
         ))
 
-        // codexには同等の公開フラグが無い。効かない指示を付けたふりはしない。
+        // codexとagyには同等の公開フラグが無い。効かない指示を付けたふりはしない。
         let codex = URL(fileURLWithPath: "/mock/bin/codex")
         let codexPlan = TerminalLaunchPlanner.plan(
             kind: .codex,
@@ -202,6 +242,16 @@ struct TerminalLaunchPlannerTests {
             role: "査読者として振る舞う"
         )
         #expect(codexPlan == .init(executable: codex.path, arguments: []))
+
+        let agy = URL(fileURLWithPath: "/mock/bin/agy")
+        let agyPlan = TerminalLaunchPlanner.plan(
+            kind: .agy,
+            commandURL: agy,
+            persistence: nil,
+            directoryPath: "/tmp/x",
+            role: "査読者として振る舞う"
+        )
+        #expect(agyPlan == .init(executable: agy.path, arguments: []))
 
         // 空文字はフラグごと落とす。空のシステムプロンプトに意味は無い。
         let empty = TerminalLaunchPlanner.plan(

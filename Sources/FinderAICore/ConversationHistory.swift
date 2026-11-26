@@ -1,10 +1,11 @@
 import Foundation
+import SQLite3
 
 /// 過去の会話1本ぶんの見出し。
 ///
 /// 中身はAI側のログから読み出したものであって、FinderAIが書いたものではない。
-/// claudeもcodexも自分の会話をディスクに持っているので、同じものをもう一度
-/// 集める理由が無い——覗いて、日付と最初の一言だけを借りてくる。
+/// claude・codex・agyはいずれも自分の会話をディスクに持っているので、同じものを
+/// もう一度集める理由が無い——覗いて、日付と最初の一言だけを借りてくる。
 public struct ConversationDigest: Equatable, Sendable, Identifiable {
     public var id: String { sessionID }
     public var sessionID: String
@@ -163,6 +164,81 @@ public enum ConversationHistory {
         return parts.suffix(5).joined(separator: "-")
     }
 
+    // MARK: - agyのtranscript・索引
+
+    public static let agySummaryDatabaseName = "conversation_summaries.db"
+
+    /// agyのtranscriptから最初のユーザー発話を1本。
+    ///
+    /// agyの`USER_INPUT`行は`<USER_REQUEST>…</USER_REQUEST>`の後ろに
+    /// `<ADDITIONAL_METADATA>`などを続ける。そのまま整形へ渡すと`<`始まりとして
+    /// 弾かれるので、要求本文だけを抜き出してから見出しに整える。
+    public static func headline(fromAgyTranscript lines: [String]) -> String? {
+        for line in lines {
+            guard let object = jsonObject(line) else { continue }
+            guard object["type"] as? String == "USER_INPUT" else { continue }
+            if let source = object["source"] as? String, source != "USER_EXPLICIT" {
+                continue
+            }
+            guard let content = object["content"] as? String else { continue }
+            let raw = extractAgyUserRequest(from: content)
+            if let headline = condensedHeadline(raw) { return headline }
+        }
+        return nil
+    }
+
+    /// `conversation_summaries.workspace_uris`（JSON配列の`file://` URI）から
+    /// 実パスを取り出す。パーセントエンコードされた日本語や空白も元へ戻す。
+    public static func agyWorkspacePaths(fromJSON raw: String) -> [String] {
+        guard let data = raw.data(using: .utf8),
+              let items = (try? JSONSerialization.jsonObject(with: data)) as? [String]
+        else { return [] }
+        return items.compactMap { item in
+            if let url = URL(string: item), url.isFileURL {
+                return url.path(percentEncoded: false)
+            }
+            return item.hasPrefix("/") ? item : nil
+        }
+    }
+
+    static func extractAgyUserRequest(from content: String) -> String {
+        let openTag = "<USER_REQUEST>"
+        let closeTag = "</USER_REQUEST>"
+        guard let start = content.range(of: openTag) else { return content }
+        let rest = content[start.upperBound...]
+        if let end = rest.range(of: closeTag) {
+            return String(rest[..<end.lowerBound])
+        }
+        return String(rest)
+    }
+
+    /// `2026-11-26 00:46:20.119858+00:00` のようなSQLiteの日時文字列を`Date`へ。
+    ///
+    /// `ISO8601DateFormatter`は小数秒が3桁以外だと失敗することがあるため、
+    /// スペース区切りと可変桁の小数秒を均してから渡す。
+    public static func parseAgyTimestamp(_ raw: String) -> Date? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let iso: String
+        if let space = trimmed.firstIndex(of: " "),
+           trimmed.distance(from: trimmed.startIndex, to: space) == 10 {
+            var replaced = trimmed
+            replaced.replaceSubrange(space...space, with: "T")
+            iso = replaced
+        } else {
+            iso = trimmed
+        }
+        if let direct = parseTimestamp(iso) { return direct }
+        guard let dot = iso.firstIndex(of: ".") else { return nil }
+        let afterDot = iso.index(after: dot)
+        let tzStart = iso[afterDot...].firstIndex { $0 == "+" || $0 == "-" || $0 == "Z" || $0 == "z" }
+            ?? iso.endIndex
+        let fraction = iso[afterDot..<tzStart]
+        let millis = String(fraction.prefix(3)).padding(toLength: 3, withPad: "0", startingAt: 0)
+        let normalized = String(iso[..<dot]) + "." + millis + String(iso[tzStart...])
+        return parseTimestamp(normalized)
+    }
+
     // MARK: - claudeの索引
 
     /// claudeがプロジェクトごとに置くことがある索引。あれば一番安い。
@@ -274,6 +350,10 @@ extension ConversationHistory {
 
     public static func defaultCodexSessionsRoot(homeDirectory: URL) -> URL {
         homeDirectory.appendingPathComponent(".codex/sessions", isDirectory: true)
+    }
+
+    public static func defaultAgyDataRoot(homeDirectory: URL) -> URL {
+        homeDirectory.appendingPathComponent(".gemini/antigravity-cli", isDirectory: true)
     }
 
     /// ファイルの頭だけ読む。
@@ -435,6 +515,85 @@ extension ConversationHistory {
         return digests
     }
 
+    /// 新しい順に並べた、そのフォルダのagy会話。
+    ///
+    /// agyは`~/.gemini/antigravity-cli/conversation_summaries.db`に全会話の索引を
+    /// 持っている。読み取り専用で開いてそのフォルダのトップレベル会話だけを拾い、
+    /// 本人の最初の一言は`brain/<id>/.system_generated/logs/transcript.jsonl`の先頭から、
+    /// 無ければDBの`preview`・`title`へ落とす。
+    public static func agyDigests(
+        forDirectory directory: URL,
+        dataRoot: URL,
+        limit: Int = defaultLimit,
+        fileManager: FileManager = .default
+    ) -> [ConversationDigest] {
+        guard limit > 0 else { return [] }
+        let dbURL = dataRoot.appendingPathComponent(agySummaryDatabaseName, isDirectory: false)
+        guard fileManager.fileExists(atPath: dbURL.path) else { return [] }
+
+        var db: OpaquePointer?
+        defer { if let db { sqlite3_close(db) } }
+        guard sqlite3_open_v2(dbURL.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK,
+              let db
+        else { return [] }
+        sqlite3_busy_timeout(db, 200)
+
+        let sql = """
+        SELECT conversation_id, title, preview, last_modified_time, workspace_uris
+        FROM conversation_summaries
+        WHERE parent_conversation_id = '' AND nesting_depth = 0
+        ORDER BY last_modified_time DESC
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK,
+              let statement
+        else { return [] }
+        defer { sqlite3_finalize(statement) }
+
+        let path = directory.standardizedFileURL.path
+        let brainRoot = dataRoot.appendingPathComponent("brain", isDirectory: true)
+        var digests: [ConversationDigest] = []
+
+        while digests.count < limit && sqlite3_step(statement) == SQLITE_ROW {
+            let conversationID = sqliteText(statement, column: 0)
+            guard !conversationID.isEmpty else { continue }
+            let workspaceURIs = sqliteText(statement, column: 4)
+            guard agyWorkspacePaths(fromJSON: workspaceURIs).contains(where: {
+                sameDirectory($0, path)
+            }) else { continue }
+
+            let title = sqliteText(statement, column: 1)
+            let preview = sqliteText(statement, column: 2)
+            let modifiedRaw = sqliteText(statement, column: 3)
+
+            let transcriptURL = brainRoot
+                .appendingPathComponent(conversationID, isDirectory: true)
+                .appendingPathComponent(".system_generated/logs/transcript.jsonl", isDirectory: false)
+            let transcriptHeadline = fileManager.fileExists(atPath: transcriptURL.path)
+                ? headline(fromAgyTranscript: headLines(of: transcriptURL))
+                : nil
+            let chosenHeadline = transcriptHeadline
+                ?? condensedHeadline(preview)
+                ?? condensedHeadline(title)
+            guard let chosenHeadline else { continue }
+
+            digests.append(
+                ConversationDigest(
+                    sessionID: conversationID,
+                    kind: .agy,
+                    headline: chosenHeadline,
+                    modifiedAt: parseAgyTimestamp(modifiedRaw) ?? .distantPast
+                )
+            )
+        }
+        return digests
+    }
+
+    private static func sqliteText(_ statement: OpaquePointer, column: Int32) -> String {
+        guard let pointer = sqlite3_column_text(statement, column) else { return "" }
+        return String(cString: pointer)
+    }
+
     /// そのフォルダ・その種類の会話を新しい順に。shellは会話を持たないので空。
     public static func digests(
         forDirectory directory: URL,
@@ -457,6 +616,13 @@ extension ConversationHistory {
             return codexDigests(
                 forDirectory: directory,
                 sessionsRoot: defaultCodexSessionsRoot(homeDirectory: homeDirectory),
+                limit: limit,
+                fileManager: fileManager
+            )
+        case .agy:
+            return agyDigests(
+                forDirectory: directory,
+                dataRoot: defaultAgyDataRoot(homeDirectory: homeDirectory),
                 limit: limit,
                 fileManager: fileManager
             )
@@ -495,9 +661,9 @@ extension ConversationHistory {
 }
 
 extension ConversationHistory {
-    /// claudeとcodexを、新しい順にひと並びで。
+    /// claude・codex・agyを、新しい順にひと並びで。
     ///
-    /// 混ぜはするが、どちらで話した回かは行の印に残す。そこが消えると、
+    /// 混ぜはするが、どれで話した回かは行の印に残す。そこが消えると、
     /// 戻る相手を間違える。
     public static func recentDigests(
         forDirectory directory: URL,
@@ -505,7 +671,7 @@ extension ConversationHistory {
         limit: Int = defaultLimit,
         fileManager: FileManager = .default
     ) -> [ConversationDigest] {
-        let both = digests(
+        let all = digests(
             forDirectory: directory,
             kind: .claude,
             homeDirectory: homeDirectory,
@@ -517,7 +683,13 @@ extension ConversationHistory {
             homeDirectory: homeDirectory,
             limit: limit,
             fileManager: fileManager
+        ) + digests(
+            forDirectory: directory,
+            kind: .agy,
+            homeDirectory: homeDirectory,
+            limit: limit,
+            fileManager: fileManager
         )
-        return Array(both.sorted { $0.modifiedAt > $1.modifiedAt }.prefix(limit))
+        return Array(all.sorted { $0.modifiedAt > $1.modifiedAt }.prefix(limit))
     }
 }
